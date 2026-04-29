@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from esma_milan.io_layer.write_workbook import write_stub_workbook
+from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 
 if TYPE_CHECKING:
@@ -35,6 +36,9 @@ class PipelineResult:
     """Cleaned tables from Stage 1 (None if Stage 1 didn't run, e.g. on
     error before then). Exposed so integration tests can assert on
     intermediate state without re-running the full pipeline."""
+
+    stage2: Stage2Output | None = None
+    """Filtered tables from Stage 2 (None if Stage 2 didn't run)."""
 
 
 def run_pipeline(
@@ -72,11 +76,14 @@ def run_pipeline(
         taxonomy_path=taxonomy_file_path,
     )
 
-    # TODO Stages 2..10. Until they land, the output workbook stays an
+    # --- Stage 2: filter active loans + RRE properties -------------------
+    stage2 = run_stage2(stage1.loans, stage1.properties)
+
+    # TODO Stages 3..10. Until they land, the output workbook stays an
     # empty 10-sheet stub.
 
     if dry_run:
-        return PipelineResult(output_path=None, stage1=stage1)
+        return PipelineResult(output_path=None, stage1=stage1, stage2=stage2)
 
     # The final filename uses the pool_cutoff_date from loans (matches
     # r_reference/R/pipeline.R:611-621). Stage 1's parsed loans table
@@ -94,7 +101,7 @@ def run_pipeline(
     if verbose:
         log.info("pipeline_workbook_written", path=str(output_path))
 
-    return PipelineResult(output_path=output_path, stage1=stage1)
+    return PipelineResult(output_path=output_path, stage1=stage1, stage2=stage2)
 
 
 def _first_non_null_date(df: pl.DataFrame, col: str) -> date | None:
