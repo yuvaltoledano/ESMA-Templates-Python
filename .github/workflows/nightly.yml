@@ -1,0 +1,96 @@
+name: Nightly parity (Layer 2 + Layer 3)
+
+on:
+  schedule:
+    - cron: "27 2 * * *"  # daily at 02:27 UTC
+  workflow_dispatch:
+
+jobs:
+  layer-2-live-r:
+    name: Layer 2 - live R re-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: true
+
+      - name: Install R deps for r_reference
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r_reference
+          extra-packages: |
+            any::tidyverse
+            any::readxl
+            any::janitor
+            any::igraph
+            any::tidygraph
+            any::openxlsx
+            any::scales
+            any::glue
+            any::purrr
+            any::logger
+            any::tictoc
+            any::svDialogs
+
+      - name: Layer 2 parity (live R vs Python on staged fixtures)
+        run: uv run pytest tests/parity -m "live_r" -v
+        env:
+          ESMA_MILAN_LIVE_R: "1"
+
+  layer-3-fuzz:
+    name: Layer 3 - differential fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: layer-2-live-r
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r_reference
+          extra-packages: |
+            any::tidyverse
+            any::readxl
+            any::janitor
+            any::igraph
+            any::tidygraph
+            any::openxlsx
+            any::scales
+            any::glue
+            any::purrr
+            any::logger
+            any::tictoc
+
+      - name: Run differential fuzz (100 examples)
+        run: uv run pytest tests/parity -m "fuzz" -v --hypothesis-seed=0
+        env:
+          ESMA_MILAN_LIVE_R: "1"
+          HYPOTHESIS_PROFILE: "ci"
