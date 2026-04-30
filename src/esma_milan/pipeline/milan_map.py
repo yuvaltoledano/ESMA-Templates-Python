@@ -465,3 +465,149 @@ def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
             pl.col("_ppue_num") - pl.col("_cpb_sum_at_rank"),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-3: date derivations
+# ---------------------------------------------------------------------------
+
+
+def _r_as_character_expr(expr: pl.Expr) -> pl.Expr:
+    """Format Float64 the way R's as.character() does for default options.
+
+    R's `as.character(<numeric>)` emits up to 15 significant digits with
+    trailing-zero stripping and no trailing decimal. Polars' default
+    Float -> Utf8 cast emits 17 sig digits and a trailing ".0" for whole
+    numbers. Python's "%.15g" format strips trailing zeros, drops the
+    decimal point for integer-valued floats, and rounds to 15 sig digits
+    - byte-equal to R for the values that surface in this pipeline.
+
+    Pinned against the synthetic fixture's "Months Current" /
+    "Months In Arrears" columns:
+      12.51745379876798  -> "12.517453798768"   (NEW_005, fixture)
+      1.4784394250513349 -> "1.47843942505133"  (NEW_008, fixture)
+      0.0                -> "0"                  (fixture)
+    """
+    return expr.map_elements(
+        lambda v: None if v is None else f"{v:.15g}",
+        return_dtype=pl.Utf8,
+    )
+
+
+def _parse_date_safe_expr(col: pl.Expr) -> pl.Expr:
+    """Cast Date|Utf8 -> Date; ND, blank, or non-ISO values -> null.
+
+    Mirrors r_reference/R/milan_mapping.R:42-87 (`safe_as_date`)
+    minus the actionable-error path: Stage 1 already validates these
+    columns via parse_iso_or_excel_date(), so anything reaching Stage
+    9 is either a parsed Date or an ND/blank string. strict=False
+    silently nulls anything else.
+
+    Round-trips Date -> Utf8 -> Date harmlessly; the cast to Utf8
+    emits "yyyy-mm-dd" which str.to_date parses back idempotently.
+    """
+    return (
+        col.cast(pl.Utf8, strict=False)
+        .str.to_date(format="%Y-%m-%d", strict=False)
+    )
+
+
+def _attach_date_derivations(df: pl.DataFrame) -> pl.DataFrame:
+    """Add the staging columns the date-flavoured MILAN fields depend on.
+
+    Mirrors r_reference/R/milan_mapping.R:556-597. Computes:
+
+      _pool_cutoff_safe          - Date (parsed pool_cutoff_date)
+      _date_last_in_arrears_safe - Date (parsed date_last_in_arrears)
+      _date_last_in_arrears_chr  - Utf8 (kept for the case_when ND check
+                                  in `Months Current` rule 3, since the
+                                  parsed Date version would lose the
+                                  "ND"/"ND3"/etc. distinction)
+      _months_since_last_arrears - Utf8, R-formatted to %.15g, null
+                                  when either date is null. Mirrors R's
+                                  as.character(as.numeric(difftime(...))/30.4375).
+      _days_in_arrears_num       - Float64
+      _primary_income_num        - Float64
+      _secondary_income_num      - Float64
+      _total_credit_limit_num    - Float64
+
+    The 30.4375 divisor is R's average month length (365.25 / 12);
+    matches the fixture's emitted values for NEW_005 / NEW_008 to the
+    last digit when paired with %.15g formatting.
+    """
+    df = df.with_columns(
+        _date_last_in_arrears_chr=pl.col("date_last_in_arrears").cast(
+            pl.Utf8, strict=False
+        ),
+        _pool_cutoff_safe=_parse_date_safe_expr(pl.col("pool_cutoff_date")),
+        _date_last_in_arrears_safe=_parse_date_safe_expr(
+            pl.col("date_last_in_arrears")
+        ),
+        _days_in_arrears_num=_safe_as_num_expr(pl.col("number_of_days_in_arrears")),
+        _primary_income_num=_safe_as_num_expr(pl.col("primary_income")),
+        _secondary_income_num=_safe_as_num_expr(pl.col("secondary_income")),
+        _total_credit_limit_num=_safe_as_num_expr(pl.col("total_credit_limit")),
+    )
+
+    months_since_float = (
+        (pl.col("_pool_cutoff_safe") - pl.col("_date_last_in_arrears_safe"))
+        .dt.total_days()
+        / 30.4375
+    )
+
+    return df.with_columns(
+        _months_since_last_arrears=pl.when(
+            pl.col("_pool_cutoff_safe").is_not_null()
+            & pl.col("_date_last_in_arrears_safe").is_not_null()
+        )
+        .then(_r_as_character_expr(months_since_float))
+        .otherwise(pl.lit(None, dtype=pl.Utf8)),
+    )
+
+
+def _compute_months_current_expr(
+    days_in_arrears_num: pl.Expr,
+    months_since_last_arrears: pl.Expr,
+    date_last_in_arrears_chr: pl.Expr,
+) -> pl.Expr:
+    """Apply the `Months Current` case_when from milan_mapping.R:704-715.
+
+    Rules in order:
+      1. Currently in arrears (days > 0)               -> "0"
+      2. Not in arrears, has valid last-arrears date   -> _months_since_last_arrears
+      3. Never in arrears (date_last_in_arrears is ND) -> "Never in Arrears"
+      Fallback                                          -> "ND"
+
+    The string "Never in Arrears" is byte-equal to the value emitted
+    by R into the synthetic fixture's "Months Current" column (verified
+    against tests/fixtures/synthetic/expected_r_output.xlsx).
+    """
+    return (
+        pl.when(days_in_arrears_num.is_not_null() & (days_in_arrears_num > 0))
+        .then(pl.lit("0"))
+        .when(
+            days_in_arrears_num.is_not_null()
+            & (days_in_arrears_num == 0)
+            & months_since_last_arrears.is_not_null()
+        )
+        .then(months_since_last_arrears)
+        .when(
+            days_in_arrears_num.is_not_null()
+            & (days_in_arrears_num == 0)
+            & is_nd_expr(date_last_in_arrears_chr)
+        )
+        .then(pl.lit("Never in Arrears"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
+    """Apply the `Months In Arrears` if_else from milan_mapping.R:723-727.
+
+    days null -> "ND"; else as.character(days / 30.4375) via %.15g.
+    """
+    return (
+        pl.when(days_in_arrears_num.is_null())
+        .then(pl.lit("ND"))
+        .otherwise(_r_as_character_expr(days_in_arrears_num / 30.4375))
+    )
