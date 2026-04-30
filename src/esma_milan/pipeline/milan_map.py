@@ -353,3 +353,441 @@ def _ensure_source_columns(df: pl.DataFrame, expected: Sequence[str]) -> pl.Data
         stacklevel=2,
     )
     return df.with_columns([pl.lit("ND").alias(c) for c in missing])
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-2: per-property ranking + cumulative-sum CB fields
+# ---------------------------------------------------------------------------
+
+
+def _attach_ranking(df: pl.DataFrame) -> pl.DataFrame:
+    """Add `_ppb_num` and `_milan_ranking` (dense_rank within property).
+
+    Mirrors r_reference/R/milan_mapping.R:478-494:
+
+        .ppb_numeric = if_else(is_nd(prior_principal_balances), 0, as.numeric(...))
+        .milan_ranking = dense_rank(.ppb_numeric)   # within calc_main_property_id
+
+    ND prior_principal_balances values collapse to 0 *before* ranking,
+    so a row with ND ppb gets the lowest rank within its property
+    (rank 1 if no other row has a smaller ppb). dplyr's dense_rank
+    starts at 1 with no gaps; Polars' rank(method="dense") matches.
+    """
+    return df.with_columns(
+        _ppb_num=pl.when(is_nd_expr(pl.col("prior_principal_balances")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("prior_principal_balances")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+    ).with_columns(
+        _milan_ranking=pl.col("_ppb_num")
+        .rank(method="dense")
+        .over("calc_main_property_id")
+        .cast(pl.Int64),
+    )
+
+
+def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
+    """Add `_cpb_num`, `_ppue_num`, `_cpb_sum_at_rank`, `_cpb_cumsum_below`,
+    `_milan_ext_prior_ranks_cb`, `_milan_pari_passu_not_in_pool`.
+
+    Mirrors r_reference/R/milan_mapping.R:498-555. The R recipe:
+
+      1. Coerce CPB and PPUE to numeric, ND -> 0.
+      2. Per-(property, rank) sum of CPB (".cpb_sum_at_rank").
+      3. Per-property, cum_sum of step-2 in rank-ascending order, lagged
+         by 1 with default 0 (".cpb_cumsum_below" - the sum of CB at
+         strictly lower ranks within the same property).
+      4. Join (property, rank) totals back to the row-level frame.
+      5. Compute the two final fields:
+         - .milan_ext_prior_ranks_cb = max(0, ppb - cumsum_below)
+         - .milan_pari_passu_not_in_pool = max(0, ppue - sum_at_rank)
+
+    Asymmetric defaults documented as R-repo issue tracker entry #9
+    (probably-intentional Moody's MILAN spec quirk): External Prior
+    displays "ND" on ND ppb input while Pari Passu displays "0" on ND
+    ppue input. Both float values are 0 in those cases (since ND
+    collapses to 0 before subtraction); the asymmetry lives entirely in
+    the B-5 transmute, not here.
+    """
+    df = df.with_columns(
+        _cpb_num=pl.when(is_nd_expr(pl.col("current_principal_balance")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("current_principal_balance")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+        _ppue_num=pl.when(is_nd_expr(pl.col("pari_passu_underlying_exposures")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("pari_passu_underlying_exposures")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+    )
+
+    # Build the per-(property, rank) totals + per-property cumsum-below.
+    # Mirrors R's `summarise(...) |> arrange(...) |> mutate(lag(cumsum(...)))`.
+    # Sort by (property, rank) ascending so the cum_sum within property
+    # respects rank order; over(property) keeps the cumsum from bleeding
+    # across properties.
+    ranking_sums = (
+        df.group_by(["calc_main_property_id", "_milan_ranking"])
+        .agg(_cpb_sum_at_rank=pl.col("_cpb_num").sum())
+        .sort(["calc_main_property_id", "_milan_ranking"])
+        .with_columns(
+            _cpb_cumsum_below=pl.col("_cpb_sum_at_rank")
+            .cum_sum()
+            .shift(1, fill_value=0.0)
+            .over("calc_main_property_id"),
+        )
+    )
+
+    df = df.join(
+        ranking_sums,
+        on=["calc_main_property_id", "_milan_ranking"],
+        how="left",
+    )
+
+    return df.with_columns(
+        _milan_ext_prior_ranks_cb=pl.max_horizontal(
+            pl.lit(0.0),
+            pl.col("_ppb_num") - pl.col("_cpb_cumsum_below"),
+        ),
+        _milan_pari_passu_not_in_pool=pl.max_horizontal(
+            pl.lit(0.0),
+            pl.col("_ppue_num") - pl.col("_cpb_sum_at_rank"),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-3: date derivations
+# ---------------------------------------------------------------------------
+
+
+def _r_as_character_expr(expr: pl.Expr) -> pl.Expr:
+    """Format Float64 the way R's as.character() does for default options.
+
+    R's `as.character(<numeric>)` emits up to 15 significant digits with
+    trailing-zero stripping and no trailing decimal. Polars' default
+    Float -> Utf8 cast emits 17 sig digits and a trailing ".0" for whole
+    numbers. Python's "%.15g" format strips trailing zeros, drops the
+    decimal point for integer-valued floats, and rounds to 15 sig digits
+    - byte-equal to R for the values that surface in this pipeline.
+
+    Pinned against the synthetic fixture's "Months Current" /
+    "Months In Arrears" columns:
+      12.51745379876798  -> "12.517453798768"   (NEW_005, fixture)
+      1.4784394250513349 -> "1.47843942505133"  (NEW_008, fixture)
+      0.0                -> "0"                  (fixture)
+    """
+    return expr.map_elements(
+        lambda v: None if v is None else f"{v:.15g}",
+        return_dtype=pl.Utf8,
+    )
+
+
+def _parse_date_safe_expr(col: pl.Expr) -> pl.Expr:
+    """Cast Date|Utf8 -> Date; ND, blank, or non-ISO values -> null.
+
+    Mirrors r_reference/R/milan_mapping.R:42-87 (`safe_as_date`)
+    minus the actionable-error path: Stage 1 already validates these
+    columns via parse_iso_or_excel_date(), so anything reaching Stage
+    9 is either a parsed Date or an ND/blank string. strict=False
+    silently nulls anything else.
+
+    Round-trips Date -> Utf8 -> Date harmlessly; the cast to Utf8
+    emits "yyyy-mm-dd" which str.to_date parses back idempotently.
+    """
+    return (
+        col.cast(pl.Utf8, strict=False)
+        .str.to_date(format="%Y-%m-%d", strict=False)
+    )
+
+
+def _attach_date_derivations(df: pl.DataFrame) -> pl.DataFrame:
+    """Add the staging columns the date-flavoured MILAN fields depend on.
+
+    Mirrors r_reference/R/milan_mapping.R:556-597. Computes:
+
+      _pool_cutoff_safe          - Date (parsed pool_cutoff_date)
+      _date_last_in_arrears_safe - Date (parsed date_last_in_arrears)
+      _date_last_in_arrears_chr  - Utf8 (kept for the case_when ND check
+                                  in `Months Current` rule 3, since the
+                                  parsed Date version would lose the
+                                  "ND"/"ND3"/etc. distinction)
+      _months_since_last_arrears - Utf8, R-formatted to %.15g, null
+                                  when either date is null. Mirrors R's
+                                  as.character(as.numeric(difftime(...))/30.4375).
+      _days_in_arrears_num       - Float64
+      _primary_income_num        - Float64
+      _secondary_income_num      - Float64
+      _total_credit_limit_num    - Float64
+
+    The 30.4375 divisor is R's average month length (365.25 / 12);
+    matches the fixture's emitted values for NEW_005 / NEW_008 to the
+    last digit when paired with %.15g formatting.
+    """
+    df = df.with_columns(
+        _date_last_in_arrears_chr=pl.col("date_last_in_arrears").cast(
+            pl.Utf8, strict=False
+        ),
+        _pool_cutoff_safe=_parse_date_safe_expr(pl.col("pool_cutoff_date")),
+        _date_last_in_arrears_safe=_parse_date_safe_expr(
+            pl.col("date_last_in_arrears")
+        ),
+        _days_in_arrears_num=_safe_as_num_expr(pl.col("number_of_days_in_arrears")),
+        _primary_income_num=_safe_as_num_expr(pl.col("primary_income")),
+        _secondary_income_num=_safe_as_num_expr(pl.col("secondary_income")),
+        _total_credit_limit_num=_safe_as_num_expr(pl.col("total_credit_limit")),
+    )
+
+    months_since_float = (
+        (pl.col("_pool_cutoff_safe") - pl.col("_date_last_in_arrears_safe"))
+        .dt.total_days()
+        / 30.4375
+    )
+
+    return df.with_columns(
+        _months_since_last_arrears=pl.when(
+            pl.col("_pool_cutoff_safe").is_not_null()
+            & pl.col("_date_last_in_arrears_safe").is_not_null()
+        )
+        .then(_r_as_character_expr(months_since_float))
+        .otherwise(pl.lit(None, dtype=pl.Utf8)),
+    )
+
+
+def _compute_months_current_expr(
+    days_in_arrears_num: pl.Expr,
+    months_since_last_arrears: pl.Expr,
+    date_last_in_arrears_chr: pl.Expr,
+) -> pl.Expr:
+    """Apply the `Months Current` case_when from milan_mapping.R:704-715.
+
+    Rules in order:
+      1. Currently in arrears (days > 0)               -> "0"
+      2. Not in arrears, has valid last-arrears date   -> _months_since_last_arrears
+      3. Never in arrears (date_last_in_arrears is ND) -> "Never in Arrears"
+      Fallback                                          -> "ND"
+
+    The string "Never in Arrears" is byte-equal to the value emitted
+    by R into the synthetic fixture's "Months Current" column (verified
+    against tests/fixtures/synthetic/expected_r_output.xlsx).
+    """
+    return (
+        pl.when(days_in_arrears_num.is_not_null() & (days_in_arrears_num > 0))
+        .then(pl.lit("0"))
+        .when(
+            days_in_arrears_num.is_not_null()
+            & (days_in_arrears_num == 0)
+            & months_since_last_arrears.is_not_null()
+        )
+        .then(months_since_last_arrears)
+        .when(
+            days_in_arrears_num.is_not_null()
+            & (days_in_arrears_num == 0)
+            & is_nd_expr(date_last_in_arrears_chr)
+        )
+        .then(pl.lit("Never in Arrears"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
+    """Apply the `Months In Arrears` if_else from milan_mapping.R:723-727.
+
+    days null -> "ND"; else as.character(days / 30.4375) via %.15g.
+    """
+    return (
+        pl.when(days_in_arrears_num.is_null())
+        .then(pl.lit("ND"))
+        .otherwise(_r_as_character_expr(days_in_arrears_num / 30.4375))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-4: INFER + remaining CALC field helpers
+# ---------------------------------------------------------------------------
+#
+# Pinning strategy: for each helper, branches exercised by the synthetic
+# fixture are pinned against fixture-extracted values; branches not
+# exercised by the fixture are tested against the R source contract
+# (regex / case_when / equality) with an explicit "branch not exercised
+# by synthetic fixture" comment in the test. Real-fixture parity in
+# CI nightly will catch any branch-level drift.
+
+
+def _milan_social_programme_expr(special_scheme: pl.Expr) -> pl.Expr:
+    """Apply the Social Programme Type case_when from milan_mapping.R:732-739.
+
+    case_when short-circuits at first match (R semantic). All grepl
+    patterns are case-insensitive.
+
+      RTB | Right to Buy                      -> "1"
+      Tenant Purchase                          -> "2"
+      HTB | Help to Buy | Equity Loan          -> "3"
+      Shared Ownership | Part Buy Part Rent    -> "4"
+      ND special_scheme                        -> "6"
+      else                                     -> "5"
+    """
+    s = special_scheme.cast(pl.Utf8, strict=False)
+    nd = is_nd_expr(s)
+    return (
+        pl.when((~nd) & s.str.contains(r"(?i)RTB|Right to Buy"))
+        .then(pl.lit("1"))
+        .when((~nd) & s.str.contains(r"(?i)Tenant Purchase"))
+        .then(pl.lit("2"))
+        .when((~nd) & s.str.contains(r"(?i)HTB|Help to Buy|Equity Loan"))
+        .then(pl.lit("3"))
+        .when((~nd) & s.str.contains(r"(?i)Shared Ownership|Part Buy Part Rent"))
+        .then(pl.lit("4"))
+        .when(nd)
+        .then(pl.lit("6"))
+        .otherwise(pl.lit("5"))
+    )
+
+
+def _milan_borrower_type_expr(
+    employment_status: pl.Expr,
+    primary_income_type: pl.Expr,
+) -> pl.Expr:
+    """Apply Borrower Type case_when from milan_mapping.R:751-756.
+
+      employment == "NOEM" OR primary_income_type == "CORP" -> "2"
+      employment present and != "NOEM"                       -> "1"
+      else                                                    -> "ND"
+
+    R's `==` returns NA on NA inputs and case_when treats NA-LHS as
+    no-match. Mirror by gating each equality with `~is_nd_expr` so
+    a null/ND on either side falls through cleanly.
+    """
+    emp = employment_status.cast(pl.Utf8, strict=False)
+    inc = primary_income_type.cast(pl.Utf8, strict=False)
+    emp_nd = is_nd_expr(emp)
+    inc_nd = is_nd_expr(inc)
+    emp_eq_noem = (~emp_nd) & (emp == "NOEM")
+    inc_eq_corp = (~inc_nd) & (inc == "CORP")
+    emp_present_not_noem = (~emp_nd) & (emp != "NOEM")
+    return (
+        pl.when(emp_eq_noem | inc_eq_corp).then(pl.lit("2"))
+        .when(emp_present_not_noem).then(pl.lit("1"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_borrower_residency_expr(resident: pl.Expr) -> pl.Expr:
+    """Apply Borrower Residency case_when from milan_mapping.R:759-763.
+
+    Plain `==` on character (case-sensitive); "True" / "true" / etc.
+    fall through to "ND".
+    """
+    s = resident.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s == "TRUE").then(pl.lit("Y"))
+        .when(s == "FALSE").then(pl.lit("N"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_recourse_expr(recourse: pl.Expr) -> pl.Expr:
+    """Apply Recourse case_when from milan_mapping.R:859-863.
+
+    Y / N pass-through; everything else (including ND) -> "ND".
+    """
+    s = recourse.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s.is_in(["Y", "N"])).then(s)
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_restructured_loan_expr(
+    date_of_restructuring: pl.Expr,
+    account_status: pl.Expr,
+) -> pl.Expr:
+    """Apply Restructured Loan case_when from milan_mapping.R:978-983.
+
+      date_of_restructuring is non-ND          -> "Y"
+      account_status in {RNAR, RARR}           -> "Y"
+      both date and status are ND              -> "ND"
+      else                                      -> "N"
+
+    R's `%in%` with NA on the LHS returns FALSE (not NA), so a NA
+    account_status falls through to the next branch. Mirror via
+    `is_nd_expr` gate.
+    """
+    d = date_of_restructuring.cast(pl.Utf8, strict=False)
+    s = account_status.cast(pl.Utf8, strict=False)
+    d_nd = is_nd_expr(d)
+    s_nd = is_nd_expr(s)
+    return (
+        pl.when(~d_nd).then(pl.lit("Y"))
+        .when((~s_nd) & s.is_in(["RNAR", "RARR"])).then(pl.lit("Y"))
+        .when(d_nd & s_nd).then(pl.lit("ND"))
+        .otherwise(pl.lit("N"))
+    )
+
+
+def _milan_mig_provider_expr(guarantor_type: pl.Expr) -> pl.Expr:
+    """Apply MIG Provider case_when from milan_mapping.R:1015-1021.
+
+    Plain `==` chain; null / ND / unknown codes fall to "No Guarantor".
+
+    Strings pinned against the synthetic fixture:
+      "NHG / Waarborgfonds Eigen Woningen"  - emitted for guarantor=NHGX
+      "No Guarantor"                         - emitted for ND/unknown
+    """
+    s = guarantor_type.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s == "NHGX").then(pl.lit("NHG / Waarborgfonds Eigen Woningen"))
+        .when(s == "FGAS").then(pl.lit("SGFGAS"))
+        .when(s == "CATN").then(pl.lit("Caution"))
+        .when(s == "OTHR").then(pl.lit("Other"))
+        .otherwise(pl.lit("No Guarantor"))
+    )
+
+
+def _milan_total_income_expr(
+    primary_income_num: pl.Expr,
+    secondary_income_num: pl.Expr,
+) -> pl.Expr:
+    """Apply Total Income case_when from milan_mapping.R:803-808.
+
+      both null              -> "ND"
+      one null               -> the other (R-formatted via %.15g)
+      else                   -> sum (R-formatted via %.15g)
+    """
+    p_null = primary_income_num.is_null()
+    s_null = secondary_income_num.is_null()
+    return (
+        pl.when(p_null & s_null).then(pl.lit("ND"))
+        .when(p_null).then(_r_as_character_expr(secondary_income_num))
+        .when(s_null).then(_r_as_character_expr(primary_income_num))
+        .otherwise(_r_as_character_expr(primary_income_num + secondary_income_num))
+    )
+
+
+def _milan_flexible_loan_amount_expr(
+    total_credit_limit_num: pl.Expr,
+    cpb_num: pl.Expr,
+) -> pl.Expr:
+    """Apply Flexible Loan Amount case_when from milan_mapping.R:670-675.
+
+      total_credit_limit null     -> "0"
+      tcl - cpb <= 0              -> "0"
+      else                        -> as.character(tcl - cpb)  (%.15g)
+    """
+    diff = total_credit_limit_num - cpb_num
+    return (
+        pl.when(total_credit_limit_num.is_null()).then(pl.lit("0"))
+        .when(diff <= 0).then(pl.lit("0"))
+        .otherwise(_r_as_character_expr(diff))
+    )
