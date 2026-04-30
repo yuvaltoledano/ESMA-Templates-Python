@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
 from esma_milan.io_layer.write_workbook import write_stub_workbook
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
+from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 
 if TYPE_CHECKING:
@@ -39,6 +41,11 @@ class PipelineResult:
 
     stage2: Stage2Output | None = None
     """Filtered tables from Stage 2 (None if Stage 2 didn't run)."""
+
+    stage3: Stage3Output | None = None
+    """ID-augmented + intersection-filtered tables from Stage 3 (None if
+    Stage 3 didn't run). Carries calc_loan_id, calc_borrower_id on
+    loans and calc_property_id on properties."""
 
 
 def run_pipeline(
@@ -79,11 +86,24 @@ def run_pipeline(
     # --- Stage 2: filter active loans + RRE properties -------------------
     stage2 = run_stage2(stage1.loans, stage1.properties)
 
-    # TODO Stages 3..10. Until they land, the output workbook stays an
+    # --- Stage 3: select calc_loan_id + intersection filter + IDs --------
+    stage3 = run_stage3(
+        stage2.loans,
+        stage2.properties,
+        min_coverage=(
+            min_coverage
+            if min_coverage is not None
+            else DEFAULT_MIN_LOAN_ID_COVERAGE
+        ),
+    )
+
+    # TODO Stages 4..10. Until they land, the output workbook stays an
     # empty 10-sheet stub.
 
     if dry_run:
-        return PipelineResult(output_path=None, stage1=stage1, stage2=stage2)
+        return PipelineResult(
+            output_path=None, stage1=stage1, stage2=stage2, stage3=stage3
+        )
 
     # The final filename uses the pool_cutoff_date from loans (matches
     # r_reference/R/pipeline.R:611-621). Stage 1's parsed loans table
@@ -101,7 +121,9 @@ def run_pipeline(
     if verbose:
         log.info("pipeline_workbook_written", path=str(output_path))
 
-    return PipelineResult(output_path=output_path, stage1=stage1, stage2=stage2)
+    return PipelineResult(
+        output_path=output_path, stage1=stage1, stage2=stage2, stage3=stage3
+    )
 
 
 def _first_non_null_date(df: pl.DataFrame, col: str) -> date | None:

@@ -1,9 +1,11 @@
 """Identifier selection helpers (Stage 3).
 
-Two helpers, mirroring r_reference/R/utils.R:
+Two helpers + a stage driver, mirroring r_reference/R/pipeline.R:264-331
+which composes them:
 
   select_calc_loan_id()    utils.R:266-442
   generate_id_column()     utils.R:173-206
+  run_stage3()             pipeline.R:264-331 (the orchestration block)
 
 `select_calc_loan_id` is the highest-parity-risk function in the pipeline
 because every downstream join keys on its output. The R function has 20
@@ -14,6 +16,11 @@ port mirrors them one-for-one (see tests/unit/test_identifiers.py).
 IDs, where uniqueness/coverage gates do not apply - it just picks the
 column with more unique non-null values, defaulting to original on tie
 or when the two columns are element-wise identical.
+
+`run_stage3` is the stage driver: select_calc_loan_id; drop rows whose
+calc_loan_id is null (with warning); intersection-filter loans and
+properties; assert symmetric coverage; generate_id_column for
+calc_borrower_id and calc_property_id.
 """
 
 from __future__ import annotations
@@ -336,3 +343,120 @@ def generate_id_column(
     return df.with_columns(
         pl.Series(output_col_name, chosen, dtype=pl.String)
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 driver
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Stage3Output:
+    """Output of Stage 3.
+
+    `loans` carries the appended `calc_loan_id` and `calc_borrower_id`
+    columns. `properties` carries the appended `calc_property_id`. Both
+    tables are restricted to the intersection on calc_loan_id /
+    underlying_exposure_identifier so downstream graph-building can
+    assume symmetric coverage.
+    """
+
+    loans: pl.DataFrame
+    properties: pl.DataFrame
+
+
+def run_stage3(
+    loans: pl.DataFrame,
+    properties: pl.DataFrame,
+    *,
+    min_coverage: float = DEFAULT_MIN_LOAN_ID_COVERAGE,
+) -> Stage3Output:
+    """Compose select_calc_loan_id + generate_id_column + intersection filter.
+
+    Mirrors r_reference/R/pipeline.R:264-331:
+      1. select_calc_loan_id picks the loan-ID column.
+      2. Drop loans whose chosen calc_loan_id is null (with warning).
+      3. Intersection-filter: loans whose calc_loan_id is in the property
+         table's underlying_exposure_identifier set survive; properties
+         whose underlying_exposure_identifier is in the calc_loan_id set
+         survive.
+      4. Assert both filtered tables are non-empty (raise otherwise).
+      5. Belt-and-braces symmetric-coverage check: every calc_loan_id
+         must appear in property loan IDs and vice versa. This block is
+         unreachable under correct upstream behaviour but is kept as a
+         regression guard.
+      6. generate_id_column for calc_borrower_id (on loans).
+      7. generate_id_column for calc_property_id (on properties).
+    """
+    loans = select_calc_loan_id(loans, properties, min_coverage=min_coverage)
+
+    # Drop rows with null calc_loan_id. R: pipeline.R:275-280.
+    n_before = loans.height
+    loans = loans.filter(pl.col("calc_loan_id").is_not_null())
+    n_dropped = n_before - loans.height
+    if n_dropped > 0:
+        warnings.warn(
+            f"Dropped {n_dropped} loans with missing calc_loan_id",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Intersection filter (pipeline.R:283-287).
+    property_loan_ids: set[str] = {
+        v for v in properties["underlying_exposure_identifier"].to_list() if v is not None
+    }
+    loans = loans.filter(pl.col("calc_loan_id").is_in(list(property_loan_ids)))
+
+    calc_loan_ids: set[str] = {
+        v for v in loans["calc_loan_id"].to_list() if v is not None
+    }
+    properties = properties.filter(
+        pl.col("underlying_exposure_identifier").is_in(list(calc_loan_ids))
+    )
+
+    if loans.height == 0:
+        raise ValueError("ERROR: No active loans remaining after filtering.")
+    if properties.height == 0:
+        raise ValueError("ERROR: No properties remaining after filtering.")
+
+    # Belt-and-braces symmetric coverage check (pipeline.R:296-317).
+    # Should be unreachable under correct upstream behaviour but kept as
+    # a regression guard.
+    missing_in_properties = sorted(calc_loan_ids - property_loan_ids, key=str)
+    missing_in_loans = sorted(property_loan_ids - calc_loan_ids, key=str)
+    if missing_in_properties or missing_in_loans:
+        raise ValueError(
+            "ERROR: Loan identifier mismatch between calc_loan_id and "
+            "properties$underlying_exposure_identifier. "
+            f"Missing in properties: {len(missing_in_properties)}"
+            + (
+                f" [{', '.join(missing_in_properties[:10])}]"
+                if missing_in_properties
+                else ""
+            )
+            + f"; missing in loans: {len(missing_in_loans)}"
+            + (f" [{', '.join(missing_in_loans[:10])}]" if missing_in_loans else "")
+            + "."
+        )
+
+    # Borrower and property IDs use the simpler generate_id_column.
+    loans = generate_id_column(
+        loans,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    properties = generate_id_column(
+        properties,
+        original_id_col="original_collateral_identifier",
+        new_id_col="new_collateral_identifier",
+        output_col_name="calc_property_id",
+    )
+
+    log.info(
+        "stage3_complete",
+        n_loans=loans.height,
+        n_properties=properties.height,
+    )
+
+    return Stage3Output(loans=loans, properties=properties)
