@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import polars as pl
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
@@ -22,9 +22,7 @@ from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
-
-if TYPE_CHECKING:
-    import polars as pl
+from esma_milan.pipeline.valuation import Stage6Output, run_stage6
 
 log = structlog.get_logger(__name__)
 
@@ -58,6 +56,19 @@ class PipelineResult:
     """Group classifications from Stage 5 (None if Stage 5 didn't run).
     Carries the (collateral_group_id, loans, collaterals, is_full_set,
     structure_type) frame written to the "Group classifications" sheet."""
+
+    stage6: Stage6Output | None = None
+    """Auto-detected aggregation method from Stage 6 (None if Stage 6
+    didn't run). When the user passed an explicit `aggregation_method`
+    argument, Stage 6 runs anyway as a sanity check; the explicit
+    argument wins for the actual flatten in Stage 7."""
+
+    chosen_aggregation_method: str | None = None
+    """The aggregation method actually used downstream. Equals the
+    user's explicit `aggregation_method` argument when supplied;
+    otherwise equals `stage6.detected_method` when that's "by_loan" or
+    "by_group", with a fallback to "by_loan" on "ambiguous" + non-
+    interactive (matches r_reference/R/pipeline.R:469-485)."""
 
 
 def run_pipeline(
@@ -115,7 +126,38 @@ def run_pipeline(
     # --- Stage 5: classify groups into structure types 1-5 ---------------
     stage5 = run_stage5(stage4)
 
-    # TODO Stages 6..10. Until they land, the output workbook only writes
+    # --- Stage 6: detect aggregation method (by_loan vs by_group) --------
+    # Compose loans_enriched / properties_enriched for Stage 6's input:
+    # the cleaned tables joined with their collateral_group_id from the
+    # Stage 4 graph. Mirrors r_reference/R/pipeline.R:405-425.
+    loans_enriched = stage3.loans.join(
+        stage4.loan_groups, on="calc_loan_id", how="left"
+    )
+    properties_enriched = stage3.properties.join(
+        stage4.collateral_groups, on="calc_property_id", how="left"
+    )
+    stage6 = run_stage6(loans_enriched, properties_enriched)
+
+    # Resolve the aggregation method actually used downstream. Mirrors
+    # r_reference/R/pipeline.R:469-485:
+    #   - explicit argument wins when supplied
+    #   - else use stage6.detected_method when it's by_loan / by_group
+    #   - else (ambiguous + non-interactive) fall back to "by_loan"
+    if aggregation_method is not None:
+        chosen_aggregation = aggregation_method
+    elif stage6.detected_method in ("by_loan", "by_group"):
+        chosen_aggregation = stage6.detected_method
+    else:
+        # Ambiguous + non-interactive: R defaults to by_loan with a warning.
+        chosen_aggregation = "by_loan"
+        log.warning(
+            "aggregation_method_ambiguous_defaulting_to_by_loan",
+            stage6_message=stage6.message,
+        )
+    if verbose:
+        log.info("chosen_aggregation_method", method=chosen_aggregation)
+
+    # TODO Stages 7..10. Until they land, the output workbook only writes
     # the sheets contributed by the stages that have shipped (currently
     # just "Group classifications"); the other 9 stay empty so the
     # parity harness's sheet-order check still passes.
@@ -128,6 +170,8 @@ def run_pipeline(
             stage3=stage3,
             stage4=stage4,
             stage5=stage5,
+            stage6=stage6,
+            chosen_aggregation_method=chosen_aggregation,
         )
 
     # The final filename uses the pool_cutoff_date from loans (matches
@@ -156,6 +200,8 @@ def run_pipeline(
         stage3=stage3,
         stage4=stage4,
         stage5=stage5,
+        stage6=stage6,
+        chosen_aggregation_method=chosen_aggregation,
     )
 
 
