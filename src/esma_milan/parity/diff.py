@@ -9,9 +9,34 @@ mirror §6.2 of the project brief:
     config.SHEETS_WITH_EXCEL_SERIAL_DATES; the diff just compares cells
     in whatever form they come out of openpyxl, which preserves both.
 
-Group-id canonicalisation (relabel by sorted-min calc_loan_id) is performed
-when the comparable column is named `collateral_group_id`,
-`calc_collateral_group_id`, or `Additional data 4 - calc_collateral_group_id`.
+Group-id canonicalisation has two layers:
+
+  1. In-sheet relabel: for sheets that carry both a row-unique
+     identifier (calc_loan_id / Loan Identifier / calc_property_id /
+     ...) AND a collateral_group_id column, the diff builds a per-side
+     {gid -> 1..N rank} map from those rows and relabels gid CELL
+     VALUES on cell comparison so R and Python's different integer
+     labels for the same partition compare equal.
+
+  2. Cross-sheet WorkbookContext (this stage's addition): for sheets
+     whose own rows do not carry a row-unique identifier (notably
+     "Group classifications", which is one row per group with no
+     loan/property column), the diff builds a context from the
+     "Cleaned ESMA loans" sheet's (calc_loan_id, collateral_group_id)
+     columns and uses it to:
+       (a) relabel gid CELL VALUES on cell comparison, and
+       (b) reorder ROWS on each side by the lex-smallest calc_loan_id
+           in the group, so the same partition produces matching row
+           order regardless of which integer labels each side picked.
+
+  The cross-sheet alignment only fires when BOTH workbooks' contexts
+  are populated. If either side has an empty Cleaned ESMA loans sheet
+  (e.g. a partial pipeline output where Stage 5 has landed but the
+  Cleaned ESMA loans writer hasn't), the alignment is a no-op and the
+  diff falls back to positional row matching. This keeps behaviour
+  predictable while later stages stack up; the unit tests in
+  tests/unit/test_diff.py exercise both branches with constructed
+  fixtures.
 """
 
 from __future__ import annotations
@@ -59,6 +84,22 @@ NODE_ID_COLUMNS_BY_PRIORITY: tuple[str, ...] = (
     "Property Identifier",
     "Additional data 3 - calc_main_property_id",
 )
+
+# Sheets whose rows do NOT carry a row-unique row identifier of their own
+# and therefore need cross-sheet alignment via the WorkbookContext built
+# from the Cleaned ESMA loans sheet. Currently just "Group classifications"
+# (one row per group).
+SHEETS_NEEDING_CROSS_SHEET_ALIGNMENT: frozenset[str] = frozenset({
+    "Group classifications",
+})
+
+# The sheet WorkbookContext is derived from. Single-source for now;
+# extending this to a priority list (e.g. fall back to "Combined
+# flattened pool" if Cleaned ESMA loans is empty) is straightforward
+# but unneeded until the writer for those sheets ships.
+LOANS_CONTEXT_SHEET: str = "Cleaned ESMA loans"
+LOANS_CONTEXT_LOAN_ID_COLUMN: str = "calc_loan_id"
+LOANS_CONTEXT_GID_COLUMN: str = "collateral_group_id"
 
 
 @dataclass(frozen=True)
@@ -142,6 +183,36 @@ class DiffReport:
         }
 
 
+@dataclass(frozen=True)
+class WorkbookContext:
+    """Cross-sheet info derived from one workbook's Cleaned ESMA loans sheet.
+
+    Empty if the loans sheet is missing, has no rows, or is missing the
+    expected (calc_loan_id, collateral_group_id) columns. The diff falls
+    back to in-sheet relabel + positional row matching when either side's
+    context is empty - see SHEETS_NEEDING_CROSS_SHEET_ALIGNMENT handling
+    in `_diff_sheet`.
+    """
+
+    gid_to_canonical: dict[Any, int]
+    """gid (this workbook's label space) -> 1..N canonical rank, where
+    rank is determined by lex-smallest calc_loan_id in the group."""
+
+    gid_to_min_loan_id: dict[Any, str]
+    """gid (this workbook's label space) -> lex-smallest calc_loan_id in
+    that group. Used as the row-sort key for SHEETS_NEEDING_CROSS_SHEET_
+    ALIGNMENT."""
+
+    @property
+    def is_populated(self) -> bool:
+        return bool(self.gid_to_min_loan_id)
+
+
+_EMPTY_CONTEXT: WorkbookContext = WorkbookContext(
+    gid_to_canonical={}, gid_to_min_loan_id={}
+)
+
+
 def diff_workbooks(
     actual_path: Path | str,
     expected_path: Path | str,
@@ -155,6 +226,9 @@ def diff_workbooks(
 
     actual_wb = _load(actual_path)
     expected_wb = _load(expected_path)
+
+    actual_ctx = _build_workbook_context(actual_wb)
+    expected_ctx = _build_workbook_context(expected_wb)
 
     report = DiffReport(
         actual_path=actual_path,
@@ -174,6 +248,8 @@ def diff_workbooks(
             actual_wb,
             expected_wb,
             sheet_name,
+            actual_ctx=actual_ctx,
+            expected_ctx=expected_ctx,
             max_cell_diffs=max_cell_diffs_per_sheet,
         )
         report.sheet_diffs.append(sd)
@@ -214,6 +290,8 @@ def _diff_sheet(
     expected_wb: openpyxl.Workbook,
     sheet_name: str,
     *,
+    actual_ctx: WorkbookContext,
+    expected_ctx: WorkbookContext,
     max_cell_diffs: int,
 ) -> SheetDiff:
     sd = SheetDiff(sheet=sheet_name)
@@ -241,17 +319,34 @@ def _diff_sheet(
     if not sd.column_order_match:
         return sd
 
+    # Cross-sheet alignment for sheets whose rows lack a row-unique row
+    # identifier of their own (e.g. Group classifications). Fires only
+    # when BOTH sides have a populated WorkbookContext - falls back to
+    # positional row matching otherwise so partial pipeline outputs
+    # (Sheet 8 written but Sheet 6 not yet) keep working.
+    if (
+        sheet_name in SHEETS_NEEDING_CROSS_SHEET_ALIGNMENT
+        and actual_ctx.is_populated
+        and expected_ctx.is_populated
+    ):
+        a_rows = _sort_rows_by_loan_canonical_key(a_rows, a_hdr, actual_ctx)
+        e_rows = _sort_rows_by_loan_canonical_key(e_rows, e_hdr, expected_ctx)
+        a_relabel: dict[Any, Any] = dict(actual_ctx.gid_to_canonical)
+        e_relabel: dict[Any, Any] = dict(expected_ctx.gid_to_canonical)
+        sd.notes.append(
+            "rows aligned by lex-smallest calc_loan_id from Cleaned ESMA loans"
+        )
+    else:
+        # Default: build a per-sheet relabel from in-sheet row data.
+        a_relabel = _build_group_relabel(a_hdr, a_rows)
+        e_relabel = _build_group_relabel(e_hdr, e_rows)
+
     # If row count differs, diff what we can and note the mismatch.
     if sd.actual_dimensions[0] != sd.expected_dimensions[0]:
         sd.notes.append(
             f"row-count mismatch: actual={sd.actual_dimensions[0]} "
             f"expected={sd.expected_dimensions[0]}"
         )
-
-    # Group-id canonicalisation: build relabel maps for both sides if any
-    # group-id column is present in this sheet.
-    a_relabel = _build_group_relabel(a_hdr, a_rows)
-    e_relabel = _build_group_relabel(e_hdr, e_rows)
 
     n_compared_rows = min(len(a_rows), len(e_rows))
     for r_idx in range(n_compared_rows):
@@ -321,6 +416,90 @@ def _cells_equal(actual: Any, expected: Any) -> tuple[bool, str]:
     if actual == expected:
         return True, ""
     return False, "value mismatch"
+
+
+def _build_workbook_context(wb: openpyxl.Workbook) -> WorkbookContext:
+    """Read the Cleaned ESMA loans sheet and derive the cross-sheet
+    canonicalisation context.
+
+    Returns _EMPTY_CONTEXT if the loans sheet is missing, has no rows,
+    or doesn't carry the expected (calc_loan_id, collateral_group_id)
+    columns. Callers must check `WorkbookContext.is_populated` before
+    using the maps.
+    """
+    if LOANS_CONTEXT_SHEET not in wb.sheetnames:
+        return _EMPTY_CONTEXT
+
+    header, rows = _read_sheet(wb[LOANS_CONTEXT_SHEET])
+    if not header or not rows:
+        return _EMPTY_CONTEXT
+    if (
+        LOANS_CONTEXT_LOAN_ID_COLUMN not in header
+        or LOANS_CONTEXT_GID_COLUMN not in header
+    ):
+        return _EMPTY_CONTEXT
+
+    loan_idx = header.index(LOANS_CONTEXT_LOAN_ID_COLUMN)
+    gid_idx = header.index(LOANS_CONTEXT_GID_COLUMN)
+
+    members: dict[Any, list[str]] = defaultdict(list)
+    for row in rows:
+        if loan_idx >= len(row) or gid_idx >= len(row):
+            continue
+        lid = row[loan_idx]
+        gid = row[gid_idx]
+        if lid is None or gid is None:
+            continue
+        members[gid].append(str(lid))
+
+    if not members:
+        return _EMPTY_CONTEXT
+
+    gid_to_min: dict[Any, str] = {gid: min(loans) for gid, loans in members.items()}
+    sorted_gids = sorted(gid_to_min.items(), key=lambda kv: kv[1])
+    gid_to_canonical: dict[Any, int] = {gid: i + 1 for i, (gid, _) in enumerate(sorted_gids)}
+
+    return WorkbookContext(
+        gid_to_canonical=gid_to_canonical,
+        gid_to_min_loan_id=gid_to_min,
+    )
+
+
+def _sort_rows_by_loan_canonical_key(
+    rows: list[tuple[Any, ...]],
+    header: tuple[str, ...],
+    ctx: WorkbookContext,
+) -> list[tuple[Any, ...]]:
+    """Sort rows by the lex-smallest calc_loan_id in their group.
+
+    Rows whose `collateral_group_id` is not present in the context's
+    map (corruption / orphan rows) sort to the end, ordered by the
+    string representation of their gid value for stability. Rows
+    missing the gid column entirely sort to the very end. Pure
+    set-membership ordering - no output column is used as a sort key,
+    so a parity bug in `loans` / `collaterals` / `is_full_set` /
+    `structure_type` cannot misalign rows.
+    """
+    if LOANS_CONTEXT_GID_COLUMN not in header:
+        return rows
+    gid_idx = header.index(LOANS_CONTEXT_GID_COLUMN)
+
+    # Tier (smaller tier sorts first):
+    #   0 = gid known in context (sort by min_loan_id)
+    #   1 = gid present but unknown to context (sort by str(gid))
+    #   2 = gid missing entirely
+    def sort_key(row: tuple[Any, ...]) -> tuple[int, str]:
+        if gid_idx >= len(row):
+            return (2, "")
+        gid = row[gid_idx]
+        if gid is None:
+            return (2, "")
+        min_loan = ctx.gid_to_min_loan_id.get(gid)
+        if min_loan is None:
+            return (1, str(gid))
+        return (0, min_loan)
+
+    return sorted(rows, key=sort_key)
 
 
 def _build_group_relabel(

@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
-from esma_milan.io_layer.write_workbook import write_stub_workbook
+from esma_milan.io_layer.write_workbook import write_pipeline_workbook
+from esma_milan.pipeline.classification import Stage5Output, run_stage5
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
@@ -52,6 +53,11 @@ class PipelineResult:
     """Bipartite-graph result from Stage 4 (None if Stage 4 didn't run).
     Carries loan_groups, collateral_groups, and edges_with_group, all
     keyed on a deterministic 1-indexed collateral_group_id."""
+
+    stage5: Stage5Output | None = None
+    """Group classifications from Stage 5 (None if Stage 5 didn't run).
+    Carries the (collateral_group_id, loans, collaterals, is_full_set,
+    structure_type) frame written to the "Group classifications" sheet."""
 
 
 def run_pipeline(
@@ -106,8 +112,13 @@ def run_pipeline(
     # --- Stage 4: bipartite graph + connected components -----------------
     stage4 = run_stage4(stage3.loans, stage3.properties)
 
-    # TODO Stages 5..10. Until they land, the output workbook stays an
-    # empty 10-sheet stub.
+    # --- Stage 5: classify groups into structure types 1-5 ---------------
+    stage5 = run_stage5(stage4)
+
+    # TODO Stages 6..10. Until they land, the output workbook only writes
+    # the sheets contributed by the stages that have shipped (currently
+    # just "Group classifications"); the other 9 stay empty so the
+    # parity harness's sheet-order check still passes.
 
     if dry_run:
         return PipelineResult(
@@ -116,6 +127,7 @@ def run_pipeline(
             stage2=stage2,
             stage3=stage3,
             stage4=stage4,
+            stage5=stage5,
         )
 
     # The final filename uses the pool_cutoff_date from loans (matches
@@ -129,7 +141,10 @@ def run_pipeline(
     deal_dir = output_dir / deal_name
     deal_dir.mkdir(parents=True, exist_ok=True)
     output_path = deal_dir / f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
-    write_stub_workbook(output_path)
+    write_pipeline_workbook(
+        output_path,
+        populated_sheets={"Group classifications": stage5.classifications},
+    )
 
     if verbose:
         log.info("pipeline_workbook_written", path=str(output_path))
@@ -140,6 +155,7 @@ def run_pipeline(
         stage2=stage2,
         stage3=stage3,
         stage4=stage4,
+        stage5=stage5,
     )
 
 
