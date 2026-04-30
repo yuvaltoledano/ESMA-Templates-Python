@@ -130,10 +130,17 @@ def _borrower_balances_sorted_desc(
     != "ND" & !is.na(m_loan_cb)`).
 
     Tie-breaks identical-balance borrowers by borrower_id ascending
-    so the output ordering is fully deterministic. Polars' group_by
-    output order is implementation-defined; sorting after aggregation
-    ensures Polars and R produce the same accumulation order on real
-    data.
+    so the output ordering is fully deterministic AND matches R's
+    `sort(decreasing=TRUE)` applied to the alphabetically-sorted
+    output of R's `aggregate(...)` (R's aggregate returns rows
+    sorted by group key; sort-desc on numeric values preserves
+    insertion order on ties).
+
+    Within-group sum order: Polars' `group_by("id").agg(pl.col("cb")
+    .sum())` sums values in storage order within each group, which
+    is the same row order R's `aggregate(..., FUN=sum)` uses. No
+    intra-group sort imposed - matching R's order rather than
+    layering Python-side determinism that would diverge.
     """
     df = pl.DataFrame({"id": borrower_ids, "cb": balances}).filter(
         pl.col("id").is_not_null()
@@ -143,8 +150,8 @@ def _borrower_balances_sorted_desc(
     if df.height == 0:
         return []
     agg = df.group_by("id").agg(pl.col("cb").sum().alias("cb"))
-    # Tie-break on id ascending: ensures two borrowers with identical
-    # totals don't reorder between runs / engines.
+    # Tie-break on id ascending: matches R's alphabetical group-key
+    # ordering preserved by sort-desc on numeric values.
     agg = agg.sort(["cb", "id"], descending=[True, False])
     return agg["cb"].to_list()
 
@@ -156,8 +163,10 @@ def _top_20_borrower_exposure(
 ) -> float | None:
     """sum(top 20 borrower balances) / total_cb.
 
-    Mirrors r_reference/R/pipeline.R:670-684. Returns None if total_cb
-    <= 0 or no eligible borrowers.
+    Mirrors r_reference/R/pipeline.R:670-684. Iterates the top-20
+    slice in descending order - same as R's `sum(head(borrower_balances,
+    20))` where `borrower_balances` is sort-desc. Returns None if
+    total_cb <= 0 or no eligible borrowers.
     """
     if total_cb <= 0:
         return None
@@ -174,18 +183,26 @@ def _effective_borrowers(
 ) -> float | None:
     """Inverse Herfindahl-Hirschman: 1 / sum((share)^2).
 
-    Mirrors r_reference/R/pipeline.R:670-684. Sums the squared shares
-    in ascending order (small-first) to minimise IEEE-754
-    accumulation error, matching the deterministic-sort discipline.
+    Mirrors r_reference/R/pipeline.R:670-684:
+
+        effective_borrowers <- 1 / sum((borrower_balances / total_cb)^2)
+
+    where `borrower_balances` is already sort-descending. R sums in
+    descending order; this function iterates the same desc-sorted
+    list directly without re-sorting. Imposing an ascending sort
+    here would diverge from R's accumulation order on IEEE-754 -
+    matching R is the goal, not Python-side determinism (see
+    R-repo issue tracker entry #10).
     """
     if total_cb <= 0:
         return None
     sorted_desc = _borrower_balances_sorted_desc(borrower_ids, balances)
     if not sorted_desc:
         return None
-    # Small-first accumulation: sort squared shares ascending.
-    shares_sq = sorted((b / total_cb) ** 2 for b in sorted_desc)
-    s = sum(shares_sq)
+    # Iterate in descending order - same as R's `sum((borrower_balances/total_cb)^2)`
+    # where borrower_balances is sort-desc. Do NOT re-sort: matching R's
+    # accumulation order is the goal.
+    s = sum((b / total_cb) ** 2 for b in sorted_desc)
     return 1.0 / s if s > 0 else None
 
 
@@ -198,9 +215,11 @@ def _weighted_mean(values: pl.Series, weights: pl.Series) -> float | None:
     """R `weighted.mean(values, weights, na.rm=TRUE)` equivalent.
 
     Skips index pairs where either values[i] or weights[i] is null /
-    NaN. Sorts surviving (value, weight) pairs by value ascending
-    before accumulating - keeps Polars and R in the same summation
-    order on real data.
+    NaN. NO sort applied - R's `weighted.mean` accumulates in input
+    row order, and Polars' `Series.sum()` after `filter` does the
+    same in storage order. Imposing a sort here would diverge from
+    R's accumulation order on IEEE-754 (see R-repo issue tracker
+    entry #10: matching R is the goal, not Python-side determinism).
     """
     df = pl.DataFrame({"v": values.cast(pl.Float64, strict=False),
                        "w": weights.cast(pl.Float64, strict=False)}).filter(
@@ -209,7 +228,6 @@ def _weighted_mean(values: pl.Series, weights: pl.Series) -> float | None:
     )
     if df.height == 0:
         return None
-    df = df.sort(["v", "w"])
     weight_sum = df["w"].sum()
     if weight_sum is None or weight_sum == 0:
         return None

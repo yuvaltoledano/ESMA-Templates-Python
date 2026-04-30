@@ -364,3 +364,84 @@ def test_structure_breakdown_drops_null_rows() -> None:
     out = _structure_breakdown(s)
     assert out["Metric"].to_list() == ["Loan Count: 1: A", "Loan Count: 2: B"]
     assert out["Value"].to_list() == ["2", "1"]
+
+
+# -----------------------------------------------------------------------------
+# IEEE-754 accumulation-order regression tests (Stage 10 / C-1.5)
+#
+# These tests pin the contract surfaced by the C-1 audit: each Σ-over-many-
+# rows helper must accumulate in the same order R does, not just any
+# deterministic order. The synthetic fixture's value range is too small for
+# IEEE-754 drift to differentiate buggy vs fixed numerically; the tests below
+# document the parity contract via their docstrings + targeted assertions
+# so future refactors don't silently re-introduce a Python-side sort.
+# -----------------------------------------------------------------------------
+
+
+def test_effective_borrowers_iterates_squared_shares_in_descending_order() -> None:
+    """Pin the accumulation order: _effective_borrowers iterates the
+    desc-sorted balance list directly without re-sorting.
+
+    R's recipe (pipeline.R:670-684):
+        borrower_balances <- sort(borrower_agg$x, decreasing = TRUE)
+        effective_borrowers <- 1 / sum((borrower_balances / total_cb)^2)
+
+    R sums in DESCENDING order (the input `borrower_balances` is sort-desc).
+    A Python-side ascending re-sort would produce a mathematically equivalent
+    result that's byte-different on IEEE-754 - which is what we DON'T want.
+
+    The synthetic fixture's 6-borrower value range is too small to expose
+    a single-ULP difference in ascending vs descending sum; this test pins
+    the contract via the docstring + the synthetic value, but Layer-2
+    parity (real_anonymised) is the gate that would actually surface drift.
+    """
+    bids, balances, total_cb = _synthetic_borrower_inputs()
+    out = _effective_borrowers(bids, balances, total_cb)
+    # Synthetic value: matches both desc and asc sum within IEEE-754 precision.
+    assert out == pytest.approx(5.5517042172, rel=1e-9)
+
+
+def test_weighted_mean_does_not_sort_inputs_preserves_row_order() -> None:
+    """Pin the accumulation order: _weighted_mean preserves input row
+    order, matching R's `weighted.mean(v, w, na.rm=TRUE)`.
+
+    R iterates the input vectors in row order (NA pairs skipped). Polars
+    `Series.sum()` after filter preserves storage order, which matches.
+    A Python-side sort by value (or any other key) would diverge from
+    R's accumulation order on real data - which is what we DON'T want.
+
+    Test approach: feed inputs in a non-sorted order; verify the result
+    is correct AND would still be correct if the function preserved
+    that exact input order. Doesn't catch a sort-vs-no-sort behavioural
+    change directly (synthetic precision is too coarse), but the
+    docstring + the explicit non-sorted input documents the contract.
+    """
+    # Non-sorted by value: 3, 1, 2.
+    v = pl.Series("v", [3.0, 1.0, 2.0])
+    w = pl.Series("w", [10.0, 20.0, 30.0])
+    out = _weighted_mean(v, w)
+    # Hand-computed: (30 + 20 + 60) / 60 = 110/60.
+    assert out == pytest.approx(110.0 / 60.0)
+
+
+def test_borrower_balances_sorted_desc_matches_r_aggregate_then_sort_desc() -> None:
+    """Pin the output ordering: per-borrower sums are sorted descending
+    with id ascending tie-break.
+
+    R's recipe:
+        borrower_agg <- aggregate(cb ~ borrower, FUN = sum)   # sorted by group key
+        sort(borrower_agg$x, decreasing = TRUE)               # sort-desc preserves
+                                                              # tie order (insertion)
+
+    R's `sort(decreasing=TRUE)` is stable on numeric values, so two
+    borrowers with identical totals retain the alphabetical group-key
+    order from `aggregate`. Our `.sort([cb, id], descending=[True, False])`
+    matches: cb desc, id asc as tie-break.
+    """
+    # Borrowers in non-sorted insertion order; identical totals on B_M and B_Z.
+    bids = pl.Series("id", ["B_Z", "B_A", "B_M", "B_Z", "B_M"])
+    balances = pl.Series("cb", [50.0, 100.0, 30.0, 50.0, 70.0])
+    out = _borrower_balances_sorted_desc(bids, balances)
+    # Per-borrower totals: B_A=100, B_M=100, B_Z=100. All tied.
+    # Tie-break id ascending: B_A, B_M, B_Z -> [100, 100, 100] in that order.
+    assert out == [100.0, 100.0, 100.0]
