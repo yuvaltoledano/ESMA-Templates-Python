@@ -26,6 +26,7 @@ from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.flatten import Stage7Output, run_stage7
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
+from esma_milan.pipeline.mapping_tables import compose_mapping_tables
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 from esma_milan.pipeline.valuation import Stage6Output, run_stage6
 
@@ -214,6 +215,13 @@ def run_pipeline(
     deal_dir.mkdir(parents=True, exist_ok=True)
     output_path = deal_dir / f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 
+    # Stage 8.5: compose the four mapping tables (Sheets 1-4) from the
+    # post-Stage-3 loans/properties + post-Stage-5 loans_enriched (the
+    # latter for the classification tail on "Loans to properties").
+    mapping_tables = compose_mapping_tables(
+        stage3.loans, stage3.properties, loans_enriched
+    )
+
     write_pipeline_workbook(
         output_path,
         populated_sheets={
@@ -221,6 +229,7 @@ def run_pipeline(
             "Cleaned ESMA properties": properties_enriched,
             "Group classifications": stage5.classifications,
             "Combined flattened pool": stage7.combined_flattened,
+            **mapping_tables,  # Stage 8.5: Sheets 1-4 (mapping tables)
         },
     )
 

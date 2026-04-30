@@ -29,10 +29,10 @@ SheetStatus = Literal["pending", "passing"]
 # a "passing" sheet must match cell-for-cell or the test fails.
 SHEET_STATUS: dict[str, SheetStatus] = {
     "Execution Summary": "pending",
-    "Loans to properties": "pending",
-    "Properties to loans": "pending",
-    "Borrowers to loans": "pending",
-    "Borrowers to properties": "pending",
+    "Loans to properties": "passing",  # Stage 8.5
+    "Properties to loans": "passing",  # Stage 8.5
+    "Borrowers to loans": "passing",  # Stage 8.5
+    "Borrowers to properties": "passing",  # Stage 8.5
     "Cleaned ESMA loans": "passing",  # Stage 6.5
     "Cleaned ESMA properties": "passing",  # Stage 6.5
     "Group classifications": "passing",  # Stage 5
