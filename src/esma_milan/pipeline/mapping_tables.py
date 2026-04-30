@@ -9,16 +9,6 @@ suffix-numbered columns. Only Loans to properties gets a classification
 tail (collateral_group_id + cross_collateralized_set + full_set +
 structure_type) appended after the pivot.
 
-R-repo finding #6 (logged in docs/r_repo_findings.md): R wraps the
-classification-tail join in tryCatch(...) at pipeline.R:458-464, silently
-swallowing errors. The Python port joins unconditionally so a failure
-surfaces as a real exception rather than as a sheet emitted without
-classification columns.
-
-R-repo finding #7 (logged in docs/r_repo_findings.md): R renames
-calc_loan_id -> loan_id at the top of this block but keeps calc_loan_id
-elsewhere in the pipeline; the join at line 460 has to bridge the two
-naming conventions. Python keeps R's renaming for parity.
 """
 
 from __future__ import annotations
@@ -107,10 +97,6 @@ def compose_mapping_tables(
         name_prefix="property_id",
     )
 
-    # Classification tail on loans_to_properties only. Mirrors
-    # pipeline.R:452-465. R wraps this in tryCatch silently swallowing
-    # errors (logged as R-repo finding #6); the Python port joins
-    # unconditionally so a failure surfaces.
     classification_tail = (
         loans_enriched.select(
             "calc_loan_id",
@@ -121,6 +107,7 @@ def compose_mapping_tables(
         )
         .unique(maintain_order=True)
     )
+    # Deviates from R: r_reference/R/pipeline.R:458-464 wraps this join in tryCatch silent-fallback. We fail loud — see R-repo issue tracker entry #6.
     loans_to_properties = loans_to_properties.join(
         classification_tail,
         left_on="loan_id",
