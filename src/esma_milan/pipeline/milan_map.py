@@ -623,6 +623,18 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
 # (regex / case_when / equality) with an explicit "branch not exercised
 # by synthetic fixture" comment in the test. Real-fixture parity in
 # CI nightly will catch any branch-level drift.
+#
+# Audit note (R-repo issue tracker entry #10, Stage 9.5): every helper
+# below calls `col.cast(pl.Utf8, strict=False)` defensively at entry,
+# under the assumption that callers feed already-categorical inputs
+# (post `_r_char_coerce_all`). If a future stage feeds a Float column,
+# the cast emits 17-sig-digit strings (e.g. "1.0" for what R would
+# write as "1") which then silently miss the categorical equality /
+# regex / lookup checks and emit the helper's fallback ("ND" / "5" /
+# etc.) - same outcome as R but for a different reason. The
+# convention is fine while inputs stay categorical; widening to Float
+# inputs would require routing through `_r_as_character_expr` first
+# to match R's as.character() output byte-equal.
 
 
 def _milan_social_programme_expr(special_scheme: pl.Expr) -> pl.Expr:
@@ -872,6 +884,16 @@ def _r_char_coerce_all(df: pl.DataFrame) -> pl.DataFrame:
         "TRUE"/"FALSE".
     Both are normalised here. Date / Int / other types use the default
     cast, which matches R for those types.
+
+    Audit note (R-repo issue tracker entry #10, Stage 9.5): the
+    fallback `else` branch handles Int (default cast emits "1", "123"
+    - matches R's as.character(<integer>)) and Date (default cast
+    emits "yyyy-mm-dd" - matches R's as.character(<Date>)). It would
+    NOT match R for Datetime/POSIXct columns (Polars emits
+    "yyyy-mm-dd HH:MM:SS.mmmuuu", R emits "yyyy-mm-dd HH:MM:SS").
+    Stages 1-7 don't produce Datetime - dates round-trip as Date
+    only - so this gap is latent. If a future stage introduces
+    Datetime, add an explicit branch here.
     """
     casts: list[pl.Expr] = []
     for col, dtype in zip(df.columns, df.dtypes, strict=True):
