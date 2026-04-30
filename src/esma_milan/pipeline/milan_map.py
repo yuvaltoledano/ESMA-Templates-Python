@@ -611,3 +611,183 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
         .then(pl.lit("ND"))
         .otherwise(_r_as_character_expr(days_in_arrears_num / 30.4375))
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-4: INFER + remaining CALC field helpers
+# ---------------------------------------------------------------------------
+#
+# Pinning strategy: for each helper, branches exercised by the synthetic
+# fixture are pinned against fixture-extracted values; branches not
+# exercised by the fixture are tested against the R source contract
+# (regex / case_when / equality) with an explicit "branch not exercised
+# by synthetic fixture" comment in the test. Real-fixture parity in
+# CI nightly will catch any branch-level drift.
+
+
+def _milan_social_programme_expr(special_scheme: pl.Expr) -> pl.Expr:
+    """Apply the Social Programme Type case_when from milan_mapping.R:732-739.
+
+    case_when short-circuits at first match (R semantic). All grepl
+    patterns are case-insensitive.
+
+      RTB | Right to Buy                      -> "1"
+      Tenant Purchase                          -> "2"
+      HTB | Help to Buy | Equity Loan          -> "3"
+      Shared Ownership | Part Buy Part Rent    -> "4"
+      ND special_scheme                        -> "6"
+      else                                     -> "5"
+    """
+    s = special_scheme.cast(pl.Utf8, strict=False)
+    nd = is_nd_expr(s)
+    return (
+        pl.when((~nd) & s.str.contains(r"(?i)RTB|Right to Buy"))
+        .then(pl.lit("1"))
+        .when((~nd) & s.str.contains(r"(?i)Tenant Purchase"))
+        .then(pl.lit("2"))
+        .when((~nd) & s.str.contains(r"(?i)HTB|Help to Buy|Equity Loan"))
+        .then(pl.lit("3"))
+        .when((~nd) & s.str.contains(r"(?i)Shared Ownership|Part Buy Part Rent"))
+        .then(pl.lit("4"))
+        .when(nd)
+        .then(pl.lit("6"))
+        .otherwise(pl.lit("5"))
+    )
+
+
+def _milan_borrower_type_expr(
+    employment_status: pl.Expr,
+    primary_income_type: pl.Expr,
+) -> pl.Expr:
+    """Apply Borrower Type case_when from milan_mapping.R:751-756.
+
+      employment == "NOEM" OR primary_income_type == "CORP" -> "2"
+      employment present and != "NOEM"                       -> "1"
+      else                                                    -> "ND"
+
+    R's `==` returns NA on NA inputs and case_when treats NA-LHS as
+    no-match. Mirror by gating each equality with `~is_nd_expr` so
+    a null/ND on either side falls through cleanly.
+    """
+    emp = employment_status.cast(pl.Utf8, strict=False)
+    inc = primary_income_type.cast(pl.Utf8, strict=False)
+    emp_nd = is_nd_expr(emp)
+    inc_nd = is_nd_expr(inc)
+    emp_eq_noem = (~emp_nd) & (emp == "NOEM")
+    inc_eq_corp = (~inc_nd) & (inc == "CORP")
+    emp_present_not_noem = (~emp_nd) & (emp != "NOEM")
+    return (
+        pl.when(emp_eq_noem | inc_eq_corp).then(pl.lit("2"))
+        .when(emp_present_not_noem).then(pl.lit("1"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_borrower_residency_expr(resident: pl.Expr) -> pl.Expr:
+    """Apply Borrower Residency case_when from milan_mapping.R:759-763.
+
+    Plain `==` on character (case-sensitive); "True" / "true" / etc.
+    fall through to "ND".
+    """
+    s = resident.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s == "TRUE").then(pl.lit("Y"))
+        .when(s == "FALSE").then(pl.lit("N"))
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_recourse_expr(recourse: pl.Expr) -> pl.Expr:
+    """Apply Recourse case_when from milan_mapping.R:859-863.
+
+    Y / N pass-through; everything else (including ND) -> "ND".
+    """
+    s = recourse.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s.is_in(["Y", "N"])).then(s)
+        .otherwise(pl.lit("ND"))
+    )
+
+
+def _milan_restructured_loan_expr(
+    date_of_restructuring: pl.Expr,
+    account_status: pl.Expr,
+) -> pl.Expr:
+    """Apply Restructured Loan case_when from milan_mapping.R:978-983.
+
+      date_of_restructuring is non-ND          -> "Y"
+      account_status in {RNAR, RARR}           -> "Y"
+      both date and status are ND              -> "ND"
+      else                                      -> "N"
+
+    R's `%in%` with NA on the LHS returns FALSE (not NA), so a NA
+    account_status falls through to the next branch. Mirror via
+    `is_nd_expr` gate.
+    """
+    d = date_of_restructuring.cast(pl.Utf8, strict=False)
+    s = account_status.cast(pl.Utf8, strict=False)
+    d_nd = is_nd_expr(d)
+    s_nd = is_nd_expr(s)
+    return (
+        pl.when(~d_nd).then(pl.lit("Y"))
+        .when((~s_nd) & s.is_in(["RNAR", "RARR"])).then(pl.lit("Y"))
+        .when(d_nd & s_nd).then(pl.lit("ND"))
+        .otherwise(pl.lit("N"))
+    )
+
+
+def _milan_mig_provider_expr(guarantor_type: pl.Expr) -> pl.Expr:
+    """Apply MIG Provider case_when from milan_mapping.R:1015-1021.
+
+    Plain `==` chain; null / ND / unknown codes fall to "No Guarantor".
+
+    Strings pinned against the synthetic fixture:
+      "NHG / Waarborgfonds Eigen Woningen"  - emitted for guarantor=NHGX
+      "No Guarantor"                         - emitted for ND/unknown
+    """
+    s = guarantor_type.cast(pl.Utf8, strict=False)
+    return (
+        pl.when(s == "NHGX").then(pl.lit("NHG / Waarborgfonds Eigen Woningen"))
+        .when(s == "FGAS").then(pl.lit("SGFGAS"))
+        .when(s == "CATN").then(pl.lit("Caution"))
+        .when(s == "OTHR").then(pl.lit("Other"))
+        .otherwise(pl.lit("No Guarantor"))
+    )
+
+
+def _milan_total_income_expr(
+    primary_income_num: pl.Expr,
+    secondary_income_num: pl.Expr,
+) -> pl.Expr:
+    """Apply Total Income case_when from milan_mapping.R:803-808.
+
+      both null              -> "ND"
+      one null               -> the other (R-formatted via %.15g)
+      else                   -> sum (R-formatted via %.15g)
+    """
+    p_null = primary_income_num.is_null()
+    s_null = secondary_income_num.is_null()
+    return (
+        pl.when(p_null & s_null).then(pl.lit("ND"))
+        .when(p_null).then(_r_as_character_expr(secondary_income_num))
+        .when(s_null).then(_r_as_character_expr(primary_income_num))
+        .otherwise(_r_as_character_expr(primary_income_num + secondary_income_num))
+    )
+
+
+def _milan_flexible_loan_amount_expr(
+    total_credit_limit_num: pl.Expr,
+    cpb_num: pl.Expr,
+) -> pl.Expr:
+    """Apply Flexible Loan Amount case_when from milan_mapping.R:670-675.
+
+      total_credit_limit null     -> "0"
+      tcl - cpb <= 0              -> "0"
+      else                        -> as.character(tcl - cpb)  (%.15g)
+    """
+    diff = total_credit_limit_num - cpb_num
+    return (
+        pl.when(total_credit_limit_num.is_null()).then(pl.lit("0"))
+        .when(diff <= 0).then(pl.lit("0"))
+        .otherwise(_r_as_character_expr(diff))
+    )
