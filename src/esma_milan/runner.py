@@ -22,6 +22,7 @@ from esma_milan.pipeline.enriched import (
     compose_loans_enriched,
     compose_properties_enriched,
 )
+from esma_milan.pipeline.exec_summary import compose_execution_summary
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.flatten import Stage7Output, run_stage7
 from esma_milan.pipeline.graph import GraphResult, run_stage4
@@ -228,9 +229,23 @@ def run_pipeline(
     # r_reference/R/milan_mapping.R.
     milan_pool = compose_milan_pool(stage7.combined_flattened)
 
+    # Stage 10: compose the Execution Summary (Sheet 1) from the MILAN
+    # pool + enriched loans/properties + combined_flattened. Mirrors
+    # the summary block in r_reference/R/pipeline.R:625-895.
+    execution_summary = compose_execution_summary(
+        deal_name=deal_name,
+        chosen_aggregation=chosen_aggregation,
+        pool_cutoff_date=cutoff,
+        milan_pool=milan_pool,
+        loans_enriched=loans_enriched,
+        properties_enriched=properties_enriched,
+        combined_flattened=stage7.combined_flattened,
+    )
+
     write_pipeline_workbook(
         output_path,
         populated_sheets={
+            "Execution Summary": execution_summary,  # Stage 10: Sheet 1
             "Cleaned ESMA loans": loans_enriched,
             "Cleaned ESMA properties": properties_enriched,
             "Group classifications": stage5.classifications,

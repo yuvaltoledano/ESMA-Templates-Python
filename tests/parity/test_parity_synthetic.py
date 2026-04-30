@@ -28,7 +28,7 @@ SheetStatus = Literal["pending", "passing"]
 # A "pending" sheet is xfailed (we expect a diff against the no-op stub);
 # a "passing" sheet must match cell-for-cell or the test fails.
 SHEET_STATUS: dict[str, SheetStatus] = {
-    "Execution Summary": "pending",
+    "Execution Summary": "passing",  # Stage 10 / C-2
     "Loans to properties": "passing",  # Stage 8.5
     "Properties to loans": "passing",  # Stage 8.5
     "Borrowers to loans": "passing",  # Stage 8.5
