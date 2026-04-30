@@ -1,11 +1,10 @@
-"""Tests for select_calc_loan_id.
+"""Tests for select_calc_loan_id and generate_id_column.
 
-Mirrors r_reference/tests/testthat/test-select-calc-loan-id.R one-for-one.
-Test names track the R `test_that()` strings so the correspondence is
-auditable.
-
-generate_id_column tests live in this file too once the helper lands;
-this commit covers select_calc_loan_id only.
+Mirrors r_reference/tests/testthat/test-select-calc-loan-id.R (20 cases)
+and the generate_id_column block in test-utils.R::"generate_id_column
+selects the correct column for borrower and property IDs" one-for-one.
+Test names track the R `test_that()` strings where applicable so the
+correspondence is auditable.
 """
 
 from __future__ import annotations
@@ -17,7 +16,10 @@ import polars as pl
 import pytest
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
-from esma_milan.pipeline.identifiers import select_calc_loan_id
+from esma_milan.pipeline.identifiers import (
+    generate_id_column,
+    select_calc_loan_id,
+)
 
 
 def _make_loans(
@@ -289,3 +291,134 @@ def test_full_coverage_on_both_candidates_no_warnings() -> None:
         warnings.simplefilter("error", UserWarning)
         result = select_calc_loan_id(loans, properties)
     assert result["calc_loan_id"].to_list() == ["L1", "L2", "L3"]
+
+
+# ---------------------------------------------------------------------------
+# generate_id_column — mirrors test-utils.R
+# ---------------------------------------------------------------------------
+
+
+def _two_col(a_name: str, a: Sequence[str | None], b_name: str, b: Sequence[str | None]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            a_name: pl.Series(list(a), dtype=pl.String),
+            b_name: pl.Series(list(b), dtype=pl.String),
+        }
+    )
+
+
+def test_generate_id_identical_columns_picks_original() -> None:
+    """Mirrors test-utils.R: 'Case 1: identical -> original'."""
+    df = _two_col(
+        "original_obligor_identifier", ["B1", "B2"],
+        "new_obligor_identifier", ["B1", "B2"],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    assert result["calc_borrower_id"].to_list() == ["B1", "B2"]
+
+
+def test_generate_id_new_more_unique_picks_new() -> None:
+    """Mirrors 'Case 2: new has more unique values -> new'."""
+    df = _two_col(
+        "original_collateral_identifier", ["P1", "P1"],
+        "new_collateral_identifier", ["P1", "P2"],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_collateral_identifier",
+        new_id_col="new_collateral_identifier",
+        output_col_name="calc_property_id",
+    )
+    assert result["calc_property_id"].to_list() == ["P1", "P2"]
+
+
+def test_generate_id_original_more_unique_picks_original() -> None:
+    """Mirrors 'Case 3: original has more unique values -> original'."""
+    df = _two_col(
+        "original_obligor_identifier", ["B1", "B2"],
+        "new_obligor_identifier", ["B1", "B1"],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    assert result["calc_borrower_id"].to_list() == ["B1", "B2"]
+
+
+def test_generate_id_tied_unique_count_picks_original() -> None:
+    """Both columns have the same unique count but are NOT identical
+    (different values). Tie-break: original wins."""
+    df = _two_col(
+        "original_obligor_identifier", ["B1", "B2"],
+        "new_obligor_identifier", ["X1", "X2"],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    assert result["calc_borrower_id"].to_list() == ["B1", "B2"]
+
+
+def test_generate_id_nulls_excluded_from_unique_count() -> None:
+    """is.na values must NOT count toward uniqueness - matches R's
+    `length(unique(x[!is.na(x)]))`. Original has 2 unique non-null
+    values, new has 1; original wins."""
+    df = _two_col(
+        "original_obligor_identifier", ["B1", "B2", None],
+        "new_obligor_identifier", ["X1", None, None],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    assert result["calc_borrower_id"].to_list() == ["B1", "B2", None]
+
+
+def test_generate_id_identical_with_matching_nulls_picks_original() -> None:
+    """Two columns with NAs in the same positions are still identical.
+    Mirrors R's `identical(original_ids, new_ids)` returning TRUE for
+    identical NA patterns."""
+    df = _two_col(
+        "original_obligor_identifier", ["B1", None, "B3"],
+        "new_obligor_identifier", ["B1", None, "B3"],
+    )
+    result = generate_id_column(
+        df,
+        original_id_col="original_obligor_identifier",
+        new_id_col="new_obligor_identifier",
+        output_col_name="calc_borrower_id",
+    )
+    assert result["calc_borrower_id"].to_list() == ["B1", None, "B3"]
+
+
+def test_generate_id_missing_original_col_errors() -> None:
+    df = pl.DataFrame({"new_obligor_identifier": ["B1"]})
+    with pytest.raises(ValueError, match="original_obligor_identifier"):
+        generate_id_column(
+            df,
+            original_id_col="original_obligor_identifier",
+            new_id_col="new_obligor_identifier",
+            output_col_name="calc_borrower_id",
+        )
+
+
+def test_generate_id_missing_new_col_errors() -> None:
+    df = pl.DataFrame({"original_obligor_identifier": ["B1"]})
+    with pytest.raises(ValueError, match="new_obligor_identifier"):
+        generate_id_column(
+            df,
+            original_id_col="original_obligor_identifier",
+            new_id_col="new_obligor_identifier",
+            output_col_name="calc_borrower_id",
+        )

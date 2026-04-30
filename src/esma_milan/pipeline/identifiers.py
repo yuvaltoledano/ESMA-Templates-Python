@@ -12,7 +12,8 @@ port mirrors them one-for-one (see tests/unit/test_identifiers.py).
 
 `generate_id_column` is the simpler helper used for borrower and property
 IDs, where uniqueness/coverage gates do not apply - it just picks the
-column with more unique non-null values, defaulting to original on tie.
+column with more unique non-null values, defaulting to original on tie
+or when the two columns are element-wise identical.
 """
 
 from __future__ import annotations
@@ -261,3 +262,77 @@ def _pct(x: float) -> str:
     """Format a fraction as percentage with 0.01 accuracy. Matches R's
     `scales::percent(x, accuracy = 0.01)` output: '99.00%', '85.71%'."""
     return f"{x * 100:.2f}%"
+
+
+def generate_id_column(
+    df: pl.DataFrame,
+    *,
+    original_id_col: str,
+    new_id_col: str,
+    output_col_name: str,
+) -> pl.DataFrame:
+    """Pick between two candidate ID columns by uniqueness count.
+
+    Mirrors r_reference/R/utils.R:173-206. Used for borrower and
+    property IDs where neither the duplicate-free constraint nor the
+    cross-table coverage check that select_calc_loan_id enforces is
+    appropriate.
+
+    Decision (in order):
+      1. Columns are element-wise identical (NAs in matching positions
+         too) -> use original (stable tie-break).
+      2. count_unique(non_null(original)) > count_unique(non_null(new))
+           -> use original.
+      3. count_unique(non_null(new)) > count_unique(non_null(original))
+           -> use new.
+      4. Tie -> use original.
+
+    The chosen column's values are appended to `df` as
+    `output_col_name` and the modified DataFrame returned.
+
+    Raises:
+        ValueError: if either named column is missing from `df`.
+    """
+    if original_id_col not in df.columns:
+        raise ValueError(
+            f"generate_id_column: df is missing column {original_id_col!r}"
+        )
+    if new_id_col not in df.columns:
+        raise ValueError(
+            f"generate_id_column: df is missing column {new_id_col!r}"
+        )
+
+    original_values = df[original_id_col].to_list()
+    new_values = df[new_id_col].to_list()
+
+    # Element-wise identity check (including NAs in the same positions).
+    # Polars Series equality returns False at null positions, so use
+    # the materialised lists for the identity test - matches R's
+    # `identical(original_ids, new_ids)` semantics.
+    identical = original_values == new_values
+
+    count_unique_original = len({v for v in original_values if v is not None})
+    count_unique_new = len({v for v in new_values if v is not None})
+
+    if identical:
+        chosen, source = original_values, "identical, using original"
+    elif count_unique_original > count_unique_new:
+        chosen, source = original_values, "original has more unique values"
+    elif count_unique_new > count_unique_original:
+        chosen, source = new_values, "new has more unique values"
+    else:
+        chosen, source = original_values, "tied, defaulting to original"
+
+    log.info(
+        "generate_id_column",
+        output_col=output_col_name,
+        original=original_id_col,
+        new=new_id_col,
+        n_unique_original=count_unique_original,
+        n_unique_new=count_unique_new,
+        decision=source,
+    )
+
+    return df.with_columns(
+        pl.Series(output_col_name, chosen, dtype=pl.String)
+    )
