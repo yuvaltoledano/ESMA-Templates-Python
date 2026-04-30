@@ -23,6 +23,7 @@ from esma_milan.pipeline.enriched import (
     compose_properties_enriched,
 )
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
+from esma_milan.pipeline.flatten import Stage7Output, run_stage7
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
@@ -66,6 +67,13 @@ class PipelineResult:
     didn't run). When the user passed an explicit `aggregation_method`
     argument, Stage 6 runs anyway as a sanity check; the explicit
     argument wins for the actual flatten in Stage 7."""
+
+    stage7: Stage7Output | None = None
+    """Combined flattened pool from Stage 7 (None if Stage 7 didn't run).
+    The frame is byte-equal to the R fixture's "Combined flattened pool"
+    sheet column-for-column; calc_current_LTV / calc_original_LTV /
+    calc_seasoning land here, and the calc_ rename + reorder from R's
+    pipeline.R:553-592 has been applied."""
 
     chosen_aggregation_method: str | None = None
     """The aggregation method actually used downstream. Equals the
@@ -130,16 +138,19 @@ def run_pipeline(
     # --- Stage 5: classify groups into structure types 1-5 ---------------
     stage5 = run_stage5(stage4)
 
+    # Compose loans_enriched / properties_enriched ONCE here. These are
+    # used by Stage 6 (detect_aggregation_method - extra cols are
+    # harmless), Stage 7 (flatten requires the full classification
+    # cols), and the workbook writer (Sheets 6/7). Mirrors the join
+    # sequence at r_reference/R/pipeline.R:405-450.
+    loans_enriched = compose_loans_enriched(
+        stage3.loans, stage4.loan_groups, stage5.classifications
+    )
+    properties_enriched = compose_properties_enriched(
+        stage3.properties, stage4.collateral_groups, stage5.classifications
+    )
+
     # --- Stage 6: detect aggregation method (by_loan vs by_group) --------
-    # Compose loans_enriched / properties_enriched for Stage 6's input:
-    # the cleaned tables joined with their collateral_group_id from the
-    # Stage 4 graph. Mirrors r_reference/R/pipeline.R:405-425.
-    loans_enriched = stage3.loans.join(
-        stage4.loan_groups, on="calc_loan_id", how="left"
-    )
-    properties_enriched = stage3.properties.join(
-        stage4.collateral_groups, on="calc_property_id", how="left"
-    )
     stage6 = run_stage6(loans_enriched, properties_enriched)
 
     # Resolve the aggregation method actually used downstream. Mirrors
@@ -161,10 +172,22 @@ def run_pipeline(
     if verbose:
         log.info("chosen_aggregation_method", method=chosen_aggregation)
 
-    # TODO Stages 7..10. Until they land, the output workbook only writes
-    # the sheets contributed by the stages that have shipped (currently
-    # just "Group classifications"); the other 9 stay empty so the
-    # parity harness's sheet-order check still passes.
+    # --- Stage 7: flatten + derived fields (Combined flattened pool) -----
+    # `chosen_aggregation` is a str at runtime constrained to {"by_loan",
+    # "by_group"} by the resolution above; cast for mypy strict.
+    from typing import cast
+
+    from esma_milan.pipeline.flatten import AggregationMethod
+
+    stage7 = run_stage7(
+        loans_enriched,
+        properties_enriched,
+        stage5.classifications,
+        aggregation_method=cast(AggregationMethod, chosen_aggregation),
+    )
+
+    # TODO Stages 8..10. Sheets 1-5 (Execution Summary + four mapping
+    # tables) and Sheet 10 (MILAN template pool) still pending.
 
     if dry_run:
         return PipelineResult(
@@ -175,6 +198,7 @@ def run_pipeline(
             stage4=stage4,
             stage5=stage5,
             stage6=stage6,
+            stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
         )
 
@@ -190,23 +214,13 @@ def run_pipeline(
     deal_dir.mkdir(parents=True, exist_ok=True)
     output_path = deal_dir / f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 
-    # Compose loans_enriched / properties_enriched for Sheets 6 and 7.
-    # Mirrors the joins at r_reference/R/pipeline.R:405-450; column
-    # order is fully determined by the input frames + Polars' deterministic
-    # left-join semantics. See pipeline.enriched.
-    loans_enriched_for_writer = compose_loans_enriched(
-        stage3.loans, stage4.loan_groups, stage5.classifications
-    )
-    properties_enriched_for_writer = compose_properties_enriched(
-        stage3.properties, stage4.collateral_groups, stage5.classifications
-    )
-
     write_pipeline_workbook(
         output_path,
         populated_sheets={
-            "Cleaned ESMA loans": loans_enriched_for_writer,
-            "Cleaned ESMA properties": properties_enriched_for_writer,
+            "Cleaned ESMA loans": loans_enriched,
+            "Cleaned ESMA properties": properties_enriched,
             "Group classifications": stage5.classifications,
+            "Combined flattened pool": stage7.combined_flattened,
         },
     )
 
@@ -221,6 +235,7 @@ def run_pipeline(
         stage4=stage4,
         stage5=stage5,
         stage6=stage6,
+        stage7=stage7,
         chosen_aggregation_method=chosen_aggregation,
     )
 

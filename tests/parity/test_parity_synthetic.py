@@ -36,7 +36,7 @@ SHEET_STATUS: dict[str, SheetStatus] = {
     "Cleaned ESMA loans": "passing",  # Stage 6.5
     "Cleaned ESMA properties": "passing",  # Stage 6.5
     "Group classifications": "passing",  # Stage 5
-    "Combined flattened pool": "pending",
+    "Combined flattened pool": "passing",  # Stage 7 / B-5
     "MILAN template pool": "pending",
 }
 

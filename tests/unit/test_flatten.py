@@ -9,8 +9,10 @@ four primary keys.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
@@ -837,3 +839,424 @@ def test_flatten_output_carries_expected_columns() -> None:
         "structure_type",
     }
     assert expected_subset.issubset(set(out.columns))
+
+
+# ---------------------------------------------------------------------------
+# B-5 / Stage 8: apply_derived_fields - LTVs + seasoning + calc_ rename + reorder
+# ---------------------------------------------------------------------------
+
+
+def _flat_minimal(
+    *,
+    group_ids: Sequence[int],
+    loan_ids: Sequence[str],
+    current_balances: Sequence[float | None],
+    original_balances: Sequence[float | None],
+    aggregated_property_values: Sequence[float | None],
+    pool_cutoff_dates: Sequence[date | None] | None = None,
+    origination_dates: Sequence[date | None] | None = None,
+) -> pl.DataFrame:
+    """Minimal flatten-shaped frame for testing apply_derived_fields.
+
+    Carries the columns apply_derived_fields touches; doesn't try to
+    reproduce the full 82-column flatten output.
+    """
+    n = len(loan_ids)
+    if pool_cutoff_dates is None:
+        pool_cutoff_dates = [date(2024, 6, 30)] * n
+    if origination_dates is None:
+        origination_dates = [date(2020, 1, 1)] * n
+    return pl.DataFrame(
+        {
+            "calc_loan_id": pl.Series(list(loan_ids), dtype=pl.String),
+            "collateral_group_id": pl.Series(list(group_ids), dtype=pl.Int64),
+            "current_principal_balance": pl.Series(
+                list(current_balances), dtype=pl.Float64
+            ),
+            "original_principal_balance": pl.Series(
+                list(original_balances), dtype=pl.Float64
+            ),
+            "aggregated_property_value": pl.Series(
+                list(aggregated_property_values), dtype=pl.Float64
+            ),
+            "pool_cutoff_date": pl.Series(
+                list(pool_cutoff_dates), dtype=pl.Date
+            ),
+            "origination_date": pl.Series(
+                list(origination_dates), dtype=pl.Date
+            ),
+        }
+    )
+
+
+# -- LTV: standard + boundary cases -----------------------------------------
+
+
+def test_apply_derived_fields_ltv_single_loan_group() -> None:
+    """Single loan in group: LTV = balance / property value."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[200000.0],
+        aggregated_property_values=[200000.0],
+    )
+    out = apply_derived_fields(df)
+    row = out.row(0, named=True)
+    assert row["calc_current_LTV"] == 0.5
+    assert row["calc_original_LTV"] == 1.0
+
+
+def test_apply_derived_fields_ltv_multi_loan_group_shared_denominator() -> None:
+    """Multi-loan group: BOTH LTVs share the same denominator
+    (sum of aggregated_property_value across the group)."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 1],
+        loan_ids=["L1", "L2"],
+        current_balances=[100000.0, 80000.0],
+        original_balances=[120000.0, 100000.0],
+        aggregated_property_values=[200000.0, 200000.0],
+    )
+    out = apply_derived_fields(df)
+    rows = out.to_dicts()
+    # Denom = 200k + 200k = 400k. CPB sum = 180k. OPB sum = 220k.
+    for r in rows:
+        assert r["calc_current_LTV"] == 0.45
+        assert r["calc_original_LTV"] == 0.55
+
+
+def test_apply_derived_fields_ltv_nan_in_numerator_coalesces_to_zero() -> None:
+    """User-direction asymmetry test: NaN in current_principal_balance
+    (numerator term) coalesces to 0 inside the sum but does NOT
+    collapse the LTV. Other rows in the group still contribute."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 1],
+        loan_ids=["L1", "L2"],
+        current_balances=[float("nan"), 100000.0],  # one NaN numerator
+        original_balances=[120000.0, 100000.0],
+        aggregated_property_values=[200000.0, 200000.0],
+    )
+    out = apply_derived_fields(df)
+    # NaN row contributes 0 to current sum -> CPB sum = 0 + 100k = 100k.
+    # Denom = 400k. LTV = 0.25.
+    rows = out.to_dicts()
+    for r in rows:
+        assert r["calc_current_LTV"] == 0.25
+        assert r["calc_original_LTV"] == 0.55
+
+
+def test_apply_derived_fields_ltv_one_nan_denominator_does_not_collapse() -> None:
+    """One row with NaN aggregated_property_value: that row contributes
+    0 to the denom sum, but other rows in the group still contribute.
+    LTV is still computable."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 1],
+        loan_ids=["L1", "L2"],
+        current_balances=[100000.0, 80000.0],
+        original_balances=[100000.0, 80000.0],
+        aggregated_property_values=[float("nan"), 200000.0],  # one NaN denom
+    )
+    out = apply_derived_fields(df)
+    rows = out.to_dicts()
+    # Denom sum = 0 + 200k = 200k. CPB sum = 180k. LTV = 0.9.
+    for r in rows:
+        assert r["calc_current_LTV"] == 0.9
+
+
+def test_apply_derived_fields_ltv_all_nan_denominator_collapses_to_null() -> None:
+    """User-direction third-addition boundary: ALL rows in the group
+    have NaN aggregated_property_value. After fill_nan(0).sum() the
+    denominator is 0, the > 0 gate fails, LTV collapses to null.
+    Different code path from explicit-zero-denom but same outcome.
+    """
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 1],
+        loan_ids=["L1", "L2"],
+        current_balances=[100000.0, 80000.0],
+        original_balances=[100000.0, 80000.0],
+        aggregated_property_values=[float("nan"), float("nan")],
+    )
+    out = apply_derived_fields(df)
+    rows = out.to_dicts()
+    for r in rows:
+        assert r["calc_current_LTV"] is None
+        assert r["calc_original_LTV"] is None
+
+
+def test_apply_derived_fields_ltv_zero_denominator_collapses_to_null() -> None:
+    """Explicit zero denominator: denom-gate fails -> LTV is null."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[100000.0],
+        aggregated_property_values=[0.0],
+    )
+    out = apply_derived_fields(df)
+    row = out.row(0, named=True)
+    assert row["calc_current_LTV"] is None
+    assert row["calc_original_LTV"] is None
+
+
+def test_apply_derived_fields_ltv_null_in_numerator_coalesces_to_zero() -> None:
+    """Polars null (vs NaN) in current_principal_balance: same behaviour
+    as NaN under our fill_null(0).fill_nan(0) chain."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 1],
+        loan_ids=["L1", "L2"],
+        current_balances=[None, 100000.0],
+        original_balances=[120000.0, 100000.0],
+        aggregated_property_values=[200000.0, 200000.0],
+    )
+    out = apply_derived_fields(df)
+    row = out.row(0, named=True)
+    assert row["calc_current_LTV"] == 0.25
+
+
+# -- Seasoning --------------------------------------------------------------
+
+
+def test_apply_derived_fields_seasoning_standard() -> None:
+    """Standard case: (cutoff - origination) days / 365.25.
+
+    Anchor: synthetic fixture's ORIG_001 has origination_date 2019-03-15
+    and pool_cutoff_date 2024-06-30 -> 1934 days -> 5.29500342231348."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[100000.0],
+        aggregated_property_values=[200000.0],
+        pool_cutoff_dates=[date(2024, 6, 30)],
+        origination_dates=[date(2019, 3, 15)],
+    )
+    out = apply_derived_fields(df)
+    assert out.row(0, named=True)["calc_seasoning"] == 1934 / 365.25
+
+
+def test_apply_derived_fields_seasoning_same_day_origination_is_zero() -> None:
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[100000.0],
+        aggregated_property_values=[200000.0],
+        pool_cutoff_dates=[date(2024, 6, 30)],
+        origination_dates=[date(2024, 6, 30)],
+    )
+    assert apply_derived_fields(df).row(0, named=True)["calc_seasoning"] == 0.0
+
+
+def test_apply_derived_fields_seasoning_future_origination_is_negative() -> None:
+    """Origination AFTER pool_cutoff (analyst-input data quality issue):
+    seasoning is negative, no warning, no error.
+
+    Matches R behaviour - R doesn't warn on future-dated origination
+    either. Treated as an analyst-input data quality issue rather than
+    a pipeline error; the issue is logged in the R-repo tracker for
+    upstream review, not blocking. The absence of a warning here is
+    INTENTIONAL, not an oversight - if a future contributor adds a
+    validation here, this test should fail loudly to prompt them to
+    re-read the parity contract before changing behaviour.
+    """
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[100000.0],
+        aggregated_property_values=[200000.0],
+        pool_cutoff_dates=[date(2024, 1, 1)],
+        origination_dates=[date(2024, 7, 1)],  # 6 months in the future
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)  # error if any warns
+        out = apply_derived_fields(df)
+    seasoning = out.row(0, named=True)["calc_seasoning"]
+    assert seasoning is not None
+    assert seasoning < 0
+
+
+def test_apply_derived_fields_seasoning_null_pool_cutoff_propagates_to_null() -> None:
+    """Per-row null pool_cutoff_date -> null calc_seasoning for that row.
+
+    Verified against r_reference/R/pipeline.R:540-546: R's
+    safe_as_date(NA, ...) returns NA_Date_, difftime(NA_Date_, x)
+    returns NA, divided by 365.25 stays NA. No warning, no error -
+    R relies on Stage 1's validate_required_columns to catch the
+    column-missing case (which IS a hard error)."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1, 2],
+        loan_ids=["L1", "L2"],
+        current_balances=[100000.0, 100000.0],
+        original_balances=[100000.0, 100000.0],
+        aggregated_property_values=[200000.0, 200000.0],
+        pool_cutoff_dates=[None, date(2024, 6, 30)],  # row 0 null
+        origination_dates=[date(2020, 1, 1), date(2020, 1, 1)],
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        out = apply_derived_fields(df)
+    rows = out.to_dicts()
+    assert rows[0]["calc_seasoning"] is None
+    assert rows[1]["calc_seasoning"] is not None
+    # The non-null row computes normally.
+    assert rows[1]["calc_seasoning"] == (date(2024, 6, 30) - date(2020, 1, 1)).days / 365.25
+
+
+def test_apply_derived_fields_seasoning_null_origination_propagates_to_null() -> None:
+    """Per-row null origination_date: same null-propagation as null
+    pool_cutoff_date - difftime(x, NA) = NA."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    df = _flat_minimal(
+        group_ids=[1],
+        loan_ids=["L1"],
+        current_balances=[100000.0],
+        original_balances=[100000.0],
+        aggregated_property_values=[200000.0],
+        pool_cutoff_dates=[date(2024, 6, 30)],
+        origination_dates=[None],
+    )
+    out = apply_derived_fields(df)
+    assert out.row(0, named=True)["calc_seasoning"] is None
+
+
+# -- calc_ rename -----------------------------------------------------------
+
+
+def test_apply_derived_fields_renames_to_calc_prefix() -> None:
+    """The 6 rename-with-calc-prefix columns + 2 custom-rename columns
+    should all flip to their calc_ names. R: pipeline.R:553-559."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    # Build a frame with the columns that get renamed. Add the LTV/seasoning
+    # input columns too so the helper doesn't error.
+    df = pl.DataFrame(
+        {
+            "calc_loan_id": ["L1"],
+            "current_principal_balance": [100.0],
+            "original_principal_balance": [100.0],
+            "pool_cutoff_date": pl.Series([date(2024, 1, 1)], dtype=pl.Date),
+            "origination_date": pl.Series([date(2020, 1, 1)], dtype=pl.Date),
+            # Rename targets:
+            "main_property_id": ["P1"],
+            "structure_type": ["1: one loan → one property"],
+            "collateral_group_id": pl.Series([1], dtype=pl.Int64),
+            "cross_collateralized_set": [False],
+            "full_set": [False],
+            "aggregated_property_value": [200.0],
+            "loans": pl.Series([1], dtype=pl.Int64),
+            "collaterals": pl.Series([1], dtype=pl.Int64),
+        }
+    )
+    out = apply_derived_fields(df)
+    # Pre-rename names must NOT survive.
+    for old in (
+        "main_property_id",
+        "structure_type",
+        "collateral_group_id",
+        "cross_collateralized_set",
+        "full_set",
+        "aggregated_property_value",
+        "loans",
+        "collaterals",
+    ):
+        assert old not in out.columns, f"unrenamed: {old}"
+    # Post-rename names must all be present.
+    for new in (
+        "calc_main_property_id",
+        "calc_structure_type",
+        "calc_collateral_group_id",
+        "calc_cross_collateralized_set",
+        "calc_full_set",
+        "calc_aggregated_property_value",
+        "calc_nr_loans_in_group",
+        "calc_nr_properties_in_group",
+    ):
+        assert new in out.columns, f"missing after rename: {new}"
+
+
+# -- Column reorder: exact match against the 85-col Sheet 9 fixture ---------
+
+
+def test_apply_derived_fields_full_pipeline_matches_fixture_column_order() -> None:
+    """The 85-column Sheet 9 layout is the parity contract. Pinned via
+    the full pipeline against the synthetic fixture: any drift in
+    apply_derived_fields' rename/reorder logic surfaces here as
+    "column N: actual=X expected=Y" rather than buried in a cell-by-cell
+    parity diff failure."""
+    import openpyxl
+
+    from esma_milan.pipeline.classification import run_stage5
+    from esma_milan.pipeline.enriched import (
+        compose_loans_enriched,
+        compose_properties_enriched,
+    )
+    from esma_milan.pipeline.filters import run_stage2
+    from esma_milan.pipeline.flatten import run_stage7
+    from esma_milan.pipeline.graph import run_stage4
+    from esma_milan.pipeline.identifiers import run_stage3
+    from esma_milan.pipeline.stage1 import run_stage1
+
+    repo_root = Path(__file__).resolve().parents[2]
+    syn = repo_root / "tests" / "fixtures" / "synthetic"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        s1 = run_stage1(
+            loans_path=syn / "loans.csv",
+            collaterals_path=syn / "collaterals.csv",
+            taxonomy_path=syn / "taxonomy.xlsx",
+        )
+        s2 = run_stage2(s1.loans, s1.properties)
+        s3 = run_stage3(s2.loans, s2.properties)
+        s4 = run_stage4(s3.loans, s3.properties)
+        s5 = run_stage5(s4)
+        le = compose_loans_enriched(s3.loans, s4.loan_groups, s5.classifications)
+        pe = compose_properties_enriched(
+            s3.properties, s4.collateral_groups, s5.classifications
+        )
+        s7 = run_stage7(le, pe, s5.classifications, aggregation_method="by_loan")
+
+    py_cols = list(s7.combined_flattened.columns)
+
+    wb = openpyxl.load_workbook(
+        syn / "expected_r_output.xlsx", read_only=True, data_only=True
+    )
+    ws = wb["Combined flattened pool"]
+    ws.reset_dimensions()
+    fixture_cols = list(next(ws.iter_rows(values_only=True)))
+
+    assert len(py_cols) == 85, f"expected 85 cols, got {len(py_cols)}"
+    assert py_cols == fixture_cols, (
+        "column order drift vs Sheet 9 fixture:\n"
+        + "\n".join(
+            f"  [{i:2d}] py={p!r:50s} fix={f!r}"
+            for i, (p, f) in enumerate(zip(py_cols, fixture_cols, strict=True))
+            if p != f
+        )
+    )
+
+

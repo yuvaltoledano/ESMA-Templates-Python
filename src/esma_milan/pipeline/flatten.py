@@ -1,24 +1,35 @@
-"""Stage 7: flatten_loan_collateral.
+"""Stage 7: flatten_loan_collateral + Stage 8: derived fields.
 
 This module hosts the helpers that compose the Stage-7 flattening
-pipeline. Helpers land one-per-commit in option-B granularity (see the
-PR description for the full plan):
+pipeline and the Stage-8 derived-fields work that produces the
+"Combined flattened pool" sheet.
 
   B-1 select_valuation_fields           -> pipeline/valuation.py
   B-2 calculate_unique_property_values  -> pipeline/valuation.py
   B-3 select_main_property              -> THIS MODULE (B-3 commit)
-  B-4 flatten_loan_collateral           -> THIS MODULE (this commit)
-  B-5 derived fields + Sheet-9 writer   -> runner / write_workbook
+  B-4 flatten_loan_collateral           -> THIS MODULE (B-4 commit)
+  B-5 apply_derived_fields + run_stage7 -> THIS MODULE (this commit)
 
-`flatten_loan_collateral` is the orchestrator that composes B-1..B-3
-into the one-row-per-loan output written to the Combined flattened
-pool sheet (Sheet 9). Mirrors r_reference/R/property_flattening_
-function.R::flatten_loan_collateral (lines 73-241).
+`flatten_loan_collateral` produces the one-row-per-loan frame with
+pro-rata aggregated_property_value, main-property fields, and
+final_valuation_method/date.
+
+`apply_derived_fields` is the post-flatten step that mirrors the inline
+block at r_reference/R/pipeline.R:506-592: compute calc_current_LTV /
+calc_original_LTV (group-level, NaN-coalescing per R's
+sum(coalesce(x,0), na.rm=TRUE) semantic), compute calc_seasoning
+(per-row, days/365.25), apply the calc_ prefix rename to a fixed
+allowlist of columns, and reorder columns so non-calc precede calc
+(in calc_target_order). The output is byte-equal to the fixture's
+"Combined flattened pool" sheet.
+
+`run_stage7` is the stage driver that chains flatten + apply_derived_fields.
 """
 
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
 from typing import Literal
 
 import polars as pl
@@ -417,3 +428,224 @@ def flatten_loan_collateral(
     )
 
     return final_output
+
+
+# ---------------------------------------------------------------------------
+# B-5 / Stage 8: derived fields + calc_ rename + column reorder
+# ---------------------------------------------------------------------------
+
+
+# Column ordering R applies after the calc_ rename (r_reference/R/pipeline.R:564-577).
+# Non-calc columns precede calc columns; calc columns appear in this order
+# first, then any remaining calc_* in their post-rename insertion order.
+# `calc_seasoning` is intentionally NOT in this list - R's pipeline.R:564-577
+# leaves it in remaining_calc_cols, so it lands at the very end of the sheet
+# (col 84 of 85 in the synthetic fixture).
+CALC_TARGET_ORDER: tuple[str, ...] = (
+    "calc_loan_id",
+    "calc_borrower_id",
+    "calc_collateral_group_id",
+    "calc_nr_loans_in_group",
+    "calc_nr_properties_in_group",
+    "calc_cross_collateralized_set",
+    "calc_full_set",
+    "calc_aggregated_property_value",
+    "calc_main_property_id",
+    "calc_structure_type",
+    "calc_current_LTV",
+    "calc_original_LTV",
+)
+
+# Columns that get a literal `calc_` prefix added (R: pipeline.R:553-557).
+_CALC_PREFIX_COLUMNS: tuple[str, ...] = (
+    "main_property_id",
+    "structure_type",
+    "collateral_group_id",
+    "cross_collateralized_set",
+    "full_set",
+    "aggregated_property_value",
+)
+
+# Custom rename map (R: pipeline.R:558-559).
+_CALC_CUSTOM_RENAMES: dict[str, str] = {
+    "loans": "calc_nr_loans_in_group",
+    "collaterals": "calc_nr_properties_in_group",
+}
+
+
+def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
+    """Compute calc_current_LTV, calc_original_LTV, calc_seasoning;
+    apply calc_ rename; reorder columns.
+
+    Mirrors r_reference/R/pipeline.R:506-592 (the post-flatten block).
+
+    LTV computation (per group, both LTVs share the same denominator):
+
+        denom = sum(coalesce(aggregated_property_value, 0), na.rm=TRUE)
+        calc_current_LTV  = ifelse(denom > 0,
+                                   sum(coalesce(current_principal_balance, 0),
+                                       na.rm=TRUE) / denom,
+                                   NA_real_)
+        calc_original_LTV = ifelse(denom > 0,
+                                   sum(coalesce(original_principal_balance, 0),
+                                       na.rm=TRUE) / denom,
+                                   NA_real_)
+
+    NaN handling (per user direction): R's `sum(coalesce(x,0), na.rm=TRUE)`
+    treats both null AND NaN as zero-contribution to the sum. Polars'
+    `is_null()` only catches Polars null, NOT NaN; sum without explicit
+    NaN handling propagates NaN. So we apply `fill_null(0).fill_nan(0)`
+    before each per-group sum so:
+
+      - one row with NaN numerator  -> fills to 0, doesn't collapse LTV
+      - one row with NaN denominator -> fills to 0, doesn't collapse LTV
+                                        (other rows in the group still
+                                         contribute)
+      - all rows NaN denominator    -> all fill to 0, sum=0, denom-gate
+                                        fails -> LTV = NaN (per user's
+                                        third addition: the boundary
+                                        case the synthetic fixture
+                                        doesn't exercise)
+      - explicit zero denominator   -> denom-gate fails -> LTV = NaN
+                                        (different code path, same
+                                        result; pinned separately)
+
+    Seasoning (per row):
+
+        calc_seasoning = (pool_cutoff_date - origination_date).days / 365.25
+
+    Per-row null behaviour (verified against r_reference/R/pipeline.R:540-546):
+    if either date is null on a row, the difference is null and seasoning
+    propagates as null. R does NOT warn or error on per-row null; the
+    column-missing case (caught at Stage 1's validate_required_columns)
+    is the only hard error. Documented and pinned by
+    `test_apply_derived_fields_seasoning_null_pool_cutoff_propagates_to_null`.
+
+    Negative seasoning (origination_date AFTER pool_cutoff_date) produces
+    a negative value with no warning, matching R behaviour. Treated as
+    an analyst-input data-quality issue rather than a pipeline error;
+    the issue is logged in the R-repo tracker for upstream review.
+
+    Calc rename + reorder (R: pipeline.R:553-592):
+
+      1. main_property_id, structure_type, collateral_group_id,
+         cross_collateralized_set, full_set, aggregated_property_value
+         get a literal `calc_` prefix.
+      2. loans -> calc_nr_loans_in_group; collaterals ->
+         calc_nr_properties_in_group.
+      3. Reorder: non-calc cols first (in their existing order), then
+         calc cols in CALC_TARGET_ORDER, then any remaining calc_* (in
+         post-rename insertion order). For the synthetic fixture this
+         puts calc_seasoning last (col 84 of 85).
+
+    Args:
+        flattened: output of `flatten_loan_collateral`.
+
+    Returns:
+        The combined flattened pool frame in fixture-byte-equal column
+        order, ready for the workbook writer.
+    """
+    df = flattened
+
+    # -- LTVs: per-group sums with NaN-as-0 + null-as-0 + denom-gate.
+    df = df.with_columns(
+        _agg_sum=(
+            pl.col("aggregated_property_value")
+            .fill_null(0.0)
+            .fill_nan(0.0)
+            .sum()
+            .over("collateral_group_id")
+        ),
+        _cpb_sum=(
+            pl.col("current_principal_balance")
+            .fill_null(0.0)
+            .fill_nan(0.0)
+            .sum()
+            .over("collateral_group_id")
+        ),
+        _opb_sum=(
+            pl.col("original_principal_balance")
+            .fill_null(0.0)
+            .fill_nan(0.0)
+            .sum()
+            .over("collateral_group_id")
+        ),
+    ).with_columns(
+        calc_current_LTV=pl.when(pl.col("_agg_sum") > 0)
+        .then(pl.col("_cpb_sum") / pl.col("_agg_sum"))
+        .otherwise(None),
+        calc_original_LTV=pl.when(pl.col("_agg_sum") > 0)
+        .then(pl.col("_opb_sum") / pl.col("_agg_sum"))
+        .otherwise(None),
+    ).drop("_agg_sum", "_cpb_sum", "_opb_sum")
+
+    # -- Seasoning: per row, (pool_cutoff_date - origination_date).days / 365.25.
+    df = df.with_columns(
+        calc_seasoning=(
+            (pl.col("pool_cutoff_date") - pl.col("origination_date"))
+            .dt.total_days()
+            .cast(pl.Float64)
+            / 365.25
+        )
+    )
+
+    # -- Calc renames.
+    rename_map: dict[str, str] = {
+        col: f"calc_{col}" for col in _CALC_PREFIX_COLUMNS if col in df.columns
+    }
+    rename_map.update(
+        {old: new for old, new in _CALC_CUSTOM_RENAMES.items() if old in df.columns}
+    )
+    if rename_map:
+        df = df.rename(rename_map)
+
+    # -- Reorder.
+    all_cols = df.columns
+    calc_cols = [c for c in all_cols if c.startswith("calc_")]
+    other_cols = [c for c in all_cols if not c.startswith("calc_")]
+    ordered_calc = [c for c in CALC_TARGET_ORDER if c in calc_cols]
+    remaining_calc = [c for c in calc_cols if c not in ordered_calc]
+    final_calc_cols = ordered_calc + remaining_calc
+
+    return df.select(*other_cols, *final_calc_cols)
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 driver
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Stage7Output:
+    """Output of Stage 7 + Stage 8 combined.
+
+    `combined_flattened` is the frame written to the workbook's
+    "Combined flattened pool" sheet, post-flatten, with derived fields
+    applied and column order matching the R fixture exactly.
+    """
+
+    combined_flattened: pl.DataFrame
+
+
+def run_stage7(
+    loans_enriched: pl.DataFrame,
+    properties_enriched: pl.DataFrame,
+    group_classification: pl.DataFrame,
+    *,
+    aggregation_method: AggregationMethod = "by_loan",
+) -> Stage7Output:
+    """Stage 7 driver. Composes flatten_loan_collateral with
+    apply_derived_fields to produce the Combined flattened pool frame.
+
+    Naming consistency with run_stage1..run_stage6. The single Stage7Output
+    covers what R's pipeline.R does inline at lines 491-558 (call
+    flatten_loan_collateral, then compute LTVs/seasoning, then apply the
+    calc_ rename + reorder)."""
+    flattened = flatten_loan_collateral(
+        loans_enriched,
+        properties_enriched,
+        group_classification,
+        aggregation_method=aggregation_method,
+    )
+    combined = apply_derived_fields(flattened)
+    return Stage7Output(combined_flattened=combined)
