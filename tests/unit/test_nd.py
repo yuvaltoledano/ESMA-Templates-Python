@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import math
 
-from esma_milan.nd import is_nd
+import polars as pl
+
+from esma_milan.nd import is_nd, is_nd_expr
 
 
 def test_recognises_all_nd_codes() -> None:
@@ -42,3 +44,25 @@ def test_does_not_match_numeric_or_bool_values() -> None:
     assert not is_nd(0.0)
     assert not is_nd(False)
     assert not is_nd(True)
+
+
+def test_is_nd_expr_matches_scalar_is_nd_on_each_token() -> None:
+    """The Polars-expression form must match the scalar contract row-for-row."""
+    values = [
+        None,
+        "NA", "ND", "ND1", "ND2", "ND3", "ND4", "ND5",
+        "", " ", "\t", "\n", " \t\n ",
+        "PERF", "ARRE", "0", "x", "NA ",  # "NA " has trailing space, not in token set
+    ]
+    df = pl.DataFrame({"x": values}, schema={"x": pl.Utf8})
+    result = df.select(is_nd_expr(pl.col("x")).alias("is_nd"))["is_nd"].to_list()
+    expected = [is_nd(v) for v in values]
+    assert result == expected, list(zip(values, result, expected, strict=True))
+
+
+def test_is_nd_expr_trailing_space_token_is_not_nd() -> None:
+    # R's `x %in% c("ND",...)` is exact match (no strip). "NA " has a
+    # trailing space, so it's neither an exact ND token nor whitespace-only.
+    df = pl.DataFrame({"x": ["NA ", "ND ", " ND"]}, schema={"x": pl.Utf8})
+    result = df.select(is_nd_expr(pl.col("x")).alias("is_nd"))["is_nd"].to_list()
+    assert result == [False, False, False]
