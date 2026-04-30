@@ -18,6 +18,7 @@ import structlog
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
 from esma_milan.io_layer.write_workbook import write_stub_workbook
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
+from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 
@@ -46,6 +47,11 @@ class PipelineResult:
     """ID-augmented + intersection-filtered tables from Stage 3 (None if
     Stage 3 didn't run). Carries calc_loan_id, calc_borrower_id on
     loans and calc_property_id on properties."""
+
+    stage4: GraphResult | None = None
+    """Bipartite-graph result from Stage 4 (None if Stage 4 didn't run).
+    Carries loan_groups, collateral_groups, and edges_with_group, all
+    keyed on a deterministic 1-indexed collateral_group_id."""
 
 
 def run_pipeline(
@@ -97,12 +103,19 @@ def run_pipeline(
         ),
     )
 
-    # TODO Stages 4..10. Until they land, the output workbook stays an
+    # --- Stage 4: bipartite graph + connected components -----------------
+    stage4 = run_stage4(stage3.loans, stage3.properties)
+
+    # TODO Stages 5..10. Until they land, the output workbook stays an
     # empty 10-sheet stub.
 
     if dry_run:
         return PipelineResult(
-            output_path=None, stage1=stage1, stage2=stage2, stage3=stage3
+            output_path=None,
+            stage1=stage1,
+            stage2=stage2,
+            stage3=stage3,
+            stage4=stage4,
         )
 
     # The final filename uses the pool_cutoff_date from loans (matches
@@ -122,7 +135,11 @@ def run_pipeline(
         log.info("pipeline_workbook_written", path=str(output_path))
 
     return PipelineResult(
-        output_path=output_path, stage1=stage1, stage2=stage2, stage3=stage3
+        output_path=output_path,
+        stage1=stage1,
+        stage2=stage2,
+        stage3=stage3,
+        stage4=stage4,
     )
 
 

@@ -112,6 +112,34 @@ def test_missing_sheet_noted(tmp_path: Path) -> None:
     assert not t.actual_present
 
 
+def test_group_id_canonicalisation_works_on_property_sheets(tmp_path: Path) -> None:
+    """The Cleaned ESMA properties sheet has no calc_loan_id column; the
+    canonicalisation falls through the priority list to calc_property_id
+    so group-id relabelling still works for that sheet's group IDs."""
+    actual = {
+        "Cleaned ESMA properties": [
+            ["calc_property_id", "collateral_group_id"],
+            ["P1", 5],
+            ["P2", 5],
+            ["P3", 9],
+        ]
+    }
+    expected = {
+        "Cleaned ESMA properties": [
+            ["calc_property_id", "collateral_group_id"],
+            ["P1", 1],
+            ["P2", 1],
+            ["P3", 2],
+        ]
+    }
+    a = tmp_path / "a.xlsx"
+    b = tmp_path / "b.xlsx"
+    _write_xlsx(a, actual)
+    _write_xlsx(b, expected)
+    rep = diff_workbooks(a, b)
+    assert rep.passed, "property-sheet canonicalisation should mask label permutation"
+
+
 def test_group_id_canonicalisation_handles_relabelling(tmp_path: Path) -> None:
     """Same partition, different integer labels -> diff passes."""
     # Loans L1, L2 in group X; loan L3 alone in group Y. R might label

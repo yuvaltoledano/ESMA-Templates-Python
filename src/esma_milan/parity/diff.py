@@ -37,15 +37,27 @@ GROUP_ID_COLUMNS: frozenset[str] = frozenset({
     "Additional data 4 - calc_collateral_group_id",
 })
 
-# When canonicalising group IDs we need to know which column holds the loan
-# ID per row, so we can pick "sorted min calc_loan_id" as the canonical
-# group label. Different sheets use different loan-ID column names.
-LOAN_ID_COLUMNS_BY_PRIORITY: tuple[str, ...] = (
+# When canonicalising group IDs we need to know which column holds a
+# row-unique identifier per row, so we can pick "sorted min identifier"
+# as the canonical group label. Different sheets use different
+# row-identifier columns; the priority list is searched in order and
+# the first present column wins.
+NODE_ID_COLUMNS_BY_PRIORITY: tuple[str, ...] = (
+    # Loan-side row identifiers (Cleaned ESMA loans, Combined flattened
+    # pool, MILAN template pool).
     "calc_loan_id",
     "Loan Identifier",
     "Additional data 1 - calc_loan_id",
     "loan_id",
     "new_underlying_exposure_identifier",
+    # Property-side row identifiers (Cleaned ESMA properties). The
+    # property sheet has no calc_loan_id column, so we fall through to
+    # property-id columns. underlying_exposure_identifier is NOT
+    # row-unique on the property sheet (a single loan can back multiple
+    # properties), so calc_property_id is preferred.
+    "calc_property_id",
+    "Property Identifier",
+    "Additional data 3 - calc_main_property_id",
 )
 
 
@@ -326,7 +338,7 @@ def _build_group_relabel(
         return {}
     group_idx = header.index(group_col)
 
-    loan_col = next((c for c in LOAN_ID_COLUMNS_BY_PRIORITY if c in header), None)
+    loan_col = next((c for c in NODE_ID_COLUMNS_BY_PRIORITY if c in header), None)
     if loan_col is None:
         return {}
     loan_idx = header.index(loan_col)
