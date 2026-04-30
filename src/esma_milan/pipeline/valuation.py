@@ -66,19 +66,20 @@ class Stage6Output:
     message: str
 
 
-def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
-    """Add a `valuation_amount` column per the Stage-1/Stage-2 selection rule.
+def _add_selection_columns(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add the four internal Stage-1/Stage-2 working columns to `properties`.
 
-    Stage 1: prefer current valuation if `current_valuation_method` is
-             in VALUATION_METHODS_FULL_INSPECTION (FIEI, FOEI); else
-             original.
-    Stage 2: if the chosen amount is null OR <= MIN_VALID_PROPERTY_VALUE,
-             flip to the other valuation.
+    Encapsulates the shared logic between `select_valuation_amount` and
+    `select_valuation_fields` so neither helper duplicates the Stage-1
+    pick / Stage-2 flip rule. Returns a new frame with:
 
-    Mirrors the inline mutate at r_reference/R/utils.R:473-481.
-    Stage 7 will land a sibling helper that also emits valuation_method
-    and valuation_date for the MILAN Property Valuation Type / Date
-    columns.
+      _initial_use_current : bool, True if current_valuation_method
+                             is in VALUATION_METHODS_FULL_INSPECTION.
+      _initial_amount      : the Stage-1 chosen amount.
+      _is_bad_value        : True if _initial_amount is null or
+                             <= MIN_VALID_PROPERTY_VALUE (= 10).
+      _final_use_current   : the Stage-2 final pick after flipping if
+                             the initial was bad.
     """
     return (
         properties.with_columns(
@@ -102,16 +103,103 @@ def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
             .then(~pl.col("_initial_use_current"))
             .otherwise(pl.col("_initial_use_current")),
         )
-        .with_columns(
+    )
+
+
+def _drop_selection_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Drop the four internal columns added by `_add_selection_columns`."""
+    return df.drop(
+        "_initial_use_current",
+        "_initial_amount",
+        "_is_bad_value",
+        "_final_use_current",
+    )
+
+
+def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add a `valuation_amount` column per the Stage-1/Stage-2 selection rule.
+
+    Stage 1: prefer current valuation if `current_valuation_method` is
+             in VALUATION_METHODS_FULL_INSPECTION (FIEI, FOEI); else
+             original.
+    Stage 2: if the chosen amount is null OR <= MIN_VALID_PROPERTY_VALUE,
+             flip to the other valuation.
+
+    Mirrors the inline mutate at r_reference/R/utils.R:473-481.
+    Used by `detect_aggregation_method` (Stage 6) where only the
+    amount matters; Stage 7's `flatten_loan_collateral` uses the
+    sibling `select_valuation_fields` to also surface
+    valuation_method and valuation_date for the MILAN Property
+    Valuation Type / Date fields.
+    """
+    return _drop_selection_columns(
+        _add_selection_columns(properties).with_columns(
             valuation_amount=pl.when(pl.col("_final_use_current"))
             .then(pl.col("current_valuation_amount"))
             .otherwise(pl.col("original_valuation_amount")),
         )
-        .drop(
-            "_initial_use_current",
-            "_initial_amount",
-            "_is_bad_value",
-            "_final_use_current",
+    )
+
+
+def select_valuation_fields(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add `valuation_method`, `valuation_date`, `valuation_amount`.
+
+    Full version of the Stage-1/Stage-2 selection rule used by Stage 7
+    flattening. Mirrors `get_valuation_fields()` in
+    r_reference/R/property_flattening_function.R:84-101:
+
+        df |>
+          mutate(
+            initial_use_current = current_valuation_method %in%
+                                  VALUATION_METHODS_FULL_INSPECTION,
+            initial_amount      = if_else(initial_use_current,
+                                          current_valuation_amount,
+                                          original_valuation_amount),
+            is_bad_value        = is.na(initial_amount) |
+                                  initial_amount <= MIN_VALID_PROPERTY_VALUE,
+            final_use_current   = if_else(is_bad_value,
+                                          !initial_use_current,
+                                          initial_use_current),
+            valuation_method    = if_else(final_use_current,
+                                          current_valuation_method,
+                                          original_valuation_method),
+            valuation_date      = if_else(final_use_current,
+                                          current_valuation_date,
+                                          original_valuation_date),
+            valuation_amount    = if_else(final_use_current,
+                                          current_valuation_amount,
+                                          original_valuation_amount),
+          ) |>
+          select(-any_of(c("initial_use_current", "initial_amount",
+                           "is_bad_value", "final_use_current")))
+
+    The crucial property the MILAN Property Valuation Type / Date
+    contract relies on: when Stage 2 flips, ALL THREE of method, date,
+    and amount come from the same source (current OR original). They
+    never split. This is what `final_valuation_method` /
+    `final_valuation_date` propagation in Stage 7 carries forward to
+    MILAN cols 73/74. Pinned by the asymmetric-flip unit test in
+    `tests/unit/test_valuation.py`.
+
+    Input columns required:
+      current_valuation_method, current_valuation_date,
+      current_valuation_amount, original_valuation_method,
+      original_valuation_date, original_valuation_amount.
+
+    Output: input frame + `valuation_method`, `valuation_date`,
+    `valuation_amount` appended.
+    """
+    return _drop_selection_columns(
+        _add_selection_columns(properties).with_columns(
+            valuation_method=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_method"))
+            .otherwise(pl.col("original_valuation_method")),
+            valuation_date=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_date"))
+            .otherwise(pl.col("original_valuation_date")),
+            valuation_amount=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_amount"))
+            .otherwise(pl.col("original_valuation_amount")),
         )
     )
 
