@@ -353,3 +353,115 @@ def _ensure_source_columns(df: pl.DataFrame, expected: Sequence[str]) -> pl.Data
         stacklevel=2,
     )
     return df.with_columns([pl.lit("ND").alias(c) for c in missing])
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-2: per-property ranking + cumulative-sum CB fields
+# ---------------------------------------------------------------------------
+
+
+def _attach_ranking(df: pl.DataFrame) -> pl.DataFrame:
+    """Add `_ppb_num` and `_milan_ranking` (dense_rank within property).
+
+    Mirrors r_reference/R/milan_mapping.R:478-494:
+
+        .ppb_numeric = if_else(is_nd(prior_principal_balances), 0, as.numeric(...))
+        .milan_ranking = dense_rank(.ppb_numeric)   # within calc_main_property_id
+
+    ND prior_principal_balances values collapse to 0 *before* ranking,
+    so a row with ND ppb gets the lowest rank within its property
+    (rank 1 if no other row has a smaller ppb). dplyr's dense_rank
+    starts at 1 with no gaps; Polars' rank(method="dense") matches.
+    """
+    return df.with_columns(
+        _ppb_num=pl.when(is_nd_expr(pl.col("prior_principal_balances")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("prior_principal_balances")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+    ).with_columns(
+        _milan_ranking=pl.col("_ppb_num")
+        .rank(method="dense")
+        .over("calc_main_property_id")
+        .cast(pl.Int64),
+    )
+
+
+def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
+    """Add `_cpb_num`, `_ppue_num`, `_cpb_sum_at_rank`, `_cpb_cumsum_below`,
+    `_milan_ext_prior_ranks_cb`, `_milan_pari_passu_not_in_pool`.
+
+    Mirrors r_reference/R/milan_mapping.R:498-555. The R recipe:
+
+      1. Coerce CPB and PPUE to numeric, ND -> 0.
+      2. Per-(property, rank) sum of CPB (".cpb_sum_at_rank").
+      3. Per-property, cum_sum of step-2 in rank-ascending order, lagged
+         by 1 with default 0 (".cpb_cumsum_below" - the sum of CB at
+         strictly lower ranks within the same property).
+      4. Join (property, rank) totals back to the row-level frame.
+      5. Compute the two final fields:
+         - .milan_ext_prior_ranks_cb = max(0, ppb - cumsum_below)
+         - .milan_pari_passu_not_in_pool = max(0, ppue - sum_at_rank)
+
+    Asymmetric defaults documented as R-repo issue tracker entry #9
+    (probably-intentional Moody's MILAN spec quirk): External Prior
+    displays "ND" on ND ppb input while Pari Passu displays "0" on ND
+    ppue input. Both float values are 0 in those cases (since ND
+    collapses to 0 before subtraction); the asymmetry lives entirely in
+    the B-5 transmute, not here.
+    """
+    df = df.with_columns(
+        _cpb_num=pl.when(is_nd_expr(pl.col("current_principal_balance")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("current_principal_balance")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+        _ppue_num=pl.when(is_nd_expr(pl.col("pari_passu_underlying_exposures")))
+        .then(pl.lit(0.0))
+        .otherwise(
+            pl.col("pari_passu_underlying_exposures")
+            .cast(pl.Utf8, strict=False)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
+        ),
+    )
+
+    # Build the per-(property, rank) totals + per-property cumsum-below.
+    # Mirrors R's `summarise(...) |> arrange(...) |> mutate(lag(cumsum(...)))`.
+    # Sort by (property, rank) ascending so the cum_sum within property
+    # respects rank order; over(property) keeps the cumsum from bleeding
+    # across properties.
+    ranking_sums = (
+        df.group_by(["calc_main_property_id", "_milan_ranking"])
+        .agg(_cpb_sum_at_rank=pl.col("_cpb_num").sum())
+        .sort(["calc_main_property_id", "_milan_ranking"])
+        .with_columns(
+            _cpb_cumsum_below=pl.col("_cpb_sum_at_rank")
+            .cum_sum()
+            .shift(1, fill_value=0.0)
+            .over("calc_main_property_id"),
+        )
+    )
+
+    df = df.join(
+        ranking_sums,
+        on=["calc_main_property_id", "_milan_ranking"],
+        how="left",
+    )
+
+    return df.with_columns(
+        _milan_ext_prior_ranks_cb=pl.max_horizontal(
+            pl.lit(0.0),
+            pl.col("_ppb_num") - pl.col("_cpb_cumsum_below"),
+        ),
+        _milan_pari_passu_not_in_pool=pl.max_horizontal(
+            pl.lit(0.0),
+            pl.col("_ppue_num") - pl.col("_cpb_sum_at_rank"),
+        ),
+    )
