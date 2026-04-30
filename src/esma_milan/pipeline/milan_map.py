@@ -269,17 +269,17 @@ def _divide_by_100_expr(col: pl.Expr) -> pl.Expr:
         val <- safe_as_num(x)
         if_else(is.na(val), "ND", as.character(val / 100))
 
-    Polars Float -> Utf8 cast formats with up to ~17 significant digits
-    and no trailing zero-stripping; for typical interest-rate inputs
-    (e.g. 12.5 -> 0.125) this matches R's `as.character()` behaviour
-    one-for-one. Pin via fixture rather than asserting general string-
-    format equivalence.
+    Routes the float result through _r_as_character_expr (%.15g) to
+    match R's as.character() byte-equal: Polars' default Float -> Utf8
+    cast emits 17 sig digits and exposes IEEE-754 noise (e.g.
+    "0.6900000000000001" for 69/100), while R's as.character() rounds
+    to 15 sig digits and emits "0.69".
     """
     val = _safe_as_num_expr(col)
     return (
         pl.when(val.is_null())
         .then(pl.lit("ND"))
-        .otherwise((val / 100).cast(pl.Utf8))
+        .otherwise(_r_as_character_expr(val / 100))
     )
 
 
@@ -623,6 +623,18 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
 # (regex / case_when / equality) with an explicit "branch not exercised
 # by synthetic fixture" comment in the test. Real-fixture parity in
 # CI nightly will catch any branch-level drift.
+#
+# Audit note (R-repo issue tracker entry #10, Stage 9.5): every helper
+# below calls `col.cast(pl.Utf8, strict=False)` defensively at entry,
+# under the assumption that callers feed already-categorical inputs
+# (post `_r_char_coerce_all`). If a future stage feeds a Float column,
+# the cast emits 17-sig-digit strings (e.g. "1.0" for what R would
+# write as "1") which then silently miss the categorical equality /
+# regex / lookup checks and emit the helper's fallback ("ND" / "5" /
+# etc.) - same outcome as R but for a different reason. The
+# convention is fine while inputs stay categorical; widening to Float
+# inputs would require routing through `_r_as_character_expr` first
+# to match R's as.character() output byte-equal.
 
 
 def _milan_social_programme_expr(special_scheme: pl.Expr) -> pl.Expr:
@@ -791,3 +803,398 @@ def _milan_flexible_loan_amount_expr(
         .when(diff <= 0).then(pl.lit("0"))
         .otherwise(_r_as_character_expr(diff))
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 / B-5: composer (assembly of the 175-column MILAN frame)
+# ---------------------------------------------------------------------------
+
+
+# Source columns expected by the MILAN mapping. Verbatim port of
+# r_reference/R/milan_mapping.R:401-457. Ordered to match R for log-grep
+# parity on _ensure_source_columns warning text.
+EXPECTED_SOURCE_COLS: tuple[str, ...] = (
+    "originator_name",
+    "calc_borrower_id", "calc_main_property_id", "calc_loan_id",
+    "rrel30_currency",
+    "original_principal_balance", "current_principal_balance",
+    "origination_date", "maturity_date",
+    "origination_channel", "purpose",
+    "scheduled_principal_payment_frequency", "scheduled_interest_payment_frequency",
+    "amortisation_type", "payment_due",
+    "prior_principal_balances", "pari_passu_underlying_exposures",
+    "total_credit_limit",
+    "interest_rate_type",
+    "current_interest_rate_index", "current_interest_rate_index_tenor",
+    "current_interest_rate", "current_interest_rate_margin",
+    "revision_margin_1", "interest_revision_date_1",
+    "date_last_in_arrears", "number_of_days_in_arrears", "pool_cutoff_date",
+    "arrears_balance",
+    "number_of_payments_before_securitisation",
+    "special_scheme",
+    "employment_status", "primary_income_type",
+    "resident",
+    "geographic_region_obligor",
+    "primary_income", "primary_income_verification",
+    "secondary_income", "secondary_income_verification",
+    "debt_to_income_ratio",
+    "deposit_amount",
+    "property_type",
+    "calc_aggregated_property_value",
+    "recourse",
+    "original_valuation_method", "current_valuation_method",
+    "original_valuation_date", "current_valuation_date",
+    "final_valuation_method", "final_valuation_date",
+    "geographic_region_collateral",
+    "occupancy_type",
+    "original_loan_to_value", "current_loan_to_value",
+    "energy_performance_certificate_value",
+    "energy_performance_certificate_provider_name",
+    "insurance_or_investment_provider",
+    "account_status",
+    "date_of_repurchase",
+    "date_of_restructuring",
+    "redemption_date",
+    "default_amount", "default_date",
+    "reason_for_default_or_foreclosure",
+    "allocated_losses", "cumulative_recoveries", "sale_price",
+    "guarantor_type",
+    "calc_collateral_group_id", "calc_nr_loans_in_group",
+    "calc_nr_properties_in_group", "calc_full_set",
+    "calc_cross_collateralized_set", "calc_structure_type",
+    "calc_original_LTV", "calc_current_LTV", "calc_seasoning",
+    "lien",
+    "original_underlying_exposure_identifier",
+    "new_underlying_exposure_identifier",
+    "new_obligor_identifier", "original_obligor_identifier",
+    "original_collateral_identifier", "new_collateral_identifier",
+)
+
+
+def _r_char_coerce_all(df: pl.DataFrame) -> pl.DataFrame:
+    """Coerce every column to Utf8 with R-equivalent formatting.
+
+    Mirrors r_reference/R/milan_mapping.R:472:
+        df |> mutate(across(everything(), as.character))
+
+    Polars' default casts diverge from R's as.character() in two ways:
+      - Float -> Utf8 emits 17 sig digits + trailing ".0"; R uses 15
+        sig digits and strips trailing zeros / decimal point.
+      - Bool -> Utf8 emits lowercase "true"/"false"; R emits uppercase
+        "TRUE"/"FALSE".
+    Both are normalised here. Date / Int / other types use the default
+    cast, which matches R for those types.
+
+    Audit note (R-repo issue tracker entry #10, Stage 9.5): the
+    fallback `else` branch handles Int (default cast emits "1", "123"
+    - matches R's as.character(<integer>)) and Date (default cast
+    emits "yyyy-mm-dd" - matches R's as.character(<Date>)). It would
+    NOT match R for Datetime/POSIXct columns (Polars emits
+    "yyyy-mm-dd HH:MM:SS.mmmuuu", R emits "yyyy-mm-dd HH:MM:SS").
+    Stages 1-7 don't produce Datetime - dates round-trip as Date
+    only - so this gap is latent. If a future stage introduces
+    Datetime, add an explicit branch here.
+    """
+    casts: list[pl.Expr] = []
+    for col, dtype in zip(df.columns, df.dtypes, strict=True):
+        if dtype == pl.Utf8:
+            casts.append(pl.col(col))
+        elif dtype.is_float():
+            casts.append(
+                _r_as_character_expr(pl.col(col).cast(pl.Float64, strict=False)).alias(col)
+            )
+        elif dtype == pl.Boolean:
+            casts.append(
+                pl.when(pl.col(col).is_null())
+                .then(pl.lit(None, dtype=pl.Utf8))
+                .when(pl.col(col))
+                .then(pl.lit("TRUE"))
+                .otherwise(pl.lit("FALSE"))
+                .alias(col)
+            )
+        else:
+            casts.append(pl.col(col).cast(pl.Utf8, strict=False))
+    return df.select(casts)
+
+
+def compose_milan_pool(df: pl.DataFrame) -> pl.DataFrame:
+    """Build the 175-column MILAN template pool from combined_flattened.
+
+    Mirrors r_reference/R/milan_mapping.R::map_to_milan() (lines 390-1099).
+
+    Pipeline:
+      1. _ensure_source_columns (warn-and-fill missing as "ND").
+      2. _r_char_coerce_all (Float -> %.15g; Date -> "yyyy-mm-dd"; etc.).
+      3. _attach_ranking + _attach_external_prior_and_pari_passu (B-2).
+      4. _attach_date_derivations (B-3).
+      5. 175-column transmute via select(...).
+      6. Column-order validation: raises on mismatch (R-repo issue #8
+         deviation - R warns and continues).
+      7. Final null -> "ND" fill across every column.
+
+    Output is an all-Utf8 frame with exactly 175 columns in the order
+    of MILAN_EXPECTED_OUTPUT_COLS.
+    """
+    if df.height == 0:
+        warnings.warn(
+            "MILAN mapping: input data frame has 0 rows", UserWarning, stacklevel=2
+        )
+
+    df = _ensure_source_columns(df, EXPECTED_SOURCE_COLS)
+    df = _r_char_coerce_all(df)
+    df = _attach_ranking(df)
+    df = _attach_external_prior_and_pari_passu(df)
+    df = _attach_date_derivations(df)
+
+    cm = MILAN_CODE_MAPS
+
+    milan = df.select(
+        # --- 1-10: identifiers + currency + balances + dates ---
+        pl.col("originator_name").alias("Originator Identifier"),
+        pl.lit("ESMA template placeholder servicer").alias("Servicer Identifier"),
+        pl.col("calc_borrower_id").alias("Borrower Identifier"),
+        pl.col("calc_main_property_id").alias("Property Identifier"),
+        pl.col("calc_loan_id").alias("Loan Identifier"),
+        pl.col("rrel30_currency").alias("Loan Currency"),
+        pl.col("original_principal_balance").alias("Loan OB"),
+        pl.col("current_principal_balance").alias("Loan CB"),
+        pl.col("origination_date").alias("Origination Date"),
+        pl.col("maturity_date").alias("Maturity Date"),
+        # --- 11-16: channel/purpose/freq/type/payment ---
+        _code_map_lookup_expr(pl.col("origination_channel"), cm["origination_channel"]).alias("Origination Channel"),
+        _code_map_lookup_expr(pl.col("purpose"), cm["purpose"]).alias("Loan Purpose"),
+        _code_map_lookup_expr(
+            pl.col("scheduled_principal_payment_frequency"),
+            cm["principal_payment_frequency"],
+        ).alias("Principal Payment Frequency"),
+        _code_map_lookup_expr(
+            pl.col("scheduled_interest_payment_frequency"),
+            cm["interest_payment_frequency"],
+        ).alias("Interest Payment Frequency"),
+        _code_map_lookup_expr(pl.col("amortisation_type"), cm["principal_payment_type"]).alias("Principal Payment Type"),
+        pl.col("payment_due").alias("Periodic Payment"),
+        # --- 17-21: ranking + prior-rank fields (B-2) ---
+        pl.col("_milan_ranking").cast(pl.Utf8).alias("Ranking"),
+        pl.col("prior_principal_balances").alias("Total Prior Ranks CB"),
+        pl.lit("ND").alias("Total Prior Ranks OB"),
+        # External Prior Ranks CB: R uses format(scientific=FALSE, trim=TRUE)
+        # which is 7-sig-digit fixed; we use _r_as_character_expr (%.15g).
+        # Synthetic fixture's value range produces identical output; real-
+        # fixture parity is the gate for any divergence on >7-sig values.
+        pl.when(is_nd_expr(pl.col("prior_principal_balances")))
+        .then(pl.lit("ND"))
+        .otherwise(_r_as_character_expr(pl.col("_milan_ext_prior_ranks_cb")))
+        .alias("External Prior Ranks CB"),
+        # Pari Passu (Not In Pool): R-repo entry #9 - asymmetric default
+        # ("0" string when input is ND vs "ND" for External Prior). Float
+        # value is 0 in both cases; the asymmetry lives entirely here.
+        pl.when(is_nd_expr(pl.col("pari_passu_underlying_exposures")))
+        .then(pl.lit("0"))
+        .otherwise(_r_as_character_expr(pl.col("_milan_pari_passu_not_in_pool")))
+        .alias("Pari Passu Ranking Loans (Not In Pool)"),
+        # --- 22-27: retained / further advances / flex / grace / payment holiday ---
+        pl.lit("0").alias("Retained Amount"),
+        pl.lit("ND").alias("Further Advances"),
+        _milan_flexible_loan_amount_expr(
+            pl.col("_total_credit_limit_num"), pl.col("_cpb_num")
+        ).alias("Flexible Loan Amount"),
+        pl.lit("ND").alias("Grace Period"),
+        pl.lit("ND").alias("Type of Payment Holiday"),
+        pl.lit("ND").alias("Length of Payment Holiday Allowed In Months"),
+        # --- 28-33: rate/index/margins ---
+        _code_map_lookup_expr(pl.col("interest_rate_type"), cm["interest_rate_type"]).alias("Interest Rate Type"),
+        _lookup_base_index_expr(
+            pl.col("current_interest_rate_index"),
+            pl.col("current_interest_rate_index_tenor"),
+        ).alias("Base Index"),
+        _divide_by_100_expr(pl.col("current_interest_rate")).alias("Interest Rate"),
+        _divide_by_100_expr(pl.col("current_interest_rate_margin")).alias("Full Margin"),
+        _divide_by_100_expr(pl.col("revision_margin_1")).alias("Margin After Reset Date"),
+        pl.col("interest_revision_date_1").alias("Interest Reset Date"),
+        # --- 34-37: arrears block ---
+        _compute_months_current_expr(
+            pl.col("_days_in_arrears_num"),
+            pl.col("_months_since_last_arrears"),
+            pl.col("_date_last_in_arrears_chr"),
+        ).alias("Months Current"),
+        pl.col("arrears_balance").alias("Arrears Amount"),
+        _compute_months_in_arrears_expr(pl.col("_days_in_arrears_num")).alias("Months In Arrears"),
+        pl.col("number_of_payments_before_securitisation").alias("Number of Payments Before Securitisation"),
+        # --- 38-49: borrower block ---
+        _milan_social_programme_expr(pl.col("special_scheme")).alias("Social Programme Type"),
+        pl.lit("ND").alias("FX Risk Mitigated"),
+        pl.lit("ND").alias("Inflation-Indexed Loan"),
+        pl.lit("ND").alias("Exchange Rate At Loan Origination"),
+        _milan_borrower_type_expr(
+            pl.col("employment_status"), pl.col("primary_income_type")
+        ).alias("Borrower Type"),
+        _milan_borrower_residency_expr(pl.col("resident")).alias("Borrower Residency"),
+        pl.lit("ND").alias("Borrower Birth Year"),
+        _code_map_lookup_expr(pl.col("employment_status"), cm["employment_type"]).alias("Employment Type"),
+        pl.lit("ND").alias("Internal Credit Score"),
+        pl.lit("ND").alias("Credit Score - Canada"),
+        pl.col("geographic_region_obligor").alias("Borrower Postal/Zip Code"),
+        pl.lit("ND").alias("Number of Borrowers"),
+        # --- 50-58: income / DTI / employee ---
+        pl.col("primary_income").alias("Income Borrower 1"),
+        _code_map_lookup_expr(
+            pl.col("primary_income_verification"), cm["income_verification"]
+        ).alias("Income Verification For Primary Income"),
+        pl.col("secondary_income").alias("Income Borrower 2"),
+        _code_map_lookup_expr(
+            pl.col("secondary_income_verification"), cm["income_verification"]
+        ).alias("Income Verification For Secondary Income"),
+        pl.lit("ND").alias("Guarantor's Income"),
+        _milan_total_income_expr(
+            pl.col("_primary_income_num"), pl.col("_secondary_income_num")
+        ).alias("Total Income"),
+        pl.col("debt_to_income_ratio").alias("DTI Ratio"),
+        pl.lit("ND").alias("Loan To Employee"),
+        pl.lit("ND").alias("Number of Properties Owned By Borrower"),
+        # --- 59-67: regulated + adverse credit ---
+        pl.lit("ND").alias("Regulated"),
+        pl.lit("ND").alias("Prior Missed On Previous Mortgage"),
+        pl.lit("ND").alias("Live Units of Adverse Credit"),
+        pl.lit("ND").alias("Satisfied Units of Adverse Credit"),
+        pl.lit("ND").alias("Total Amount of CCJs or Balance of Adverse Credit"),
+        pl.lit("ND").alias("Number of Other Adverse Credit Events"),
+        pl.lit("ND").alias("Prior Personally Bankruptcy Or IVA"),
+        pl.lit("ND").alias("Prior Repossessions On Previous Mortgage"),
+        pl.lit("ND").alias("Prior Litigation"),
+        # --- 68-83: property block (Property 1) ---
+        pl.col("deposit_amount").alias("Deposit Amount"),
+        _code_map_lookup_expr(pl.col("property_type"), cm["property_type"]).alias("Property Type"),
+        pl.col("calc_aggregated_property_value").alias("Property Value"),
+        pl.lit("ND").alias("Purchase Price"),
+        _milan_recourse_expr(pl.col("recourse")).alias("Recourse"),
+        _code_map_lookup_expr(
+            pl.col("final_valuation_method"), cm["property_valuation_type"]
+        ).alias("Property Valuation Type"),
+        pl.col("final_valuation_date").alias("Property Valuation Date"),
+        pl.lit("ND").alias("Confidence Interval For Original AVM Valuation"),
+        pl.lit("ND").alias("Provider of Original AVM Valuation"),
+        pl.col("geographic_region_collateral").alias("Property Postal, Region code or Nuts code"),
+        _code_map_lookup_expr(pl.col("occupancy_type"), cm["occupancy_type"]).alias("Occupancy Type"),
+        pl.lit("ND").alias("Rental Income"),
+        pl.lit("ND").alias("Metro / Non Metro"),
+        pl.lit("ND").alias("Construction Year"),
+        pl.lit("ND").alias("Mortgage Inscription - Property 1"),
+        pl.lit("ND").alias("Mortgage Mandate - Property 1"),
+        # --- 84-119: Property 2-5 (all ND) ---
+        *[pl.lit("ND").alias(c) for c in (
+            "Property Identifier Property 2", "Property Type - Property 2",
+            "Property Value Property 2", "Property Valuation Type - Property 2",
+            "Property Valuation date Property 2", "Property Postcode Property 2",
+            "Occupancy Type - Property 2",
+            "Mortgage Inscription Property 2", "Mortgage mandate Property 2",
+            "Property Identifier Property 3", "Property Type - Property 3",
+            "Property Value Property 3", "Property Valuation Type - Property 3",
+            "Property Valuation date Property 3", "Property Postcode Property 3",
+            "Occupancy Type - Property 3",
+            "Mortgage Inscription Property 3", "Mortgage mandate Property 3",
+            "Property Identifier Property 4", "Property Type - Property 4",
+            "Property Value Property 4", "Property Valuation Type - Property 4",
+            "Property Valuation date Property 4", "Property Postcode Property 4",
+            "Occupancy Type - Property 4",
+            "Mortgage Inscription Property 4", "Mortgage mandate Property 4",
+            "Property Identifier Property 5", "Property Type - Property 5",
+            "Property Value Property 5", "Property Valuation Type - Property 5",
+            "Property Valuation date Property 5", "Property Postcode Property 5",
+            "Occupancy Type - Property 5",
+            "Mortgage Inscription Property 5", "Mortgage mandate Property 5",
+        )],
+        # --- 120-126: LTV + EPC + additional collateral ---
+        _divide_by_100_expr(pl.col("original_loan_to_value")).alias("Original LTV"),
+        _divide_by_100_expr(pl.col("current_loan_to_value")).alias("Current LTV"),
+        _code_map_lookup_expr(
+            pl.col("energy_performance_certificate_value"),
+            cm["energy_performance_certificate_value"],
+        ).alias("Energy Performance Certificate Value"),
+        pl.col("energy_performance_certificate_provider_name").alias("Energy Performance Certificate Provider Name"),
+        pl.lit("ND").alias("Additional Collateral Type"),
+        pl.col("insurance_or_investment_provider").alias("Additional Collateral Provider"),
+        pl.lit("ND").alias("Additional Collateral Value"),
+        # --- 127-138: status / restructuring / default ---
+        _code_map_lookup_expr(pl.col("account_status"), cm["account_status"]).alias("Account Status"),
+        pl.col("date_of_repurchase").alias("Repurchase Date"),
+        _milan_restructured_loan_expr(
+            pl.col("date_of_restructuring"), pl.col("account_status")
+        ).alias("Restructured Loan"),
+        pl.col("date_of_restructuring").alias("Restructuring Date"),
+        pl.lit("ND").alias("Restructuring Type"),
+        pl.col("redemption_date").alias("Redemption Date"),
+        pl.col("default_amount").alias("Default amount"),
+        pl.col("default_date").alias("Default date"),
+        _code_map_lookup_expr(
+            pl.col("reason_for_default_or_foreclosure"), cm["reason_for_default"]
+        ).alias("Reason for Default or Foreclosure"),
+        pl.col("allocated_losses").alias("Allocated Losses"),
+        pl.col("cumulative_recoveries").alias("Cumulative Recoveries"),
+        pl.col("sale_price").alias("Sale Price"),
+        # --- 139-143: MIG / guarantee provider ---
+        _milan_mig_provider_expr(pl.col("guarantor_type")).alias("MIG Provider"),
+        _code_map_lookup_expr(pl.col("guarantor_type"), cm["guarantee_provider_type"]).alias("Type of Guarantee Provider"),
+        pl.lit("ND").alias("MIG %"),
+        pl.lit("ND").alias("Initial MCI Coverage Amount"),
+        pl.lit("ND").alias("Current MCI Coverage Amount"),
+        # --- 144-169: Additional data 1-26 (DIRECT calc_*) ---
+        pl.col("calc_loan_id").alias("Additional data 1 - calc_loan_id"),
+        pl.col("calc_borrower_id").alias("Additional data 2 - calc_borrower_id"),
+        pl.col("calc_main_property_id").alias("Additional data 3 - calc_main_property_id"),
+        pl.col("calc_collateral_group_id").alias("Additional data 4 - calc_collateral_group_id"),
+        pl.col("calc_nr_loans_in_group").alias("Additional data 5 - calc_nr_loans_in_group"),
+        pl.col("calc_nr_properties_in_group").alias("Additional data 6 - calc_nr_properties_in_group"),
+        pl.col("calc_full_set").alias("Additional data 7 - calc_full_set"),
+        pl.col("calc_cross_collateralized_set").alias("Additional data 8 - calc_cross_collateralized_set"),
+        pl.col("calc_structure_type").alias("Additional data 9 - calc_structure_type"),
+        pl.col("calc_aggregated_property_value").alias("Additional data 10 - calc_aggregated_property_value"),
+        pl.col("calc_original_LTV").alias("Additional data 11 - calc_original_LTV"),
+        pl.col("calc_current_LTV").alias("Additional data 12 - calc_current_LTV"),
+        pl.col("calc_seasoning").alias("Additional data 13 - calc_seasoning"),
+        pl.col("lien").alias("Additional data 14 - lien"),
+        pl.col("prior_principal_balances").alias("Additional data 15 - prior_principal_balances"),
+        pl.col("pari_passu_underlying_exposures").alias("Additional data 16 - pari_passu_underlying_exposures"),
+        pl.col("original_valuation_method").alias("Additional data 17 - original_valuation_method"),
+        pl.col("original_valuation_date").alias("Additional data 18 - original_valuation_date"),
+        pl.col("current_valuation_method").alias("Additional data 19 - current_valuation_method"),
+        pl.col("current_valuation_date").alias("Additional data 20 - current_valuation_date"),
+        pl.col("new_underlying_exposure_identifier").alias("Additional data 21 - new_underlying_exposure_identifier"),
+        pl.col("original_underlying_exposure_identifier").alias("Additional data 22 - original_underlying_exposure_identifier"),
+        pl.col("new_obligor_identifier").alias("Additional data 23 - new_obligor_identifier"),
+        pl.col("original_obligor_identifier").alias("Additional data 24 - original_obligor_identifier"),
+        pl.col("new_collateral_identifier").alias("Additional data 25 - new_collateral_identifier"),
+        pl.col("original_collateral_identifier").alias("Additional data 26 - original_collateral_identifier"),
+        # --- 170-175: column for additional data 27-32 ---
+        *[pl.lit("ND").alias(c) for c in (
+            "column for additional data 27", "column for additional data 28",
+            "column for additional data 29", "column for additional data 30",
+            "column for additional data 31", "column for additional data 32",
+        )],
+    )
+
+    # Column-order validation. Deviates from R: r_reference/R/milan_mapping.R:1066-1080
+    # warns and continues on column-layout mismatch. We raise — see R-repo
+    # issue tracker entry #8.
+    if list(milan.columns) != list(MILAN_EXPECTED_OUTPUT_COLS):
+        actual = list(milan.columns)
+        expected = list(MILAN_EXPECTED_OUTPUT_COLS)
+        diffs: list[str] = []
+        for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
+            if a != e:
+                diffs.append(f"  position {i}: got {a!r}, expected {e!r}")
+            if len(diffs) >= 5:
+                break
+        if len(actual) != len(expected):
+            diffs.append(
+                f"  length mismatch: got {len(actual)} columns, expected {len(expected)}"
+            )
+        raise ValueError(
+            "MILAN mapping: output columns do not match expected 175-column layout.\n"
+            + "\n".join(diffs)
+        )
+
+    # Final null -> "ND" fill across every column. Mirrors r_reference/
+    # R/milan_mapping.R:1088-1090. Catches any remaining nulls produced by
+    # source-column NA passthrough where the field-level helper didn't
+    # already substitute "ND".
+    return milan.with_columns([pl.col(c).fill_null("ND") for c in milan.columns])

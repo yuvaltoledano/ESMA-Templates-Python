@@ -72,8 +72,12 @@ def test_safe_as_num_passes_through_null() -> None:
 
 
 def test_divide_by_100_basic() -> None:
+    """Output format matches R's as.character() (%.15g): integer-valued
+    floats emit without trailing ".0" (e.g. "1" not "1.0", "0" not "0.0").
+    Pinned against the B-5 parity contract.
+    """
     out = _apply(_divide_by_100_expr, ["12.5", "100", "0"])
-    assert out == ["0.125", "1.0", "0.0"]
+    assert out == ["0.125", "1", "0"]
 
 
 def test_divide_by_100_nd_passes_through() -> None:
