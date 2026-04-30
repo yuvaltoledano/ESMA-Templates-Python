@@ -33,8 +33,8 @@ SHEET_STATUS: dict[str, SheetStatus] = {
     "Properties to loans": "pending",
     "Borrowers to loans": "pending",
     "Borrowers to properties": "pending",
-    "Cleaned ESMA loans": "pending",
-    "Cleaned ESMA properties": "pending",
+    "Cleaned ESMA loans": "passing",  # Stage 6.5
+    "Cleaned ESMA properties": "passing",  # Stage 6.5
     "Group classifications": "passing",  # Stage 5
     "Combined flattened pool": "pending",
     "MILAN template pool": "pending",
