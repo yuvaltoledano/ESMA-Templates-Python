@@ -18,6 +18,10 @@ import structlog
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
 from esma_milan.io_layer.write_workbook import write_pipeline_workbook
 from esma_milan.pipeline.classification import Stage5Output, run_stage5
+from esma_milan.pipeline.enriched import (
+    compose_loans_enriched,
+    compose_properties_enriched,
+)
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
@@ -185,9 +189,25 @@ def run_pipeline(
     deal_dir = output_dir / deal_name
     deal_dir.mkdir(parents=True, exist_ok=True)
     output_path = deal_dir / f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
+
+    # Compose loans_enriched / properties_enriched for Sheets 6 and 7.
+    # Mirrors the joins at r_reference/R/pipeline.R:405-450; column
+    # order is fully determined by the input frames + Polars' deterministic
+    # left-join semantics. See pipeline.enriched.
+    loans_enriched_for_writer = compose_loans_enriched(
+        stage3.loans, stage4.loan_groups, stage5.classifications
+    )
+    properties_enriched_for_writer = compose_properties_enriched(
+        stage3.properties, stage4.collateral_groups, stage5.classifications
+    )
+
     write_pipeline_workbook(
         output_path,
-        populated_sheets={"Group classifications": stage5.classifications},
+        populated_sheets={
+            "Cleaned ESMA loans": loans_enriched_for_writer,
+            "Cleaned ESMA properties": properties_enriched_for_writer,
+            "Group classifications": stage5.classifications,
+        },
     )
 
     if verbose:
