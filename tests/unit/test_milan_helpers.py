@@ -17,6 +17,7 @@ future drift between this module and the R source is caught immediately.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable, Sequence
 
 import polars as pl
 import pytest
@@ -32,8 +33,11 @@ from esma_milan.pipeline.milan_map import (
 )
 
 
-def _apply(expr_factory, values: list[object | None]) -> list[object]:
-    df = pl.DataFrame({"x": values}, schema={"x": pl.Utf8})
+def _apply(
+    expr_factory: Callable[[pl.Expr], pl.Expr],
+    values: Sequence[object | None],
+) -> list[object]:
+    df = pl.DataFrame({"x": list(values)}, schema={"x": pl.Utf8})
     return df.select(expr_factory(pl.col("x")).alias("out"))["out"].to_list()
 
 
@@ -92,7 +96,11 @@ def test_code_map_lookup_known_keys_round_trip() -> None:
     for map_name, mapping in MILAN_CODE_MAPS.items():
         keys = list(mapping.keys())
         expected = [mapping[k] for k in keys]
-        out = _apply(lambda c, m=mapping: _code_map_lookup_expr(c, m), keys)
+
+        def factory(c: pl.Expr, m: dict[str, str] = mapping) -> pl.Expr:
+            return _code_map_lookup_expr(c, m)
+
+        out = _apply(factory, keys)
         assert out == expected, f"map {map_name!r} round-trip mismatch"
 
 
@@ -119,9 +127,9 @@ def test_code_map_lookup_nd_tokens_become_nd() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _apply_two(idx: list[str | None], ten: list[str | None]) -> list[str]:
+def _apply_two(idx: Sequence[str | None], ten: Sequence[str | None]) -> list[str]:
     df = pl.DataFrame(
-        {"i": idx, "t": ten},
+        {"i": list(idx), "t": list(ten)},
         schema={"i": pl.Utf8, "t": pl.Utf8},
     )
     return df.select(
