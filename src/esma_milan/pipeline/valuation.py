@@ -1,37 +1,27 @@
 """Stage 6: detect_aggregation_method (by_loan vs by_group).
+Stage 7 (B-2): calculate_unique_property_values.
 
-Mirrors r_reference/R/utils.R::detect_aggregation_method (lines 454-570).
-Auto-detects whether multi-loan groups in the input pool follow the
+Stage 6 mirrors r_reference/R/utils.R::detect_aggregation_method and
+auto-detects whether multi-loan groups in the input pool follow the
 "by_loan" convention (full property value duplicated on every linked
 loan row) or the "by_group" convention (property value pre-split
 pro-rata across loans). Used by Stage 7 to know which aggregation rule
 to apply when collapsing properties into one row per loan.
 
-Detection logic:
+Stage 7 B-2 mirrors `calculate_unique_property_values()` in
+r_reference/R/property_flattening_function.R:9-54 and reduces a
+properties frame to one row per (collateral_group_id, calc_property_id)
+with a single `property_value`, applying the chosen reduction rule.
 
-  1. Filter to multi-loan groups (>1 loan).
-  2. Apply Stage-1/Stage-2 valuation selection per property row to get
-     a single `valuation_amount` per row.
-  3. Inner-join properties to multi-loan loans on (group, loan_id).
-  4. Per (group, property): require >=2 distinct linked loans AND >=2
-     distinct loan balances. Properties whose linked loans share a
-     balance carry no signal (the by_loan vs by_group test depends on
-     differing balances exposing differing valuations).
-  5. Per surviving (group, property): count distinct non-NA valuation
-     amounts AND count non-NA observations. Drop properties with <2
-     non-NA observations (single observation carries no signal).
-  6. Classify: 1 distinct value -> "by_loan"; >1 -> "by_group".
-  7. Tally. Decide via strict-greater-than 0.9 threshold; otherwise
-     "ambiguous".
-
-The Stage-1/Stage-2 valuation selection is also used by Stage 7
-flattening, so it lives here as `select_valuation_amount`. Stage 7
-will add a sibling `select_valuation_fields` (returning method + date
-+ amount, used for the Property Valuation Type / Date columns).
+The Stage-1/Stage-2 valuation selection is shared between detection
+(amount-only) and flattening (full method/date/amount), and lives in
+this module too: `select_valuation_amount` (B-1 / Stage 6) and
+`select_valuation_fields` (B-1 / Stage 7).
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Literal
 
@@ -66,19 +56,20 @@ class Stage6Output:
     message: str
 
 
-def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
-    """Add a `valuation_amount` column per the Stage-1/Stage-2 selection rule.
+def _add_selection_columns(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add the four internal Stage-1/Stage-2 working columns to `properties`.
 
-    Stage 1: prefer current valuation if `current_valuation_method` is
-             in VALUATION_METHODS_FULL_INSPECTION (FIEI, FOEI); else
-             original.
-    Stage 2: if the chosen amount is null OR <= MIN_VALID_PROPERTY_VALUE,
-             flip to the other valuation.
+    Encapsulates the shared logic between `select_valuation_amount` and
+    `select_valuation_fields` so neither helper duplicates the Stage-1
+    pick / Stage-2 flip rule. Returns a new frame with:
 
-    Mirrors the inline mutate at r_reference/R/utils.R:473-481.
-    Stage 7 will land a sibling helper that also emits valuation_method
-    and valuation_date for the MILAN Property Valuation Type / Date
-    columns.
+      _initial_use_current : bool, True if current_valuation_method
+                             is in VALUATION_METHODS_FULL_INSPECTION.
+      _initial_amount      : the Stage-1 chosen amount.
+      _is_bad_value        : True if _initial_amount is null or
+                             <= MIN_VALID_PROPERTY_VALUE (= 10).
+      _final_use_current   : the Stage-2 final pick after flipping if
+                             the initial was bad.
     """
     return (
         properties.with_columns(
@@ -102,16 +93,103 @@ def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
             .then(~pl.col("_initial_use_current"))
             .otherwise(pl.col("_initial_use_current")),
         )
-        .with_columns(
+    )
+
+
+def _drop_selection_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Drop the four internal columns added by `_add_selection_columns`."""
+    return df.drop(
+        "_initial_use_current",
+        "_initial_amount",
+        "_is_bad_value",
+        "_final_use_current",
+    )
+
+
+def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add a `valuation_amount` column per the Stage-1/Stage-2 selection rule.
+
+    Stage 1: prefer current valuation if `current_valuation_method` is
+             in VALUATION_METHODS_FULL_INSPECTION (FIEI, FOEI); else
+             original.
+    Stage 2: if the chosen amount is null OR <= MIN_VALID_PROPERTY_VALUE,
+             flip to the other valuation.
+
+    Mirrors the inline mutate at r_reference/R/utils.R:473-481.
+    Used by `detect_aggregation_method` (Stage 6) where only the
+    amount matters; Stage 7's `flatten_loan_collateral` uses the
+    sibling `select_valuation_fields` to also surface
+    valuation_method and valuation_date for the MILAN Property
+    Valuation Type / Date fields.
+    """
+    return _drop_selection_columns(
+        _add_selection_columns(properties).with_columns(
             valuation_amount=pl.when(pl.col("_final_use_current"))
             .then(pl.col("current_valuation_amount"))
             .otherwise(pl.col("original_valuation_amount")),
         )
-        .drop(
-            "_initial_use_current",
-            "_initial_amount",
-            "_is_bad_value",
-            "_final_use_current",
+    )
+
+
+def select_valuation_fields(properties: pl.DataFrame) -> pl.DataFrame:
+    """Add `valuation_method`, `valuation_date`, `valuation_amount`.
+
+    Full version of the Stage-1/Stage-2 selection rule used by Stage 7
+    flattening. Mirrors `get_valuation_fields()` in
+    r_reference/R/property_flattening_function.R:84-101:
+
+        df |>
+          mutate(
+            initial_use_current = current_valuation_method %in%
+                                  VALUATION_METHODS_FULL_INSPECTION,
+            initial_amount      = if_else(initial_use_current,
+                                          current_valuation_amount,
+                                          original_valuation_amount),
+            is_bad_value        = is.na(initial_amount) |
+                                  initial_amount <= MIN_VALID_PROPERTY_VALUE,
+            final_use_current   = if_else(is_bad_value,
+                                          !initial_use_current,
+                                          initial_use_current),
+            valuation_method    = if_else(final_use_current,
+                                          current_valuation_method,
+                                          original_valuation_method),
+            valuation_date      = if_else(final_use_current,
+                                          current_valuation_date,
+                                          original_valuation_date),
+            valuation_amount    = if_else(final_use_current,
+                                          current_valuation_amount,
+                                          original_valuation_amount),
+          ) |>
+          select(-any_of(c("initial_use_current", "initial_amount",
+                           "is_bad_value", "final_use_current")))
+
+    The crucial property the MILAN Property Valuation Type / Date
+    contract relies on: when Stage 2 flips, ALL THREE of method, date,
+    and amount come from the same source (current OR original). They
+    never split. This is what `final_valuation_method` /
+    `final_valuation_date` propagation in Stage 7 carries forward to
+    MILAN cols 73/74. Pinned by the asymmetric-flip unit test in
+    `tests/unit/test_valuation.py`.
+
+    Input columns required:
+      current_valuation_method, current_valuation_date,
+      current_valuation_amount, original_valuation_method,
+      original_valuation_date, original_valuation_amount.
+
+    Output: input frame + `valuation_method`, `valuation_date`,
+    `valuation_amount` appended.
+    """
+    return _drop_selection_columns(
+        _add_selection_columns(properties).with_columns(
+            valuation_method=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_method"))
+            .otherwise(pl.col("original_valuation_method")),
+            valuation_date=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_date"))
+            .otherwise(pl.col("original_valuation_date")),
+            valuation_amount=pl.when(pl.col("_final_use_current"))
+            .then(pl.col("current_valuation_amount"))
+            .otherwise(pl.col("original_valuation_amount")),
         )
     )
 
@@ -270,3 +348,141 @@ def run_stage6(
     """Stage 6 driver. Wraps detect_aggregation_method for naming
     consistency with run_stage1..run_stage5."""
     return detect_aggregation_method(loans_enriched, properties_enriched)
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 B-2: calculate_unique_property_values
+# ---------------------------------------------------------------------------
+
+
+AggregationMethod = Literal["by_loan", "by_group"]
+
+
+def calculate_unique_property_values(
+    properties_with_vals: pl.DataFrame,
+    aggregation_method: AggregationMethod,
+) -> pl.DataFrame:
+    """Reduce to one (`collateral_group_id`, `calc_property_id`,
+    `property_value`) row per unique property, applying the chosen
+    aggregation rule.
+
+    Mirrors `calculate_unique_property_values()` in
+    r_reference/R/property_flattening_function.R:9-54:
+
+        if aggregation_method == "by_group":
+            sum(valuation_amount, na.rm = TRUE) per (group, property)
+        elif aggregation_method == "by_loan":
+            first(valuation_amount[!is.na(valuation_amount)],
+                  default = NA_real_) per (group, property)
+
+    Determinism note for the by_loan branch:
+      "First non-null" is well-defined only if the row order within
+      each (group, property) bucket is stable. Polars' group_by does
+      NOT guarantee within-group row ordering by default; a future
+      version or parallel-execution flag could shuffle silently. The
+      implementation here pins the order by:
+
+        1. Adding a sequential `_row_idx` column reflecting the input
+           frame's row order at call time.
+        2. Sorting `valuation_amount` by `_row_idx` inside the per-group
+           agg before applying `drop_nulls().first()`.
+
+      Result: "first non-null" is a pure function of the input frame's
+      row order at the moment of the call. The upstream pipeline
+      produces input rows in a deterministic order (Stage 1's CSV read
+      preserves source order; subsequent stages' joins are stable), so
+      the helper's output is deterministic across runs.
+
+      `tests/unit/test_valuation.py::test_calculate_unique_by_loan_
+      result_invariant_to_row_shuffling_when_group_has_one_non_null`
+      pins the determinism property: when each group has at most one
+      non-null value, the result is invariant to input-row permutation
+      (because there's no ambiguity about which value "first" picks).
+      For groups with >=2 disagreeing non-null values, the inconsistency
+      warning fires AND the chosen value is implementation-defined
+      (input-order-defined); the warning surfaces the data quality
+      issue rather than papering over it.
+
+    The by_loan inconsistency warning fires when a (group, property)
+    pair has >=2 distinct non-NA valuation amounts. Mirrors the
+    `n_distinct(valuation_amount, na.rm = TRUE) > 1` check in R.
+    Properties with one valid value and (NA, NA, ..., NA) siblings
+    are NOT flagged — the analyst-walkthrough fixture's (500000, NA, NA)
+    pattern is the canonical example.
+
+    Args:
+        properties_with_vals: a DataFrame with at least
+            `collateral_group_id`, `calc_property_id`, and
+            `valuation_amount` columns. Typically the output of
+            `select_valuation_fields()`.
+        aggregation_method: one of "by_loan" or "by_group".
+
+    Returns:
+        A DataFrame with columns
+        (`collateral_group_id`, `calc_property_id`, `property_value`),
+        sorted by (collateral_group_id ASC, calc_property_id ASC) so
+        the output row order is a pure function of the input set,
+        independent of any group_by emission-order nondeterminism.
+
+    Raises:
+        ValueError: if aggregation_method is not "by_loan" or "by_group".
+    """
+    if aggregation_method not in ("by_loan", "by_group"):
+        raise ValueError(
+            f"aggregation_method must be one of: by_loan, by_group "
+            f"(got {aggregation_method!r})"
+        )
+
+    if aggregation_method == "by_group":
+        return (
+            properties_with_vals.group_by(
+                ["collateral_group_id", "calc_property_id"], maintain_order=True
+            )
+            .agg(property_value=pl.col("valuation_amount").sum())
+            .sort(["collateral_group_id", "calc_property_id"])
+        )
+
+    # by_loan branch.
+
+    # Inconsistency warning: per (group, property), count distinct
+    # NON-NULL valuations. >=2 distinct -> warn. Mirrors R's
+    # `n_distinct(valuation_amount, na.rm = TRUE) > 1` filter.
+    inconsistent = (
+        properties_with_vals.group_by(
+            ["collateral_group_id", "calc_property_id"], maintain_order=True
+        )
+        .agg(n_distinct=pl.col("valuation_amount").drop_nulls().n_unique())
+        .filter(pl.col("n_distinct") > 1)
+    )
+    if inconsistent.height > 0:
+        sample_ids = (
+            inconsistent.sort(["collateral_group_id", "calc_property_id"])[
+                "calc_property_id"
+            ]
+            .head(5)
+            .to_list()
+        )
+        warnings.warn(
+            f"{inconsistent.height} properties have inconsistent valuation "
+            f"amounts across linked loans. Using first non-missing value. "
+            f"Property IDs: {', '.join(str(p) for p in sample_ids)}...",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # First non-null by input row order. _row_idx pins the order at
+    # call time; sort_by inside agg makes "first" deterministic
+    # regardless of Polars' internal group_by ordering.
+    df = properties_with_vals.with_row_index("_row_idx")
+    return (
+        df.group_by(
+            ["collateral_group_id", "calc_property_id"], maintain_order=True
+        )
+        .agg(
+            property_value=pl.col("valuation_amount")
+            .sort_by("_row_idx")
+            .drop_nulls()
+            .first()
+        )
+        .sort(["collateral_group_id", "calc_property_id"])
+    )

@@ -3,7 +3,8 @@
 Mirrors r_reference/tests/testthat/test-detect-aggregation.R one-for-one
 (test names track the R `test_that()` strings) plus boundary tests for
 the strict 0.9 threshold and unit tests for `select_valuation_amount`
-covering the Stage-1/Stage-2 selection rule.
+and `select_valuation_fields` covering the Stage-1/Stage-2 selection
+rule (amount-only and full-method/date/amount variants).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from esma_milan.pipeline.valuation import (
     detect_aggregation_method,
     run_stage6,
     select_valuation_amount,
+    select_valuation_fields,
 )
 
 
@@ -343,3 +345,473 @@ def test_run_stage6_wraps_detect_aggregation_method() -> None:
 # Unused-import guard: keep `date` imported to make it cheap to add date-
 # bearing fixtures in future without a re-import churn.
 _ = date
+
+
+# ---------------------------------------------------------------------------
+# select_valuation_fields - full Stage-1/Stage-2 helper used by Stage 7
+# ---------------------------------------------------------------------------
+
+
+def _props_with_full_valuation(
+    current_methods: Sequence[str | None],
+    current_dates: Sequence[date | None],
+    current_amounts: Sequence[float | int | None],
+    original_methods: Sequence[str | None],
+    original_dates: Sequence[date | None],
+    original_amounts: Sequence[float | int | None],
+) -> pl.DataFrame:
+    """Build a minimal properties frame with the full set of valuation
+    columns that `select_valuation_fields` requires."""
+    return pl.DataFrame(
+        {
+            "current_valuation_method": pl.Series(
+                list(current_methods), dtype=pl.String
+            ),
+            "current_valuation_date": pl.Series(
+                list(current_dates), dtype=pl.Date
+            ),
+            "current_valuation_amount": pl.Series(
+                list(current_amounts), dtype=pl.Float64
+            ),
+            "original_valuation_method": pl.Series(
+                list(original_methods), dtype=pl.String
+            ),
+            "original_valuation_date": pl.Series(
+                list(original_dates), dtype=pl.Date
+            ),
+            "original_valuation_amount": pl.Series(
+                list(original_amounts), dtype=pl.Float64
+            ),
+        }
+    )
+
+
+def test_select_valuation_fields_uses_current_when_method_full_inspection_and_amount_valid() -> None:
+    """FIEI / FOEI with valid current_amount -> method/date/amount all
+    from current."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI", "FOEI"],
+        current_dates=[date(2023, 1, 1), date(2023, 6, 1)],
+        current_amounts=[200000.0, 300000.0],
+        original_methods=["DRVB", "DRVB"],
+        original_dates=[date(2010, 1, 1), date(2011, 6, 1)],
+        original_amounts=[100000.0, 100000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out["valuation_method"].to_list() == ["FIEI", "FOEI"]
+    assert out["valuation_date"].to_list() == [date(2023, 1, 1), date(2023, 6, 1)]
+    assert out["valuation_amount"].to_list() == [200000.0, 300000.0]
+
+
+def test_select_valuation_fields_uses_original_for_non_inspection_method() -> None:
+    """current_valuation_method NOT in {FIEI, FOEI} -> method/date/amount
+    all from original."""
+    df = _props_with_full_valuation(
+        current_methods=["DRVB"],
+        current_dates=[date(2023, 1, 1)],
+        current_amounts=[200000.0],
+        original_methods=["FIEI"],
+        original_dates=[date(2010, 1, 1)],
+        original_amounts=[150000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out["valuation_method"].to_list() == ["FIEI"]
+    assert out["valuation_date"].to_list() == [date(2010, 1, 1)]
+    assert out["valuation_amount"].to_list() == [150000.0]
+
+
+def test_select_valuation_fields_stage2_flips_all_three_when_current_amount_below_min() -> None:
+    """The deliberately-asymmetric case the MILAN cols 73/74 contract
+    depends on: Stage 1 picks current (FIEI) but the amount is bad
+    (<= MIN_VALID_PROPERTY_VALUE = 10), so Stage 2 flips. After the
+    flip, ALL THREE - method, date, amount - come from original. They
+    must NEVER split (e.g. method from current but date from original)
+    because that would silently break the downstream MILAN row's
+    Property Valuation Type / Date / Property Value coherence."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[5.0],  # <= 10 -> bad -> flip to original
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[320000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out["valuation_method"].to_list() == ["AUVM"]
+    assert out["valuation_date"].to_list() == [date(2019, 6, 15)]
+    assert out["valuation_amount"].to_list() == [320000.0]
+
+
+def test_select_valuation_fields_stage2_flips_all_three_when_current_amount_is_null() -> None:
+    """Same flip when initial amount is null."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[None],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[320000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out["valuation_method"].to_list() == ["AUVM"]
+    assert out["valuation_date"].to_list() == [date(2019, 6, 15)]
+    assert out["valuation_amount"].to_list() == [320000.0]
+
+
+def test_select_valuation_fields_no_flip_at_min_boundary_plus_one() -> None:
+    """Boundary: amount == 11 (MIN_VALID_PROPERTY_VALUE + 1) -> not bad
+    -> no flip. Pinned next to the equivalent boundary test for
+    select_valuation_amount."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[11.0],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[320000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out["valuation_method"].to_list() == ["FIEI"]
+    assert out["valuation_date"].to_list() == [date(2024, 1, 1)]
+    assert out["valuation_amount"].to_list() == [11.0]
+
+
+def test_select_valuation_fields_flip_at_min_boundary_exactly() -> None:
+    """Boundary: amount == 10 (== MIN_VALID_PROPERTY_VALUE) -> bad
+    (`<= 10`, not `< 10`) -> flip. The R rule is `<=`, not `<`."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[10.0],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[320000.0],
+    )
+    out = select_valuation_fields(df)
+    # All three flipped to original.
+    assert out["valuation_method"].to_list() == ["AUVM"]
+    assert out["valuation_date"].to_list() == [date(2019, 6, 15)]
+    assert out["valuation_amount"].to_list() == [320000.0]
+
+
+def test_select_valuation_fields_method_date_amount_always_co_vary() -> None:
+    """Across multiple rows with mixed flip and no-flip cases,
+    invariant: for each row, method, date, and amount are ALL from
+    the same source (current OR original, never split). This is the
+    contract MILAN cols 73/74 rely on; pinning it directly via a
+    multi-row fixture prevents a regression where one of the three
+    when()/then()/otherwise() expressions silently drifts to a
+    different selector."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI", "DRVB", "FIEI", "FOEI"],
+        current_dates=[
+            date(2024, 1, 1),
+            date(2023, 5, 5),
+            date(2024, 6, 6),
+            date(2024, 12, 31),
+        ],
+        current_amounts=[200000.0, 250000.0, 5.0, 11.0],
+        original_methods=["AUVM", "FIEI", "DKTP", "MAEA"],
+        original_dates=[
+            date(2010, 1, 1),
+            date(2011, 1, 1),
+            date(2012, 1, 1),
+            date(2013, 1, 1),
+        ],
+        original_amounts=[100000.0, 150000.0, 320000.0, 50000.0],
+    )
+    out = select_valuation_fields(df)
+    methods = out["valuation_method"].to_list()
+    dates = out["valuation_date"].to_list()
+    amounts = out["valuation_amount"].to_list()
+    cur_m = df["current_valuation_method"].to_list()
+    cur_d = df["current_valuation_date"].to_list()
+    cur_a = df["current_valuation_amount"].to_list()
+    orig_m = df["original_valuation_method"].to_list()
+    orig_d = df["original_valuation_date"].to_list()
+    orig_a = df["original_valuation_amount"].to_list()
+    # For each row, decide whether the helper picked current or original
+    # based on the amount, then assert method and date track that source.
+    expected_picks = ["current", "original", "original", "current"]
+    for i, expected in enumerate(expected_picks):
+        if expected == "current":
+            assert (methods[i], dates[i], amounts[i]) == (
+                cur_m[i],
+                cur_d[i],
+                cur_a[i],
+            ), f"row {i}: expected current, got method={methods[i]} date={dates[i]} amount={amounts[i]}"
+        else:
+            assert (methods[i], dates[i], amounts[i]) == (
+                orig_m[i],
+                orig_d[i],
+                orig_a[i],
+            ), f"row {i}: expected original, got method={methods[i]} date={dates[i]} amount={amounts[i]}"
+
+
+def test_select_valuation_fields_drops_internal_helper_columns() -> None:
+    """The helper must not leak its `_initial_*` / `_final_*` working
+    columns. Same contract as select_valuation_amount."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[200000.0],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[150000.0],
+    )
+    out = select_valuation_fields(df)
+    assert not any(c.startswith("_") for c in out.columns)
+    for c in ("valuation_method", "valuation_date", "valuation_amount"):
+        assert c in out.columns
+
+
+def test_select_valuation_fields_output_dtypes() -> None:
+    """Schema check: method=String, date=Date, amount=Float64."""
+    df = _props_with_full_valuation(
+        current_methods=["FIEI"],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[200000.0],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[150000.0],
+    )
+    out = select_valuation_fields(df)
+    assert out.schema["valuation_method"] == pl.String
+    assert out.schema["valuation_date"] == pl.Date
+    assert out.schema["valuation_amount"] == pl.Float64
+
+
+def test_select_valuation_fields_handles_null_current_method_safely() -> None:
+    """current_valuation_method is null. is_in([FIEI, FOEI]) returns
+    null in Polars; downstream `is_null() | (<= 10)` treats null as
+    null in arithmetic context, but our chain wraps it in `pl.when`
+    which treats null as falsy. Effective behaviour: null current
+    method -> _initial_use_current = false -> use original.
+    Documented here so a future Polars change in null-propagation
+    semantics is caught."""
+    df = _props_with_full_valuation(
+        current_methods=[None],
+        current_dates=[date(2024, 1, 1)],
+        current_amounts=[200000.0],
+        original_methods=["AUVM"],
+        original_dates=[date(2019, 6, 15)],
+        original_amounts=[150000.0],
+    )
+    out = select_valuation_fields(df)
+    # original wins because null method is not in the inspection set.
+    # Original amount is 150000 (>10), so no flip back; final = original.
+    assert out["valuation_method"].to_list() == ["AUVM"]
+    assert out["valuation_date"].to_list() == [date(2019, 6, 15)]
+    assert out["valuation_amount"].to_list() == [150000.0]
+
+
+# ---------------------------------------------------------------------------
+# calculate_unique_property_values - Stage 7 B-2
+# ---------------------------------------------------------------------------
+
+
+def _props_with_amount(
+    group_ids: Sequence[int],
+    property_ids: Sequence[str],
+    amounts: Sequence[float | None],
+) -> pl.DataFrame:
+    """Minimal input shape for calculate_unique_property_values."""
+    return pl.DataFrame(
+        {
+            "collateral_group_id": pl.Series(list(group_ids), dtype=pl.Int64),
+            "calc_property_id": pl.Series(list(property_ids), dtype=pl.String),
+            "valuation_amount": pl.Series(list(amounts), dtype=pl.Float64),
+        }
+    )
+
+
+def test_calculate_unique_by_group_sums_per_group_property() -> None:
+    """by_group: per (group, property), sum valuation_amount."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1, 2],
+        property_ids=["P1", "P1", "P2", "P3"],
+        amounts=[100.0, 100.0, 50.0, 200.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    by_pid = {row[1]: row for row in out.iter_rows()}
+    assert by_pid["P1"] == (1, "P1", 200.0)  # 100 + 100
+    assert by_pid["P2"] == (1, "P2", 50.0)
+    assert by_pid["P3"] == (2, "P3", 200.0)
+
+
+def test_calculate_unique_by_group_treats_nulls_as_zero_in_sum() -> None:
+    """by_group: NA siblings ignored in the sum (R's `na.rm = TRUE`)."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[100.0, None, 50.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    assert out.row(0) == (1, "P1", 150.0)
+
+
+def test_calculate_unique_by_loan_takes_first_non_null() -> None:
+    """by_loan: per (group, property), take first non-null in input order.
+
+    Pin: a leading NA row must NOT reduce the property to NA. Mirrors
+    the R fixture pattern from
+    test-flattening.R::"by_loan reduction prefers first non-missing
+    valuation and suppresses NA-only warning"."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[None, 500000.0, None],
+    )
+    out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_handles_analyst_walkthrough_pattern() -> None:
+    """The (500000, NA, NA) pattern from analyst-walkthrough.Rmd: a
+    property linked to multiple loans where exactly one row has the
+    valid valuation. Result must surface the valid value with no
+    inconsistency warning (since n_distinct(non_null) == 1)."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[500000.0, None, None],
+    )
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", UserWarning)
+        out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_warns_when_two_or_more_valid_disagree() -> None:
+    """Inconsistency: per (group, property), >=2 distinct non-null
+    values -> emit UserWarning. The warning text names the affected
+    property IDs."""
+    import pytest as _pytest
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1],
+        property_ids=["P1", "P1"],
+        amounts=[500000.0, 499000.0],
+    )
+    with _pytest.warns(UserWarning, match="inconsistent valuation amounts"):
+        out = calculate_unique_property_values(df, "by_loan")
+    # Implementation-defined: first non-null in input order = 500000.
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_does_not_warn_when_all_non_null_equal() -> None:
+    """Equal non-null values -> no warning (n_distinct == 1)."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[500.0, 500.0, 500.0],
+    )
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", UserWarning)
+        out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500.0)
+
+
+def test_calculate_unique_by_loan_warning_includes_property_ids() -> None:
+    """The inconsistency warning must name the affected property IDs
+    so the analyst can investigate. Pin the message format."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 2, 2],
+        property_ids=["PROP_A", "PROP_A", "PROP_B", "PROP_B"],
+        amounts=[500000.0, 499000.0, 200000.0, 100000.0],
+    )
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always", UserWarning)
+        calculate_unique_property_values(df, "by_loan")
+    msgs = [str(w.message) for w in caught]
+    assert any("PROP_A" in m and "PROP_B" in m for m in msgs)
+
+
+def test_calculate_unique_by_loan_result_invariant_to_row_shuffling_when_group_has_one_non_null() -> None:
+    """Determinism anchor (per user direction):
+
+    For a fixture where each (group, property) has at most one non-null
+    valuation, "first non-null" must produce the SAME result regardless
+    of input row order. If a future Polars version silently shuffles
+    within-group rows under group_by, this test catches it.
+
+    The implementation pins this via a sequential `_row_idx` column
+    sorted-by inside the agg; the test reverses the input frame to
+    ensure row-permutation invariance.
+    """
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1, 2, 2, 2],
+        property_ids=["P1", "P1", "P1", "P2", "P2", "P2"],
+        amounts=[None, 500000.0, None, None, None, 750000.0],
+    )
+
+    out_normal = calculate_unique_property_values(df, "by_loan")
+    out_reversed = calculate_unique_property_values(df.reverse(), "by_loan")
+    # Both runs must produce identical results.
+    assert out_normal.equals(out_reversed)
+    # Sanity check the picked values.
+    by_pid = {row[1]: row[2] for row in out_normal.iter_rows()}
+    assert by_pid["P1"] == 500000.0
+    assert by_pid["P2"] == 750000.0
+
+
+def test_calculate_unique_invalid_aggregation_method_raises() -> None:
+    """Mirrors R's `stop("aggregation_method must be one of...")`."""
+    import pytest as _pytest
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount([1], ["P1"], [100.0])
+    with _pytest.raises(ValueError, match="aggregation_method"):
+        calculate_unique_property_values(df, "invalid")  # type: ignore[arg-type]
+
+
+def test_calculate_unique_returns_empty_frame_on_empty_input() -> None:
+    """Empty input -> empty (group, property, value) frame with the
+    correct schema."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount([], [], [])
+    for method in ("by_loan", "by_group"):
+        out = calculate_unique_property_values(df, method)
+        assert out.height == 0
+        assert out.columns == ["collateral_group_id", "calc_property_id", "property_value"]
+
+
+def test_calculate_unique_output_sorted_by_group_then_property() -> None:
+    """Output row order is canonical (sorted by group ASC, property
+    ASC), independent of input order or Polars' group_by emission
+    order. Pinned so downstream consumers can rely on a stable
+    layout."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[2, 1, 2, 1, 3],
+        property_ids=["P_Z", "P_X", "P_A", "P_Y", "P_B"],
+        amounts=[100.0, 200.0, 300.0, 400.0, 500.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    keys = [(row[0], row[1]) for row in out.iter_rows()]
+    assert keys == sorted(keys)
