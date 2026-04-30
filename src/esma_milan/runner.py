@@ -27,6 +27,7 @@ from esma_milan.pipeline.flatten import Stage7Output, run_stage7
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.mapping_tables import compose_mapping_tables
+from esma_milan.pipeline.milan_map import compose_milan_pool
 from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 from esma_milan.pipeline.valuation import Stage6Output, run_stage6
 
@@ -222,6 +223,11 @@ def run_pipeline(
         stage3.loans, stage3.properties, loans_enriched
     )
 
+    # Stage 9: compose the 175-column MILAN template pool (Sheet 10) from
+    # the Stage-7 combined_flattened frame. Mirrors map_to_milan() in
+    # r_reference/R/milan_mapping.R.
+    milan_pool = compose_milan_pool(stage7.combined_flattened)
+
     write_pipeline_workbook(
         output_path,
         populated_sheets={
@@ -229,6 +235,7 @@ def run_pipeline(
             "Cleaned ESMA properties": properties_enriched,
             "Group classifications": stage5.classifications,
             "Combined flattened pool": stage7.combined_flattened,
+            "MILAN template pool": milan_pool,  # Stage 9: Sheet 10
             **mapping_tables,  # Stage 8.5: Sheets 1-4 (mapping tables)
         },
     )
