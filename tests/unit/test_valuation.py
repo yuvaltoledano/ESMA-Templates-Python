@@ -603,3 +603,215 @@ def test_select_valuation_fields_handles_null_current_method_safely() -> None:
     assert out["valuation_method"].to_list() == ["AUVM"]
     assert out["valuation_date"].to_list() == [date(2019, 6, 15)]
     assert out["valuation_amount"].to_list() == [150000.0]
+
+
+# ---------------------------------------------------------------------------
+# calculate_unique_property_values - Stage 7 B-2
+# ---------------------------------------------------------------------------
+
+
+def _props_with_amount(
+    group_ids: Sequence[int],
+    property_ids: Sequence[str],
+    amounts: Sequence[float | None],
+) -> pl.DataFrame:
+    """Minimal input shape for calculate_unique_property_values."""
+    return pl.DataFrame(
+        {
+            "collateral_group_id": pl.Series(list(group_ids), dtype=pl.Int64),
+            "calc_property_id": pl.Series(list(property_ids), dtype=pl.String),
+            "valuation_amount": pl.Series(list(amounts), dtype=pl.Float64),
+        }
+    )
+
+
+def test_calculate_unique_by_group_sums_per_group_property() -> None:
+    """by_group: per (group, property), sum valuation_amount."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1, 2],
+        property_ids=["P1", "P1", "P2", "P3"],
+        amounts=[100.0, 100.0, 50.0, 200.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    by_pid = {row[1]: row for row in out.iter_rows()}
+    assert by_pid["P1"] == (1, "P1", 200.0)  # 100 + 100
+    assert by_pid["P2"] == (1, "P2", 50.0)
+    assert by_pid["P3"] == (2, "P3", 200.0)
+
+
+def test_calculate_unique_by_group_treats_nulls_as_zero_in_sum() -> None:
+    """by_group: NA siblings ignored in the sum (R's `na.rm = TRUE`)."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[100.0, None, 50.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    assert out.row(0) == (1, "P1", 150.0)
+
+
+def test_calculate_unique_by_loan_takes_first_non_null() -> None:
+    """by_loan: per (group, property), take first non-null in input order.
+
+    Pin: a leading NA row must NOT reduce the property to NA. Mirrors
+    the R fixture pattern from
+    test-flattening.R::"by_loan reduction prefers first non-missing
+    valuation and suppresses NA-only warning"."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[None, 500000.0, None],
+    )
+    out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_handles_analyst_walkthrough_pattern() -> None:
+    """The (500000, NA, NA) pattern from analyst-walkthrough.Rmd: a
+    property linked to multiple loans where exactly one row has the
+    valid valuation. Result must surface the valid value with no
+    inconsistency warning (since n_distinct(non_null) == 1)."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[500000.0, None, None],
+    )
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", UserWarning)
+        out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_warns_when_two_or_more_valid_disagree() -> None:
+    """Inconsistency: per (group, property), >=2 distinct non-null
+    values -> emit UserWarning. The warning text names the affected
+    property IDs."""
+    import pytest as _pytest
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1],
+        property_ids=["P1", "P1"],
+        amounts=[500000.0, 499000.0],
+    )
+    with _pytest.warns(UserWarning, match="inconsistent valuation amounts"):
+        out = calculate_unique_property_values(df, "by_loan")
+    # Implementation-defined: first non-null in input order = 500000.
+    assert out.row(0) == (1, "P1", 500000.0)
+
+
+def test_calculate_unique_by_loan_does_not_warn_when_all_non_null_equal() -> None:
+    """Equal non-null values -> no warning (n_distinct == 1)."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1],
+        property_ids=["P1", "P1", "P1"],
+        amounts=[500.0, 500.0, 500.0],
+    )
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", UserWarning)
+        out = calculate_unique_property_values(df, "by_loan")
+    assert out.row(0) == (1, "P1", 500.0)
+
+
+def test_calculate_unique_by_loan_warning_includes_property_ids() -> None:
+    """The inconsistency warning must name the affected property IDs
+    so the analyst can investigate. Pin the message format."""
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 2, 2],
+        property_ids=["PROP_A", "PROP_A", "PROP_B", "PROP_B"],
+        amounts=[500000.0, 499000.0, 200000.0, 100000.0],
+    )
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always", UserWarning)
+        calculate_unique_property_values(df, "by_loan")
+    msgs = [str(w.message) for w in caught]
+    assert any("PROP_A" in m and "PROP_B" in m for m in msgs)
+
+
+def test_calculate_unique_by_loan_result_invariant_to_row_shuffling_when_group_has_one_non_null() -> None:
+    """Determinism anchor (per user direction):
+
+    For a fixture where each (group, property) has at most one non-null
+    valuation, "first non-null" must produce the SAME result regardless
+    of input row order. If a future Polars version silently shuffles
+    within-group rows under group_by, this test catches it.
+
+    The implementation pins this via a sequential `_row_idx` column
+    sorted-by inside the agg; the test reverses the input frame to
+    ensure row-permutation invariance.
+    """
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[1, 1, 1, 2, 2, 2],
+        property_ids=["P1", "P1", "P1", "P2", "P2", "P2"],
+        amounts=[None, 500000.0, None, None, None, 750000.0],
+    )
+
+    out_normal = calculate_unique_property_values(df, "by_loan")
+    out_reversed = calculate_unique_property_values(df.reverse(), "by_loan")
+    # Both runs must produce identical results.
+    assert out_normal.equals(out_reversed)
+    # Sanity check the picked values.
+    by_pid = {row[1]: row[2] for row in out_normal.iter_rows()}
+    assert by_pid["P1"] == 500000.0
+    assert by_pid["P2"] == 750000.0
+
+
+def test_calculate_unique_invalid_aggregation_method_raises() -> None:
+    """Mirrors R's `stop("aggregation_method must be one of...")`."""
+    import pytest as _pytest
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount([1], ["P1"], [100.0])
+    with _pytest.raises(ValueError, match="aggregation_method"):
+        calculate_unique_property_values(df, "invalid")  # type: ignore[arg-type]
+
+
+def test_calculate_unique_returns_empty_frame_on_empty_input() -> None:
+    """Empty input -> empty (group, property, value) frame with the
+    correct schema."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount([], [], [])
+    for method in ("by_loan", "by_group"):
+        out = calculate_unique_property_values(df, method)
+        assert out.height == 0
+        assert out.columns == ["collateral_group_id", "calc_property_id", "property_value"]
+
+
+def test_calculate_unique_output_sorted_by_group_then_property() -> None:
+    """Output row order is canonical (sorted by group ASC, property
+    ASC), independent of input order or Polars' group_by emission
+    order. Pinned so downstream consumers can rely on a stable
+    layout."""
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    df = _props_with_amount(
+        group_ids=[2, 1, 2, 1, 3],
+        property_ids=["P_Z", "P_X", "P_A", "P_Y", "P_B"],
+        amounts=[100.0, 200.0, 300.0, 400.0, 500.0],
+    )
+    out = calculate_unique_property_values(df, "by_group")
+    keys = [(row[0], row[1]) for row in out.iter_rows()]
+    assert keys == sorted(keys)
