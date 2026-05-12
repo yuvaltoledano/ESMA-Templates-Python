@@ -95,18 +95,43 @@ LOANS_CHARACTER_COLS: tuple[str, ...] = ("RREL2", "RREL3", "RREL4", "RREL5")
 COLLATERALS_CHARACTER_COLS: tuple[str, ...] = ("RREC2", "RREC3", "RREC4")
 
 # Date columns to normalise via parse_iso_or_excel_date on the loans table.
-# r_reference/R/pipeline.R:184-189
+#
+# Deliberate divergence from r_reference/R/pipeline.R:184-189: R's list is
+# incomplete vs the ESMA RRE taxonomy (it covers 9 of the 15 {DATEFORMAT}
+# fields). R still emits Excel serials for the missing fields because
+# readr auto-detects ISO-format columns as Date during CSV read; Polars
+# does no such auto-detection, so unlisted columns reach the writer as
+# String and get written as ISO strings instead of Excel serials. The
+# parity-positive fix is to expand Python's list to cover every
+# {DATEFORMAT} field in the bundled taxonomy.
+#
+# Coverage is enforced at test time by a taxonomy-driven validator in
+# tests/unit/test_date_columns_coverage.py: if a future taxonomy update
+# adds a new {DATEFORMAT} field, that test fails until this list is
+# updated. RREL6 (data_cut_off_date) is intentionally excluded — it's a
+# metadata column dropped in Stage 1 via ALWAYS_DROPPED_COLUMNS.
 LOAN_DATE_COLUMNS: tuple[str, ...] = (
     "pool_cutoff_date", "origination_date", "maturity_date",
     "date_last_in_arrears", "interest_revision_date_1",
+    "interest_revision_date_2", "interest_revision_date_3",
     "date_of_repurchase", "date_of_restructuring",
     "redemption_date", "default_date",
+    "pool_addition_date", "principal_grace_period_end_date",
+    "prepayment_lock_out_end_date", "prepayment_fee_end_date",
+    "prepayment_date",
 )
 
 # Date columns to normalise on the collaterals table.
-# r_reference/R/pipeline.R:194-197
+#
+# Same deliberate divergence rationale as LOAN_DATE_COLUMNS: r_reference
+# /R/pipeline.R:194-197 omits `date_of_sale` (RREC20) although the
+# taxonomy marks it as {DATEFORMAT}. `property_pool_cutoff_date` and
+# `pool_cutoff_date` aren't taxonomy fields but appear via Stage 1's
+# pool-cutoff metadata propagation; kept here so the parser handles them
+# uniformly.
 PROPERTY_DATE_COLUMNS: tuple[str, ...] = (
     "original_valuation_date", "current_valuation_date",
+    "date_of_sale",
     "property_pool_cutoff_date", "pool_cutoff_date",
 )
 
