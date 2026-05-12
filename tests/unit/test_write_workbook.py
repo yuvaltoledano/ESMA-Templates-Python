@@ -164,6 +164,72 @@ def test_writer_passes_through_non_date_dtypes(tmp_path: Path) -> None:
     assert isinstance(rows[1][3], bool)
 
 
+def test_writer_emits_excel_serials_for_every_loan_date_column(tmp_path: Path) -> None:
+    """For every column listed in LOAN_DATE_COLUMNS, when the writer
+    receives it as `pl.Date`, the cell round-trips back through openpyxl
+    as `int` (Excel serial), never `str`.
+
+    Pins the dtype-at-writer contract for the Domi-2025-1 fix: the bug
+    was that three loan date columns (pool_addition_date,
+    principal_grace_period_end_date, prepayment_date) were missing from
+    LOAN_DATE_COLUMNS, so Stage 1 left them as `pl.String` and the
+    writer emitted ISO strings. This test guards against the inverse
+    regression: a future refactor that drops a column from
+    LOAN_DATE_COLUMNS while leaving it in the writer pipeline would
+    fail here loudly with "got str, expected int" rather than silently
+    producing ISO strings in real workbooks.
+    """
+    from esma_milan.config import LOAN_DATE_COLUMNS
+
+    anchor = date(2024, 6, 30)
+    df = pl.DataFrame(
+        {col: pl.Series([anchor], dtype=pl.Date) for col in LOAN_DATE_COLUMNS}
+    )
+    out = tmp_path / "loans.xlsx"
+    write_pipeline_workbook(out, populated_sheets={"Cleaned ESMA loans": df})
+
+    wb = openpyxl.load_workbook(out, read_only=True, data_only=True)
+    ws = wb["Cleaned ESMA loans"]
+    ws.reset_dimensions()
+    rows = list(ws.iter_rows(values_only=True))
+    header = rows[0]
+    data = rows[1]
+    expected_serial = _date_to_excel_serial(anchor)
+    for col_name, cell in zip(header, data, strict=True):
+        assert isinstance(cell, int) and not isinstance(cell, bool), (
+            f"column {col_name!r} round-tripped as {type(cell).__name__} "
+            f"{cell!r}, expected int (Excel serial). LOAN_DATE_COLUMNS "
+            f"contains a column the writer is not encoding as a date."
+        )
+        assert cell == expected_serial
+
+
+def test_writer_emits_excel_serials_for_every_property_date_column(tmp_path: Path) -> None:
+    """Same contract as the loan version, applied to PROPERTY_DATE_COLUMNS."""
+    from esma_milan.config import PROPERTY_DATE_COLUMNS
+
+    anchor = date(2024, 6, 30)
+    df = pl.DataFrame(
+        {col: pl.Series([anchor], dtype=pl.Date) for col in PROPERTY_DATE_COLUMNS}
+    )
+    out = tmp_path / "props.xlsx"
+    write_pipeline_workbook(out, populated_sheets={"Cleaned ESMA properties": df})
+
+    wb = openpyxl.load_workbook(out, read_only=True, data_only=True)
+    ws = wb["Cleaned ESMA properties"]
+    ws.reset_dimensions()
+    rows = list(ws.iter_rows(values_only=True))
+    header = rows[0]
+    data = rows[1]
+    expected_serial = _date_to_excel_serial(anchor)
+    for col_name, cell in zip(header, data, strict=True):
+        assert isinstance(cell, int) and not isinstance(cell, bool), (
+            f"column {col_name!r} round-tripped as {type(cell).__name__} "
+            f"{cell!r}, expected int (Excel serial)."
+        )
+        assert cell == expected_serial
+
+
 def test_writer_handles_mix_of_date_and_non_date_columns(tmp_path: Path) -> None:
     """A realistic Cleaned ESMA loans-style frame with multiple date
     columns interspersed with non-date columns. All dates encoded;
