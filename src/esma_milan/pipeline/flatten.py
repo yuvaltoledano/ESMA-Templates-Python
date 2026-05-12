@@ -219,8 +219,14 @@ def flatten_loan_collateral(
          when group_loan_total is 0, null, OR NaN.
       9. Build main_property_details: rename `valuation_method` ->
          `final_valuation_method`, `valuation_date` -> `final_valuation_date`,
-         `calc_property_id` -> `main_property_id`. Drop redundant amount
-         columns. Distinct on group_id (one main property per group).
+         `calc_property_id` -> `main_property_id`. If the property side
+         carries `pool_cutoff_date`, rename to `property_pool_cutoff_date`
+         BEFORE the loans join so the two frames don't share a column
+         (otherwise Polars produces `pool_cutoff_date_right`). Mirrors
+         r_reference/R/property_flattening_function.R:208-211. Drop
+         redundant amount columns. Distinct on group_id (one main
+         property per group). `property_pool_cutoff_date` is dropped by
+         `apply_derived_fields` to match pipeline.R:499.
       10. Final assembly: left-join loans_enriched (minus structure_type)
           with all_aggregated_values, then with main_property_details,
           then with group_classification's structure_type.
@@ -391,6 +397,23 @@ def flatten_loan_collateral(
             }
         )
     )
+
+    # Rename the property-side `pool_cutoff_date` to
+    # `property_pool_cutoff_date` BEFORE the loans join so the two frames
+    # never share a column. Without this, Polars auto-renames the
+    # collision to `pool_cutoff_date_right` and the column survives all
+    # the way to the workbook. Mirrors
+    # r_reference/R/property_flattening_function.R:208-211. The wrapper
+    # then drops `property_pool_cutoff_date` from the final output
+    # (mirrored in `apply_derived_fields`, matching pipeline.R:499).
+    if (
+        "pool_cutoff_date" in main_property_details.columns
+        and "property_pool_cutoff_date" not in main_property_details.columns
+    ):
+        main_property_details = main_property_details.rename(
+            {"pool_cutoff_date": "property_pool_cutoff_date"}
+        )
+
     main_property_details = main_property_details.drop(
         [c for c in _MAIN_PROPERTY_DROP_COLS if c in main_property_details.columns]
     ).unique(subset=["collateral_group_id"], keep="first", maintain_order=True)
@@ -545,7 +568,15 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
         The combined flattened pool frame in fixture-byte-equal column
         order, ready for the workbook writer.
     """
-    df = flattened
+    # R's wrapper drops `property_pool_cutoff_date` between flatten and
+    # the LTV/seasoning derivations (r_reference/R/pipeline.R:499). Doing
+    # it at the top of `apply_derived_fields` mirrors that ordering. The
+    # column was created by `flatten_loan_collateral`'s rename of
+    # main_property_details's `pool_cutoff_date`, which prevents it from
+    # colliding with the loans-side `pool_cutoff_date` during the join.
+    df = flattened.drop(
+        [c for c in ("property_pool_cutoff_date",) if c in flattened.columns]
+    )
 
     # -- LTVs: per-group sums with NaN-as-0 + null-as-0 + denom-gate.
     df = df.with_columns(

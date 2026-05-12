@@ -1198,6 +1198,109 @@ def test_apply_derived_fields_renames_to_calc_prefix() -> None:
         assert new in out.columns, f"missing after rename: {new}"
 
 
+# -- pool_cutoff_date collision: rename + drop ------------------------------
+
+
+def test_flatten_renames_property_pool_cutoff_date_no_right_suffix() -> None:
+    """When both loans and properties carry `pool_cutoff_date`, the
+    flatten join must not produce a `pool_cutoff_date_right` column.
+
+    Mirrors r_reference/R/property_flattening_function.R:208-211 (rename
+    on `main_property_details` before the loans join) and
+    r_reference/R/pipeline.R:499 (drop `property_pool_cutoff_date` from
+    the post-flatten frame).
+
+    Regression for the Domi 2025-1 parity finding: real-fixture loans
+    AND properties both carry `pool_cutoff_date`, which Polars
+    auto-renamed to `pool_cutoff_date_right` and surfaced as a 117th
+    column in Combined flattened pool. The synthetic fixture's
+    collaterals.csv carries no property `pool_cutoff_date`, so the bug
+    was invisible there.
+    """
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    loans = pl.DataFrame(
+        {
+            "calc_loan_id": pl.Series(["L1"], dtype=pl.String),
+            "collateral_group_id": pl.Series([1], dtype=pl.Int64),
+            "current_principal_balance": pl.Series([100.0], dtype=pl.Float64),
+            "original_principal_balance": pl.Series([100.0], dtype=pl.Float64),
+            "pool_cutoff_date": pl.Series([date(2024, 6, 30)], dtype=pl.Date),
+            "origination_date": pl.Series([date(2020, 1, 1)], dtype=pl.Date),
+        }
+    )
+    props = pl.DataFrame(
+        {
+            "underlying_exposure_identifier": pl.Series(["L1"], dtype=pl.String),
+            "calc_property_id": pl.Series(["P1"], dtype=pl.String),
+            "collateral_group_id": pl.Series([1], dtype=pl.Int64),
+            "current_valuation_method": pl.Series(["FIEI"], dtype=pl.String),
+            "current_valuation_amount": pl.Series([200.0], dtype=pl.Float64),
+            "current_valuation_date": pl.Series(
+                [date(2024, 1, 1)], dtype=pl.Date
+            ),
+            "original_valuation_method": pl.Series(["FIEI"], dtype=pl.String),
+            "original_valuation_amount": pl.Series([100.0], dtype=pl.Float64),
+            "original_valuation_date": pl.Series(
+                [date(2020, 1, 1)], dtype=pl.Date
+            ),
+            "occupancy_type": pl.Series(["FOWN"], dtype=pl.String),
+            # The collision trigger: properties carry pool_cutoff_date too.
+            "pool_cutoff_date": pl.Series([date(2024, 6, 30)], dtype=pl.Date),
+        }
+    )
+    cls = _classification([(1, TYPE_1)])
+
+    flat = flatten_loan_collateral(loans, props, cls, "by_loan")
+
+    # The Polars-default `pool_cutoff_date_right` collision column must
+    # never be created.
+    assert "pool_cutoff_date_right" not in flat.columns
+    # The loan-side `pool_cutoff_date` must survive (used downstream by
+    # `apply_derived_fields` for seasoning).
+    assert "pool_cutoff_date" in flat.columns
+    assert flat["pool_cutoff_date"].dtype == pl.Date
+    # The property side appears under its renamed name until the wrapper
+    # drops it.
+    assert "property_pool_cutoff_date" in flat.columns
+    # No duplicate column references survived.
+    assert flat.columns.count("pool_cutoff_date") == 1
+
+    derived = apply_derived_fields(flat)
+
+    # apply_derived_fields drops `property_pool_cutoff_date` to match
+    # r_reference/R/pipeline.R:499.
+    assert "property_pool_cutoff_date" not in derived.columns
+    assert "pool_cutoff_date_right" not in derived.columns
+    assert "pool_cutoff_date" in derived.columns
+    assert derived.columns.count("pool_cutoff_date") == 1
+
+
+def test_flatten_no_property_pool_cutoff_when_property_side_absent() -> None:
+    """When properties don't carry `pool_cutoff_date` (the synthetic
+    fixture case), the rename is a no-op and no
+    `property_pool_cutoff_date` column appears anywhere. Pins the
+    `not in main_property_details.columns` guard."""
+    from esma_milan.pipeline.flatten import apply_derived_fields
+
+    loans = _loans_enriched([("L1", 1, 100.0)])
+    loans = loans.with_columns(
+        pl.Series("original_principal_balance", [100.0], dtype=pl.Float64),
+        pl.Series("pool_cutoff_date", [date(2024, 6, 30)], dtype=pl.Date),
+        pl.Series("origination_date", [date(2020, 1, 1)], dtype=pl.Date),
+    )
+    props = _properties_enriched([("L1", "P1", 1, "FIEI", 200.0)])
+    assert "pool_cutoff_date" not in props.columns
+
+    flat = flatten_loan_collateral(loans, props, _classification([(1, TYPE_1)]), "by_loan")
+    derived = apply_derived_fields(flat)
+
+    assert "property_pool_cutoff_date" not in flat.columns
+    assert "property_pool_cutoff_date" not in derived.columns
+    assert "pool_cutoff_date_right" not in flat.columns
+    assert "pool_cutoff_date_right" not in derived.columns
+
+
 # -- Column reorder: exact match against the 85-col Sheet 9 fixture ---------
 
 
