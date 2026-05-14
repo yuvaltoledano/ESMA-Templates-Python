@@ -10,6 +10,7 @@ if a future refactor switches to openpyxl's native date support
 
 from __future__ import annotations
 
+import io
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import polars as pl
 
 from esma_milan.io_layer.write_workbook import (
     _date_to_excel_serial,
+    build_workbook_bytes,
     write_pipeline_workbook,
 )
 
@@ -260,6 +262,85 @@ def test_writer_handles_mix_of_date_and_non_date_columns(tmp_path: Path) -> None
         _date_to_excel_serial(date(2049, 3, 15)),
         True,
     )
+
+
+# ---------------------------------------------------------------------------
+# build_workbook_bytes: in-memory destination
+# ---------------------------------------------------------------------------
+
+
+def test_build_workbook_bytes_round_trips_in_memory() -> None:
+    """build_workbook_bytes produces a valid XLSX in memory that opens
+    via openpyxl from a BytesIO buffer - no disk involved. Sheet order,
+    values, and the pl.Date -> Excel-serial-int encoding contract all
+    hold exactly as they do for the on-disk writer."""
+    from esma_milan.config import OUTPUT_SHEET_ORDER
+
+    df = pl.DataFrame(
+        {
+            "calc_loan_id": pl.Series(["L1", "L2"], dtype=pl.String),
+            "origination_date": pl.Series(
+                [date(2019, 3, 15), date(2020, 6, 1)], dtype=pl.Date
+            ),
+            "balance": pl.Series([220000, 350000], dtype=pl.Int64),
+        }
+    )
+    raw = build_workbook_bytes(populated_sheets={"Cleaned ESMA loans": df})
+    assert isinstance(raw, bytes) and len(raw) > 0
+
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    assert wb.sheetnames == list(OUTPUT_SHEET_ORDER)
+
+    ws = wb["Cleaned ESMA loans"]
+    ws.reset_dimensions()
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0] == ("calc_loan_id", "origination_date", "balance")
+    # Date column round-trips as Excel-serial int, not datetime.date.
+    assert rows[1] == ("L1", 43539, 220000)
+    assert isinstance(rows[1][1], int) and not isinstance(rows[1][1], bool)
+    assert rows[2] == ("L2", 43983, 350000)
+
+
+def test_build_workbook_bytes_matches_write_pipeline_workbook(tmp_path: Path) -> None:
+    """The in-memory and on-disk destinations are byte-identical by
+    construction: both delegate to _populate_workbook. Pin that the
+    cell content read back from each is identical for every sheet, so
+    the FastAPI service's in-memory output cannot silently drift from
+    the CLI's on-disk output."""
+    loans = pl.DataFrame(
+        {
+            "calc_loan_id": pl.Series(["L1"], dtype=pl.String),
+            "origination_date": pl.Series([date(2019, 3, 15)], dtype=pl.Date),
+        }
+    )
+    classifications = pl.DataFrame(
+        {
+            "collateral_group_id": pl.Series([1, 2], dtype=pl.Int64),
+            "structure_type": pl.Series(["1:1", "1:many"], dtype=pl.String),
+        }
+    )
+    populated = {
+        "Cleaned ESMA loans": loans,
+        "Group classifications": classifications,
+    }
+
+    on_disk = tmp_path / "out.xlsx"
+    write_pipeline_workbook(on_disk, populated_sheets=populated)
+    in_memory = build_workbook_bytes(populated_sheets=populated)
+
+    wb_disk = openpyxl.load_workbook(on_disk, read_only=True, data_only=True)
+    wb_mem = openpyxl.load_workbook(
+        io.BytesIO(in_memory), read_only=True, data_only=True
+    )
+    assert wb_disk.sheetnames == wb_mem.sheetnames
+    for name in wb_disk.sheetnames:
+        ws_disk = wb_disk[name]
+        ws_disk.reset_dimensions()
+        ws_mem = wb_mem[name]
+        ws_mem.reset_dimensions()
+        assert list(ws_disk.iter_rows(values_only=True)) == list(
+            ws_mem.iter_rows(values_only=True)
+        ), f"sheet {name!r} differs between on-disk and in-memory output"
 
 
 def test_writer_unpopulated_sheets_stay_empty(tmp_path: Path) -> None:
