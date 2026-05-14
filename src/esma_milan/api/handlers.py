@@ -354,6 +354,10 @@ def _build_dry_run_result(
         chosen_aggregation=result.chosen_aggregation_method,
         loan_count=result.stage7.combined_flattened.height,
         property_count=result.stage3.properties.height,
-        group_count=result.stage4.collateral_groups.height,
+        # Stage 4's collateral_groups frame has one row per property
+        # node, so its height is the property-node count - not the
+        # group count. The group count is the number of distinct
+        # connected components, i.e. distinct collateral_group_id values.
+        group_count=result.stage4.collateral_groups["collateral_group_id"].n_unique(),
         warnings=warnings,
     )
