@@ -29,13 +29,16 @@ in-memory (`runner.run_pipeline(output_dir=None)` -> bytes). A future
 
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
 import structlog
+from fastapi import UploadFile
 
+from esma_milan.api.schemas import ErrorCode
 from esma_milan.runner import run_pipeline
 
 log = structlog.get_logger(__name__)
@@ -61,21 +64,53 @@ DEFAULT_TAXONOMY_PATH: Path = Path("r_reference/inputs/ESMA template taxonomy.xl
 
 _AGGREGATION_CHOICES: frozenset[str] = frozenset({"auto", "by_loan", "by_group"})
 
+# Transport-level hard cap on a single uploaded file, enforced before the
+# bytes are read into memory. This is distinct from MAX_SYNC_LOAN_COUNT:
+# that is a content-level guardrail (loan rows, checked after the file is
+# in hand); this is a transport-level one (raw bytes) that stops a
+# hostile 1 GB upload from forcing a large allocation in the first place.
+MAX_UPLOAD_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MiB
+
+# Content-Type allowlists for the uploaded files. Strict by design: a
+# public API accepting only explicit content types has less attack
+# surface than one that sniffs `application/octet-stream`. Clients that
+# mislabel their CSVs get a 400 that names the accepted types.
+CSV_CONTENT_TYPES: frozenset[str] = frozenset({"text/csv", "application/csv"})
+XLSX_CONTENT_TYPES: frozenset[str] = frozenset(
+    {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+)
+
+# deal_name flows into the Content-Disposition header and the output
+# workbook filename. The allowlist - alphanumerics, space, hyphen,
+# underscore, period - is what makes that safe: it admits no quotes,
+# newlines, null bytes, path separators or `..`, so header-injection and
+# path-traversal are excluded as a class rather than blocklisted
+# character by character.
+MAX_DEAL_NAME_LENGTH: int = 100
+_DEAL_NAME_PATTERN = re.compile(r"[A-Za-z0-9 ._-]+")
+
 
 class ApiError(Exception):
     """A failure that has already been classified into an HTTP response.
 
-    `message` is sanitized and safe to return to the client; `details`
-    is optional extra context that is also client-safe. Full diagnostic
-    detail - stack traces, pipeline internals - goes to the server-side
+    `status_code` is the HTTP status to return (it is not echoed in the
+    response body); `error` is the stable machine-readable `ErrorCode`;
+    `message` is a sanitized, client-safe summary; `details` is optional
+    structured context that is also client-safe. Full diagnostic detail
+    - stack traces, pipeline internals - goes to the server-side
     structlog stream, never into an `ApiError`.
     """
 
     def __init__(
-        self, status_code: int, message: str, details: str | None = None
+        self,
+        status_code: int,
+        error: ErrorCode,
+        message: str,
+        details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error = error
         self.message = message
         self.details = details
 
@@ -129,6 +164,96 @@ def _first_line(text: str, *, limit: int = 300) -> str:
     return "(no error detail)"
 
 
+def validate_upload(
+    file: UploadFile,
+    *,
+    field: str,
+    allowed_content_types: frozenset[str],
+) -> None:
+    """Transport-level checks on an uploaded file, run before `.read()`.
+
+    Rejects a file larger than `MAX_UPLOAD_FILE_SIZE` (413
+    `file_too_large`) or one whose Content-Type is not in
+    `allowed_content_types` (400 `invalid_content_type`). Size is
+    checked first and before the bytes are pulled into memory, so an
+    oversized upload is turned away rather than allocated.
+
+    Args:
+        file: the multipart `UploadFile` from the endpoint signature.
+        field: the form field name ("loans", "collaterals", "taxonomy"),
+            used in the error so the client knows which file to fix.
+        allowed_content_types: the lower-cased Content-Types accepted for
+            this field (`CSV_CONTENT_TYPES` or `XLSX_CONTENT_TYPES`).
+
+    Raises:
+        ApiError: 413 for an oversized file, 400 for a disallowed
+            Content-Type. Both carry a client-safe `details` dict.
+    """
+    size = file.size
+    if size is not None and size > MAX_UPLOAD_FILE_SIZE:
+        raise ApiError(
+            413,
+            "file_too_large",
+            f"Uploaded file '{field}' exceeds the per-file size limit of "
+            f"{MAX_UPLOAD_FILE_SIZE // (1024 * 1024)} MB.",
+            details={
+                "field": field,
+                "size_bytes": size,
+                "limit_bytes": MAX_UPLOAD_FILE_SIZE,
+            },
+        )
+
+    # Compare on the bare type, tolerating a charset/parameter suffix
+    # (e.g. "text/csv; charset=utf-8") but staying strict on the type.
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in allowed_content_types:
+        allowed = ", ".join(sorted(allowed_content_types))
+        raise ApiError(
+            400,
+            "invalid_content_type",
+            f"Uploaded file '{field}' has an unsupported Content-Type. "
+            f"Send one of: {allowed}.",
+            details={
+                "field": field,
+                "received": file.content_type,
+                "allowed": sorted(allowed_content_types),
+            },
+        )
+
+
+def validate_deal_name(deal_name: str) -> None:
+    """Validate `deal_name` before it reaches the filename / header.
+
+    Allowed: letters, digits, space, hyphen, underscore, period; length
+    1-100 characters. `re.fullmatch` (not `re.match`) is deliberate -
+    `match` with a `$` anchor would still admit a trailing newline,
+    which is exactly the header-injection character this guards against.
+
+    Raises:
+        ApiError: 400 `invalid_deal_name` if the name is empty, too
+            long, or contains a disallowed character.
+    """
+    if deal_name.strip() == "":
+        raise ApiError(
+            400, "invalid_deal_name", "deal_name must not be empty."
+        )
+    if len(deal_name) > MAX_DEAL_NAME_LENGTH:
+        raise ApiError(
+            400,
+            "invalid_deal_name",
+            f"deal_name must be at most {MAX_DEAL_NAME_LENGTH} characters.",
+            details={"length": len(deal_name), "limit": MAX_DEAL_NAME_LENGTH},
+        )
+    if _DEAL_NAME_PATTERN.fullmatch(deal_name) is None:
+        raise ApiError(
+            400,
+            "invalid_deal_name",
+            "deal_name may only contain letters, digits, spaces, hyphens, "
+            "underscores and periods.",
+            details={"field": "deal_name"},
+        )
+
+
 def process_pipeline_from_bytes(
     *,
     loans_bytes: bytes,
@@ -165,13 +290,13 @@ def process_pipeline_from_bytes(
             required fields); 500 for anything unexpected. Stack traces
             are logged server-side, never surfaced in the `ApiError`.
     """
-    if deal_name.strip() == "":
-        raise ApiError(400, "deal_name must not be empty.")
+    validate_deal_name(deal_name)
     if aggregation not in _AGGREGATION_CHOICES:
         raise ApiError(
             400,
+            "validation_error",
             "aggregation must be one of: auto, by_loan, by_group.",
-            details=f"received: {aggregation!r}",
+            details={"field": "aggregation", "received": aggregation},
         )
 
     # --- Size guardrail (before any parsing) ------------------------------
@@ -185,12 +310,16 @@ def process_pipeline_from_bytes(
         )
         raise ApiError(
             413,
+            "size_limit_exceeded",
             "Pool size exceeds the synchronous endpoint limit "
             "(approximately 30,000 loans; the check counts CSV lines, so "
             "the effective cap is ~29,999 data rows). For larger pools, "
             "use the asynchronous job endpoint at `POST /api/jobs` "
             "(not yet implemented).",
-            details=f"estimated {estimated_rows} loan rows in the upload",
+            details={
+                "estimated_loan_rows": estimated_rows,
+                "limit": MAX_SYNC_LOAN_COUNT,
+            },
         )
 
     # "auto" -> let Stage 6 detect; otherwise pass the explicit method.
@@ -231,6 +360,7 @@ def process_pipeline_from_bytes(
                 )
                 raise ApiError(
                     500,
+                    "internal_error",
                     "The server's default ESMA taxonomy is unavailable. "
                     "Include a `taxonomy` file in the request to proceed.",
                 )
@@ -263,8 +393,9 @@ def process_pipeline_from_bytes(
             )
             raise ApiError(
                 400,
+                "invalid_csv",
                 "The uploaded data could not be processed.",
-                details=_first_line(str(exc)),
+                details={"reason": _first_line(str(exc))},
             ) from exc
         except Exception as exc:
             # Anything else is unexpected. Log full detail server-side;
@@ -278,6 +409,7 @@ def process_pipeline_from_bytes(
             )
             raise ApiError(
                 500,
+                "internal_error",
                 "Pipeline error - check input data.",
             ) from exc
 

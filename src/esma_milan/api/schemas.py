@@ -9,7 +9,29 @@ would fight the framework.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# Stable, machine-readable error codes. Clients branch on `error` rather
+# than parsing `message` strings, so these are part of the API contract:
+# add new codes as failure modes appear, never repurpose an existing one.
+#
+# The vocabulary is defined in full here even though the validators that
+# raise `file_too_large`, `invalid_content_type`, and `invalid_deal_name`
+# land in the Day 2 hardening commit - keeping the type stable across
+# commits is cheaper than widening it twice.
+ErrorCode = Literal[
+    "missing_field",  # a required upload or form field was absent
+    "validation_error",  # a field was present but malformed (bad type/range)
+    "invalid_csv",  # uploaded CSV could not be parsed by the pipeline
+    "size_limit_exceeded",  # pool exceeds the synchronous loan-count guardrail
+    "file_too_large",  # a single upload exceeds the per-file byte limit
+    "invalid_content_type",  # an upload's Content-Type is not accepted
+    "invalid_deal_name",  # deal_name failed character/length validation
+    "rate_limit_exceeded",  # per-IP request rate limit tripped
+    "internal_error",  # an unexpected server-side failure
+]
 
 
 class HealthResponse(BaseModel):
@@ -49,12 +71,15 @@ class DryRunResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Structured error body returned for every non-2xx API response.
 
-    ``message`` is a sanitized, client-safe summary; ``details`` is
-    optional extra context that is also client-safe. Stack traces and
-    pipeline internals are never included here - full diagnostic detail
-    goes to the server-side structlog stream.
+    ``error`` is a stable machine-readable code (see ``ErrorCode``) that
+    clients branch on; ``message`` is a sanitized, client-safe summary
+    for humans; ``details`` is optional structured context that is also
+    client-safe (e.g. which field failed, what limit was exceeded). The
+    HTTP status lives on the response itself, not in the body. Stack
+    traces and pipeline internals are never included here - full
+    diagnostic detail goes to the server-side structlog stream.
     """
 
-    status_code: int
+    error: ErrorCode
     message: str
-    details: str | None = None
+    details: dict[str, object] | None = None
