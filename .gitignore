@@ -218,3 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 .DS_Store
 **/.DS_Store
+
+# Frontend (React + Vite GUI under frontend/)
+#   frontend/.gitignore also covers these; listed here so a root-level
+#   `git status` / `git clean` never picks them up either.
+frontend/node_modules/
+frontend/dist/
