@@ -46,6 +46,7 @@ jobs:
             any::logger
             any::tictoc
             any::svDialogs
+            any::here
 
       - name: Layer 2 parity (live R vs Python on staged fixtures)
         run: uv run pytest tests/parity -m "live_r" -v
