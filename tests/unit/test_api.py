@@ -17,9 +17,10 @@ import io
 from pathlib import Path
 
 import openpyxl
+import pytest
 from fastapi.testclient import TestClient
 
-from esma_milan.api.server import app
+from esma_milan.api.server import app, limiter
 from esma_milan.runner import run_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,20 @@ def _oversized_loans_csv(n_rows: int) -> bytes:
     """
     header = _LOANS_BYTES.split(b"\n", 1)[0]
     return header + b"\n" + b"x\n" * n_rows
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter() -> None:
+    """Give every test a clean per-IP rate-limit counter.
+
+    The Limiter's in-memory store is module-level state on the shared
+    `app`, so without this reset the dozens of /api/process requests
+    across this file would exhaust the 10/minute limit and later tests
+    would see spurious 429s. Function-scoped and autouse: each test -
+    including the dedicated rate-limit test, which re-enters the fixture
+    like any other - starts counting from zero.
+    """
+    limiter.reset()
 
 
 # --- Day 1 regression lock (PR #16) --------------------------------------
@@ -341,3 +356,167 @@ def test_process_with_aggregation_override() -> None:
 
     assert response.status_code == 200, response.text
     assert response.json()["chosen_aggregation"] == "by_loan"
+
+
+# --- Commit 2: hardening - rate limiting ---------------------------------
+
+
+def test_process_rate_limit_returns_429_on_11th_request() -> None:
+    """The 11th /api/process request inside the window returns 429 with
+    the rate_limit_exceeded ErrorResponse; the first 10 are admitted."""
+    client = TestClient(app)
+    for i in range(10):
+        admitted = client.post(
+            "/api/process",
+            files=_process_files(),
+            data={"deal_name": "RATE_LIMIT_PROBE", "dry_run": "true"},
+        )
+        assert admitted.status_code != 429, f"request {i + 1}: {admitted.text}"
+
+    throttled = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "RATE_LIMIT_PROBE", "dry_run": "true"},
+    )
+    assert throttled.status_code == 429, throttled.text
+    body = throttled.json()
+    assert body["error"] == "rate_limit_exceeded"
+    assert isinstance(body["message"], str) and body["message"]
+
+
+# --- Commit 2: hardening - error-response consistency --------------------
+
+
+def test_validation_error_returns_consistent_error_response() -> None:
+    """A present-but-malformed field (min_coverage outside [0.0, 1.0])
+    yields a 422 in the ErrorResponse shape, not FastAPI's default
+    verbose validation body."""
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={
+            "deal_name": "SYNTHETIC_FIXTURE",
+            "dry_run": "true",
+            "min_coverage": "2.5",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["error"] == "validation_error"
+    assert set(body) == {"error", "message", "details"}
+
+
+def test_internal_error_does_not_leak_stack_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected pipeline failure returns a generic 500: no
+    traceback, no project-tree file paths, no pipeline-internal module
+    names in the response body. Full detail goes to the server log.
+    """
+    leaky = RuntimeError(
+        "polars panic in /home/user/ESMA-Templates-Python/src/"
+        "esma_milan/runner.py\nTraceback (most recent call last): ..."
+    )
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise leaky
+
+    monkeypatch.setattr("esma_milan.api.handlers.run_pipeline", _boom)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "SYNTHETIC_FIXTURE"},
+    )
+
+    assert response.status_code == 500, response.text
+    assert response.json()["error"] == "internal_error"
+    for token in ("Traceback", "polars", "runner.py", "/home/", "ESMA-Templates"):
+        assert token not in response.text, f"leaked {token!r} to the client"
+
+
+# --- Commit 2: hardening - input validation ------------------------------
+
+
+def test_process_file_too_large_returns_413() -> None:
+    """A single upload over the 50 MB per-file limit is rejected with
+    413 file_too_large before its bytes are processed."""
+    oversized = b"x" * (50 * 1024 * 1024 + 1)
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files={
+            "loans": ("loans.csv", oversized, "text/csv"),
+            "collaterals": ("collaterals.csv", _COLLATERALS_BYTES, "text/csv"),
+        },
+        data={"deal_name": "BIG_FILE"},
+    )
+
+    assert response.status_code == 413, response.text
+    body = response.json()
+    assert body["error"] == "file_too_large"
+    assert body["details"]["field"] == "loans"
+
+
+def test_process_wrong_content_type_returns_400() -> None:
+    """An upload sent as application/octet-stream instead of a CSV type
+    is rejected with 400 invalid_content_type naming the accepted
+    types."""
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files=_process_files(loans_content_type="application/octet-stream"),
+        data={"deal_name": "WRONG_TYPE"},
+    )
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["error"] == "invalid_content_type"
+    assert body["details"]["field"] == "loans"
+    assert "text/csv" in body["message"]
+
+
+def test_process_deal_name_path_traversal_rejected() -> None:
+    """A deal_name with path-traversal characters is rejected with 400
+    invalid_deal_name - it must never reach the output filename."""
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "../../../etc/passwd", "dry_run": "true"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"] == "invalid_deal_name"
+
+
+def test_process_deal_name_too_long_rejected() -> None:
+    """A deal_name longer than 100 characters is rejected with 400
+    invalid_deal_name."""
+    client = TestClient(app)
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "A" * 101, "dry_run": "true"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"] == "invalid_deal_name"
+
+
+def test_process_deal_name_with_special_chars_rejected() -> None:
+    """deal_name values carrying quotes, newlines, or null bytes - the
+    Content-Disposition header-injection vectors - are rejected with
+    400 invalid_deal_name."""
+    client = TestClient(app)
+    for bad_name in ('deal"name', "deal\nname", "deal\x00name"):
+        response = client.post(
+            "/api/process",
+            files=_process_files(),
+            data={"deal_name": bad_name, "dry_run": "true"},
+        )
+        assert response.status_code == 400, (bad_name, response.text)
+        assert response.json()["error"] == "invalid_deal_name"

@@ -5,15 +5,26 @@ shape responses; all the real work - the size guardrail, materialising
 uploads, running the pipeline, classifying failures - lives in
 ``handlers.py``. Pipeline logic does not live here.
 
-Day 1 scope: a synchronous ``POST /api/process`` plus ``GET
-/api/health``. Authentication, rate limiting, the asynchronous
-job-queue endpoint for very large pools, and deployment hardening are
-all explicitly deferred (see the PR description).
+Day 2 hardens the surface: per-IP rate limiting (``slowapi``, in-memory
+backend), a consistent ``ErrorResponse`` shape on every failure path,
+and transport-level input validation (per-file size cap, Content-Type
+allowlist, ``deal_name`` character validation). Still deferred:
+authentication, the asynchronous job-queue endpoint for very large
+pools, and reverse-proxy ``X-Forwarded-For`` handling - rate limiting
+keys on the peer IP for now. See the PR description.
+
+Note: this module deliberately omits ``from __future__ import
+annotations``. slowapi's ``@limiter.limit`` decorator wraps the endpoint
+with ``functools.wraps``; under stringized annotations FastAPI then
+tries to resolve the endpoint's forward references against slowapi's
+module globals (the wrapper's ``__globals__``) instead of this module's,
+and fails on ``Annotated[..., Form()]``. Eager annotations - real
+objects, no resolution step - sidestep that. Python is pinned to 3.12,
+where ``X | None`` and ``list[str]`` evaluate fine at runtime anyway.
 """
 
-from __future__ import annotations
-
 import logging
+import os
 from typing import Annotated, Literal
 
 import structlog
@@ -21,18 +32,37 @@ import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from esma_milan.api.handlers import (
+    CSV_CONTENT_TYPES,
+    XLSX_CONTENT_TYPES,
     ApiError,
     DryRunResult,
     process_pipeline_from_bytes,
+    validate_upload,
 )
-from esma_milan.api.schemas import DryRunResponse, ErrorResponse, HealthResponse
+from esma_milan.api.schemas import (
+    DryRunResponse,
+    ErrorCode,
+    ErrorResponse,
+    HealthResponse,
+)
 
 # MIME type for .xlsx, matching the Content-Type R's output is served as.
 _XLSX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
+# Per-IP request rate limits. Module-level so a deployment can tune them
+# without a code change: set ESMA_MILAN_RATE_LIMIT_PROCESS /
+# ESMA_MILAN_RATE_LIMIT_HEALTH (slowapi syntax, e.g. "10/minute") to
+# override the defaults. /api/health gets a higher ceiling because
+# liveness probes are legitimately frequent.
+RATE_LIMIT_PROCESS = os.environ.get("ESMA_MILAN_RATE_LIMIT_PROCESS", "10/minute")
+RATE_LIMIT_HEALTH = os.environ.get("ESMA_MILAN_RATE_LIMIT_HEALTH", "60/minute")
 
 
 def _configure_logging() -> None:
@@ -56,6 +86,14 @@ def _configure_logging() -> None:
 _configure_logging()
 log = structlog.get_logger(__name__)
 
+# Rate limiter with an in-memory backend - one counter set per worker
+# process, which is fine for the single-VPS Day 2 deployment. A shared
+# (Redis) backend is Day 3+, alongside the async job queue that needs
+# cross-worker state anyway. The key is the peer IP; behind a reverse
+# proxy that is the proxy's IP, so X-Forwarded-For handling is Day 3+
+# when the service actually deploys behind Caddy/nginx.
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="ESMA-MILAN pipeline API",
     version="0.1.0",
@@ -63,6 +101,8 @@ app = FastAPI(
         "HTTP wrapper around the ESMA -> MILAN structured-finance pipeline."
     ),
 )
+# slowapi's @limiter.limit decorator resolves the limiter off app.state.
+app.state.limiter = limiter
 
 
 @app.exception_handler(ApiError)
@@ -84,20 +124,81 @@ async def _api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
 async def _validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Reshape FastAPI's default 422 into a 400 `ErrorResponse`.
+    """Reshape FastAPI's default 422 into a structured `ErrorResponse`.
 
-    A missing required file (`loans`, `collaterals`) or form field
-    (`deal_name`), or an out-of-range `min_coverage`, lands here. The
-    task spec calls for HTTP 400 with a structured body for the
-    missing-file case, and routing every error through one shape keeps
-    clients simple.
+    A missing required upload (`loans`, `collaterals`) or form field
+    (`deal_name`) is a 400 `missing_field`; a field that is present but
+    malformed - a non-numeric or out-of-range `min_coverage`, an
+    unknown `aggregation` value - is a 422 `validation_error`. Both
+    share one body shape, but the status still distinguishes "you
+    forgot something" from "you sent something wrong".
     """
+    errors = exc.errors()
+    all_missing = bool(errors) and all(
+        err.get("type") == "missing" for err in errors
+    )
+    status_code: int
+    error_code: ErrorCode
+    if all_missing:
+        status_code, error_code = 400, "missing_field"
+        message = "The request is missing required fields or files."
+    else:
+        status_code, error_code = 422, "validation_error"
+        message = "One or more request fields failed validation."
     body = ErrorResponse(
-        error="missing_field",
-        message="The request is missing required fields or files, or a field is invalid.",
+        error=error_code,
+        message=message,
         details={"fields": _summarise_validation_error(exc)},
     )
-    return JSONResponse(status_code=400, content=body.model_dump())
+    return JSONResponse(status_code=status_code, content=body.model_dump())
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(
+    request: Request, exc: RateLimitExceeded
+) -> JSONResponse:
+    """Render a tripped per-IP rate limit as a 429 `ErrorResponse`."""
+    limit_str = str(exc.limit.limit) if exc.limit is not None else "unknown"
+    log.warning(
+        "api_rate_limit_exceeded",
+        path=request.url.path,
+        client=request.client.host if request.client else None,
+        limit=limit_str,
+    )
+    body = ErrorResponse(
+        error="rate_limit_exceeded",
+        message="Rate limit exceeded. Slow down and retry shortly.",
+        details={"limit": limit_str},
+    )
+    return JSONResponse(status_code=429, content=body.model_dump())
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Last-resort handler for anything not already classified.
+
+    Pipeline failures are caught and turned into `ApiError`s inside the
+    handlers layer; this catches the rest - an unexpected failure in the
+    endpoint itself, a bug. The full exception and a stack trace go to
+    the server-side structlog stream (`exc_info=True`) so the failure
+    stays debuggable; the client gets only a generic message in the
+    standard `ErrorResponse` shape - never a traceback, a file path, or
+    a pipeline internal.
+    """
+    log.error(
+        "api_unhandled_exception",
+        path=request.url.path,
+        method=request.method,
+        error_type=type(exc).__name__,
+        exc_info=True,
+    )
+    body = ErrorResponse(
+        error="internal_error",
+        message="An unexpected server error occurred.",
+    )
+    return JSONResponse(status_code=500, content=body.model_dump())
 
 
 def _summarise_validation_error(exc: RequestValidationError) -> list[str]:
@@ -111,13 +212,20 @@ def _summarise_validation_error(exc: RequestValidationError) -> list[str]:
 
 
 @app.get("/api/health")
-async def health() -> HealthResponse:
-    """Trivial liveness check - confirms the FastAPI plumbing is up."""
+@limiter.limit(RATE_LIMIT_HEALTH)
+async def health(request: Request) -> HealthResponse:
+    """Trivial liveness check - confirms the FastAPI plumbing is up.
+
+    `request` is unused by the body but required: slowapi's rate-limit
+    decorator resolves the caller's IP from it.
+    """
     return HealthResponse(status="ok")
 
 
 @app.post("/api/process")
+@limiter.limit(RATE_LIMIT_PROCESS)
 async def process(
+    request: Request,
     loans: Annotated[UploadFile, File()],
     collaterals: Annotated[UploadFile, File()],
     deal_name: Annotated[str, Form()],
@@ -128,12 +236,27 @@ async def process(
 ) -> Response:
     """Run the pipeline against an uploaded ESMA loans/collaterals pair.
 
-    Reads the uploads into memory, then hands off to the synchronous
-    `process_pipeline_from_bytes`. Returns the composed workbook as an
-    .xlsx download, or - when `dry_run` is true - a `DryRunResponse`
-    JSON summary. All failure modes arrive as `ApiError` and are
-    rendered by `_api_error_handler`.
+    Validates the uploads at the transport layer (per-file size cap,
+    Content-Type allowlist) *before* reading them into memory, then
+    reads the bytes and hands off to the synchronous
+    `process_pipeline_from_bytes` (which validates `deal_name` and runs
+    the pipeline). Returns the composed workbook as an .xlsx download,
+    or - when `dry_run` is true - a `DryRunResponse` JSON summary. All
+    failure modes arrive as `ApiError` and are rendered by
+    `_api_error_handler`. `request` is required by slowapi's rate-limit
+    decorator.
     """
+    validate_upload(
+        loans, field="loans", allowed_content_types=CSV_CONTENT_TYPES
+    )
+    validate_upload(
+        collaterals, field="collaterals", allowed_content_types=CSV_CONTENT_TYPES
+    )
+    if taxonomy is not None:
+        validate_upload(
+            taxonomy, field="taxonomy", allowed_content_types=XLSX_CONTENT_TYPES
+        )
+
     loans_bytes = await loans.read()
     collaterals_bytes = await collaterals.read()
     taxonomy_bytes = await taxonomy.read() if taxonomy is not None else None
