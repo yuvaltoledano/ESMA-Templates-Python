@@ -56,11 +56,19 @@ _XLSX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-# Per-IP request rate limits. Module-level so a deployment can tune them
-# without a code change: set ESMA_MILAN_RATE_LIMIT_PROCESS /
-# ESMA_MILAN_RATE_LIMIT_HEALTH (slowapi syntax, e.g. "10/minute") to
-# override the defaults. /api/health gets a higher ceiling because
-# liveness probes are legitimately frequent.
+# Per-IP request rate limits.
+#
+# NOTE: slowapi's in-memory backend keeps one counter set per worker
+# process, so with N uvicorn workers the effective per-IP ceiling is
+# N x the configured value (uvicorn round-robins connections across
+# workers). Day 3+ migration to a shared (Redis) backend makes the
+# limits truly cross-worker; until then this gap is tracked in PR #17's
+# known limitations.
+#
+# Module-level so a deployment can tune them without a code change: set
+# ESMA_MILAN_RATE_LIMIT_PROCESS / ESMA_MILAN_RATE_LIMIT_HEALTH (slowapi
+# syntax, e.g. "10/minute") to override the defaults. /api/health gets a
+# higher ceiling because liveness probes are legitimately frequent.
 RATE_LIMIT_PROCESS = os.environ.get("ESMA_MILAN_RATE_LIMIT_PROCESS", "10/minute")
 RATE_LIMIT_HEALTH = os.environ.get("ESMA_MILAN_RATE_LIMIT_HEALTH", "60/minute")
 
