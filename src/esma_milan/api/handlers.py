@@ -36,6 +36,7 @@ from pathlib import Path
 import polars as pl
 import structlog
 
+from esma_milan.api.schemas import ErrorCode
 from esma_milan.runner import run_pipeline
 
 log = structlog.get_logger(__name__)
@@ -65,17 +66,24 @@ _AGGREGATION_CHOICES: frozenset[str] = frozenset({"auto", "by_loan", "by_group"}
 class ApiError(Exception):
     """A failure that has already been classified into an HTTP response.
 
-    `message` is sanitized and safe to return to the client; `details`
-    is optional extra context that is also client-safe. Full diagnostic
-    detail - stack traces, pipeline internals - goes to the server-side
+    `status_code` is the HTTP status to return (it is not echoed in the
+    response body); `error` is the stable machine-readable `ErrorCode`;
+    `message` is a sanitized, client-safe summary; `details` is optional
+    structured context that is also client-safe. Full diagnostic detail
+    - stack traces, pipeline internals - goes to the server-side
     structlog stream, never into an `ApiError`.
     """
 
     def __init__(
-        self, status_code: int, message: str, details: str | None = None
+        self,
+        status_code: int,
+        error: ErrorCode,
+        message: str,
+        details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error = error
         self.message = message
         self.details = details
 
@@ -166,12 +174,15 @@ def process_pipeline_from_bytes(
             are logged server-side, never surfaced in the `ApiError`.
     """
     if deal_name.strip() == "":
-        raise ApiError(400, "deal_name must not be empty.")
+        raise ApiError(
+            400, "invalid_deal_name", "deal_name must not be empty."
+        )
     if aggregation not in _AGGREGATION_CHOICES:
         raise ApiError(
             400,
+            "validation_error",
             "aggregation must be one of: auto, by_loan, by_group.",
-            details=f"received: {aggregation!r}",
+            details={"field": "aggregation", "received": aggregation},
         )
 
     # --- Size guardrail (before any parsing) ------------------------------
@@ -185,12 +196,16 @@ def process_pipeline_from_bytes(
         )
         raise ApiError(
             413,
+            "size_limit_exceeded",
             "Pool size exceeds the synchronous endpoint limit "
             "(approximately 30,000 loans; the check counts CSV lines, so "
             "the effective cap is ~29,999 data rows). For larger pools, "
             "use the asynchronous job endpoint at `POST /api/jobs` "
             "(not yet implemented).",
-            details=f"estimated {estimated_rows} loan rows in the upload",
+            details={
+                "estimated_loan_rows": estimated_rows,
+                "limit": MAX_SYNC_LOAN_COUNT,
+            },
         )
 
     # "auto" -> let Stage 6 detect; otherwise pass the explicit method.
@@ -231,6 +246,7 @@ def process_pipeline_from_bytes(
                 )
                 raise ApiError(
                     500,
+                    "internal_error",
                     "The server's default ESMA taxonomy is unavailable. "
                     "Include a `taxonomy` file in the request to proceed.",
                 )
@@ -263,8 +279,9 @@ def process_pipeline_from_bytes(
             )
             raise ApiError(
                 400,
+                "invalid_csv",
                 "The uploaded data could not be processed.",
-                details=_first_line(str(exc)),
+                details={"reason": _first_line(str(exc))},
             ) from exc
         except Exception as exc:
             # Anything else is unexpected. Log full detail server-side;
@@ -278,6 +295,7 @@ def process_pipeline_from_bytes(
             )
             raise ApiError(
                 500,
+                "internal_error",
                 "Pipeline error - check input data.",
             ) from exc
 

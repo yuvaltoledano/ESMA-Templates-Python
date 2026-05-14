@@ -70,11 +70,12 @@ async def _api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     """Render a classified `ApiError` as a structured `ErrorResponse`.
 
     By the time an `ApiError` reaches here the handlers layer has
-    already sanitized it - `message`/`details` are client-safe and no
-    stack trace is attached.
+    already sanitized it - `error`/`message`/`details` are client-safe
+    and no stack trace is attached. The HTTP status comes from
+    `exc.status_code`; it is not echoed in the body.
     """
     body = ErrorResponse(
-        status_code=exc.status_code, message=exc.message, details=exc.details
+        error=exc.error, message=exc.message, details=exc.details
     )
     return JSONResponse(status_code=exc.status_code, content=body.model_dump())
 
@@ -92,21 +93,21 @@ async def _validation_error_handler(
     clients simple.
     """
     body = ErrorResponse(
-        status_code=400,
+        error="missing_field",
         message="The request is missing required fields or files, or a field is invalid.",
-        details=_summarise_validation_error(exc),
+        details={"fields": _summarise_validation_error(exc)},
     )
     return JSONResponse(status_code=400, content=body.model_dump())
 
 
-def _summarise_validation_error(exc: RequestValidationError) -> str:
-    """One-line, client-safe summary of which fields failed validation."""
+def _summarise_validation_error(exc: RequestValidationError) -> list[str]:
+    """Client-safe per-field summary of which inputs failed validation."""
     parts: list[str] = []
     for err in exc.errors():
         loc = ".".join(str(p) for p in err.get("loc", ()) if p != "body")
         msg = str(err.get("msg", "invalid"))
         parts.append(f"{loc}: {msg}" if loc else msg)
-    return "; ".join(parts) if parts else "request validation failed"
+    return parts if parts else ["request validation failed"]
 
 
 @app.get("/api/health")
