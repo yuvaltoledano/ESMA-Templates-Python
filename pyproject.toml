@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 esma-milan = "esma_milan.cli:main"
+esma-milan-server = "esma_milan.api.server:run"
 
 [build-system]
 requires = ["hatchling"]
