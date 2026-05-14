@@ -16,7 +16,10 @@ import polars as pl
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
-from esma_milan.io_layer.write_workbook import write_pipeline_workbook
+from esma_milan.io_layer.write_workbook import (
+    build_workbook_bytes,
+    write_pipeline_workbook,
+)
 from esma_milan.pipeline.classification import Stage5Output, run_stage5
 from esma_milan.pipeline.enriched import (
     compose_loans_enriched,
@@ -40,7 +43,9 @@ class PipelineResult:
     """Return value from run_pipeline()."""
 
     output_path: Path | None
-    """Path to the workbook on disk, or None if dry_run was True."""
+    """Path to the workbook on disk. None when dry_run was True, or when
+    run_pipeline was called in in-memory mode (output_dir=None) - in
+    that case the workbook is carried as `workbook_bytes` instead."""
 
     stage1: Stage1Output | None = None
     """Cleaned tables from Stage 1 (None if Stage 1 didn't run, e.g. on
@@ -85,6 +90,19 @@ class PipelineResult:
     "by_group", with a fallback to "by_loan" on "ambiguous" + non-
     interactive (matches r_reference/R/pipeline.R:469-485)."""
 
+    workbook_bytes: bytes | None = None
+    """The 10-sheet workbook as in-memory XLSX bytes. Populated only
+    when run_pipeline was called in in-memory mode (output_dir=None)
+    and dry_run was False - this is the path the FastAPI service takes
+    so the workbook never touches disk on the server. None on disk-
+    write runs and on dry_run."""
+
+    output_filename: str | None = None
+    """The workbook's bare filename (no directory), e.g.
+    "2024-06-30 DEAL Flattened loans and collaterals.xlsx". Populated
+    alongside `workbook_bytes` in in-memory mode; matches the filename
+    used for the on-disk output. None on disk-write runs and dry_run."""
+
 
 def run_pipeline(
     *,
@@ -92,7 +110,7 @@ def run_pipeline(
     collaterals_file_path: Path,
     taxonomy_file_path: Path,
     deal_name: str,
-    output_dir: Path,
+    output_dir: Path | None = None,
     aggregation_method: str | None = None,
     min_coverage: float | None = None,
     interactive_mode: bool = False,
@@ -101,10 +119,15 @@ def run_pipeline(
 ) -> PipelineResult:
     """Run the ESMA -> MILAN pipeline.
 
-    Currently implements Stage 1 only; remaining stages add their
-    contribution to the output workbook as they land in §9 order. Until
-    Stage 10 is in, the workbook is a 10-sheet empty stub so the parity
-    harness can keep diffing.
+    Output destination is selected by `output_dir`:
+      - a Path  -> the workbook is written to disk under
+        `output_dir/<deal_name>/` and returned as `result.output_path`
+        (the CLI's `--output` behaviour).
+      - None    -> the workbook is built in memory and returned as
+        `result.workbook_bytes` + `result.output_filename`, never
+        touching disk (the FastAPI service's no-disk-persistence path).
+    `dry_run=True` skips workbook composition entirely regardless of
+    `output_dir`.
     """
     if verbose:
         log.info(
@@ -212,10 +235,7 @@ def run_pipeline(
     if cutoff is None:
         raise ValueError("pool_cutoff_date is missing in loans file")
     cutoff_str = cutoff.isoformat()
-
-    deal_dir = output_dir / deal_name
-    deal_dir.mkdir(parents=True, exist_ok=True)
-    output_path = deal_dir / f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
+    output_filename = f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 
     # Stage 8.5: compose the four mapping tables (Sheets 1-4) from the
     # post-Stage-3 loans/properties + post-Stage-5 loans_enriched (the
@@ -242,18 +262,46 @@ def run_pipeline(
         combined_flattened=stage7.combined_flattened,
     )
 
-    write_pipeline_workbook(
-        output_path,
-        populated_sheets={
-            "Execution Summary": execution_summary,  # Stage 10: Sheet 1
-            "Cleaned ESMA loans": loans_enriched,
-            "Cleaned ESMA properties": properties_enriched,
-            "Group classifications": stage5.classifications,
-            "Combined flattened pool": stage7.combined_flattened,
-            "MILAN template pool": milan_pool,  # Stage 9: Sheet 10
-            **mapping_tables,  # Stage 8.5: Sheets 1-4 (mapping tables)
-        },
-    )
+    populated_sheets = {
+        "Execution Summary": execution_summary,  # Stage 10: Sheet 1
+        "Cleaned ESMA loans": loans_enriched,
+        "Cleaned ESMA properties": properties_enriched,
+        "Group classifications": stage5.classifications,
+        "Combined flattened pool": stage7.combined_flattened,
+        "MILAN template pool": milan_pool,  # Stage 9: Sheet 10
+        **mapping_tables,  # Stage 8.5: Sheets 1-4 (mapping tables)
+    }
+
+    if output_dir is None:
+        # In-memory mode (FastAPI service): build the workbook as bytes,
+        # never touching disk. output_path stays None; the caller reads
+        # workbook_bytes + output_filename off the result.
+        workbook_bytes = build_workbook_bytes(populated_sheets=populated_sheets)
+        if verbose:
+            log.info(
+                "pipeline_workbook_built_in_memory",
+                filename=output_filename,
+                n_bytes=len(workbook_bytes),
+            )
+        return PipelineResult(
+            output_path=None,
+            stage1=stage1,
+            stage2=stage2,
+            stage3=stage3,
+            stage4=stage4,
+            stage5=stage5,
+            stage6=stage6,
+            stage7=stage7,
+            chosen_aggregation_method=chosen_aggregation,
+            workbook_bytes=workbook_bytes,
+            output_filename=output_filename,
+        )
+
+    deal_dir = output_dir / deal_name
+    deal_dir.mkdir(parents=True, exist_ok=True)
+    output_path = deal_dir / output_filename
+
+    write_pipeline_workbook(output_path, populated_sheets=populated_sheets)
 
     if verbose:
         log.info("pipeline_workbook_written", path=str(output_path))

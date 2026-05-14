@@ -22,6 +22,7 @@ Date encoding (Stage 6.5):
 
 from __future__ import annotations
 
+import io
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -46,12 +47,11 @@ def _date_to_excel_serial(d: date) -> int:
     return (d - _EXCEL_EPOCH).days
 
 
-def write_pipeline_workbook(
-    path: Path,
-    *,
-    populated_sheets: dict[str, pl.DataFrame] | None = None,
+def _populate_workbook(
+    wb: Any,
+    populated_sheets: dict[str, pl.DataFrame] | None,
 ) -> None:
-    """Write a 10-sheet workbook in canonical order.
+    """Append the 10 canonical sheets to `wb` in order.
 
     Each entry in `populated_sheets` (sheet_name -> Polars DataFrame)
     contributes a header row followed by one row per DataFrame row.
@@ -59,11 +59,15 @@ def write_pipeline_workbook(
     the parity harness's sheet-order check still passes.
 
     Polars `pl.Date` columns are encoded as Excel serial integers (see
-    module docstring). All other dtypes pass through openpyxl's
-    native serialisation (Int64 -> int, Float64 -> float, Boolean ->
-    bool, String -> str, null -> None).
+    module docstring). All other dtypes pass through openpyxl's native
+    serialisation (Int64 -> int, Float64 -> float, Boolean -> bool,
+    String -> str, null -> None).
+
+    Shared by both destinations: `write_pipeline_workbook` (to disk) and
+    `build_workbook_bytes` (in memory). Keeping the sheet-building logic
+    in one place means the on-disk CLI output and the in-memory API
+    output are byte-identical by construction.
     """
-    wb = openpyxl.Workbook(write_only=True)
     populated = populated_sheets or {}
 
     for sheet_name in OUTPUT_SHEET_ORDER:
@@ -86,8 +90,40 @@ def write_pipeline_workbook(
             for row in df.iter_rows():
                 ws.append(_encode_dates(row, date_indices))
 
+
+def write_pipeline_workbook(
+    path: Path,
+    *,
+    populated_sheets: dict[str, pl.DataFrame] | None = None,
+) -> None:
+    """Write a 10-sheet workbook in canonical order to `path`.
+
+    See `_populate_workbook` for the sheet layout and encoding rules.
+    This is the on-disk destination backing the `--output` CLI flag.
+    """
+    wb = openpyxl.Workbook(write_only=True)
+    _populate_workbook(wb, populated_sheets)
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
+
+
+def build_workbook_bytes(
+    *,
+    populated_sheets: dict[str, pl.DataFrame] | None = None,
+) -> bytes:
+    """Build a 10-sheet workbook in memory and return it as XLSX bytes.
+
+    Same sheet layout and encoding rules as `write_pipeline_workbook`
+    (both delegate to `_populate_workbook`); the only difference is the
+    destination — an in-memory `io.BytesIO` buffer instead of a path.
+    Used by the FastAPI service so workbooks never touch disk on the
+    server (the no-disk-persistence contract).
+    """
+    wb = openpyxl.Workbook(write_only=True)
+    _populate_workbook(wb, populated_sheets)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def _encode_dates(
