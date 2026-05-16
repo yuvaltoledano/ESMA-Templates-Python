@@ -68,6 +68,68 @@ class DryRunResponse(BaseModel):
     aggregation method that fell back to a default."""
 
 
+class StratificationRow(BaseModel):
+    """One row in a stratification table.
+
+    `count_pct` / `balance_pct` are decimals in [0, 1]; the GUI formats
+    them as percentages.
+    """
+
+    label: str
+    count: int
+    count_pct: float
+    balance: float
+    balance_pct: float
+
+
+class StratificationTotal(BaseModel):
+    """The total line at the bottom of a stratification table."""
+
+    count: int
+    balance: float
+
+
+class Stratification(BaseModel):
+    """One cut of the pool: a table plus a chart hint.
+
+    See ``esma_milan.analysis.types.Stratification`` for the design
+    rationale; this is the Pydantic mirror used for FastAPI response
+    validation.
+    """
+
+    title: str
+    type: Literal["categorical", "bucketed"]
+    chart_type: Literal["pie", "bar"]
+    rows: list[StratificationRow] = Field(default_factory=list)
+    total: StratificationTotal
+    error: str | None = None
+    note: str | None = None
+
+
+class AnalysisSummary(BaseModel):
+    """Top-level pool summary returned alongside the stratifications."""
+
+    loan_count: int
+    property_count: int
+    group_count: int
+    total_current_balance: float
+    chosen_aggregation: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AnalysisResponse(BaseModel):
+    """Body of ``POST /api/process`` when ``analysis_only=true``.
+
+    The pipeline runs through Stage 7 (the workbook itself is not
+    composed); the response carries the six pool stratifications as
+    pre-aggregated JSON for the GUI to render inline.
+    """
+
+    deal_name: str
+    summary: AnalysisSummary
+    stratifications: dict[str, Stratification]
+
+
 class ErrorResponse(BaseModel):
     """Structured error body returned for every non-2xx API response.
 
