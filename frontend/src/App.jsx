@@ -489,8 +489,31 @@ function SummaryStat({ label, value }) {
   )
 }
 
+// Pool-level weighted-average formatter, keyed on the stratification's
+// registry key. seasoning's WA is in months (zero decimals, "months"
+// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent).
+// Other strats have `weighted_average: null` so this is only called
+// for the two numeric ones.
+function formatWeightedAverage(stratKey, value) {
+  if (stratKey === 'seasoning') {
+    return `WA: ${Math.round(value).toLocaleString()} months`
+  }
+  if (stratKey === 'current_ltv') {
+    return `WA: ${(value * 100).toFixed(1)}%`
+  }
+  return `WA: ${value}`
+}
+
 function StratificationTile({ stratKey, strat }) {
-  const { title, chart_type: chartType, rows, total, error, note } = strat
+  const {
+    title,
+    chart_type: chartType,
+    rows,
+    total,
+    error,
+    note,
+    weighted_average: weightedAverage,
+  } = strat
 
   if (error) {
     return (
@@ -519,6 +542,11 @@ function StratificationTile({ stratKey, strat }) {
   return (
     <article className="rounded-lg border border-slate-200 bg-white p-4">
       <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+      {weightedAverage != null && (
+        <p className="mt-0.5 text-xs font-medium text-slate-600">
+          {formatWeightedAverage(stratKey, weightedAverage)}
+        </p>
+      )}
       <div className="mt-3 h-[220px]">
         <StratificationChart
           chartType={chartType}

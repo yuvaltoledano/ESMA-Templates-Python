@@ -237,6 +237,31 @@ def _categorical_from_mapping(
     )
 
 
+def _weighted_mean_pool(
+    classified: pl.DataFrame,
+) -> float | None:
+    """Balance-weighted mean of `_value` on `classified`, skipping nulls.
+
+    `classified` is the `_value`/`_balance` projection used in
+    `_bucketed_numeric`; the WA is computed on raw values (not bucket
+    midpoints, which introduce approximation error). Numerator and
+    denominator both exclude null-value rows. Distinct from the
+    `_weighted_mean` helper in `pipeline/exec_summary.py`, which is
+    R-parity-anchored and private: this is a display-only WA where a
+    plain polars expression is the right tool.
+    """
+    valid = classified.filter(
+        pl.col("_value").is_not_null() & pl.col("_value").is_finite()
+    )
+    weight_sum = float(valid["_balance"].sum() or 0.0)
+    if weight_sum <= 0 or valid.height == 0:
+        return None
+    weighted = (valid["_value"] * valid["_balance"]).sum()
+    if weighted is None:
+        return None
+    return float(weighted) / weight_sum
+
+
 def _bucketed_numeric(
     df: pl.DataFrame,
     *,
@@ -324,6 +349,8 @@ def _bucketed_numeric(
         word = "loan" if missing == 1 else "loans"
         note = f"{missing} {word} excluded from buckets due to missing {source_col}."
 
+    weighted_average = _weighted_mean_pool(classified)
+
     return Stratification(
         title=title,
         type="bucketed",
@@ -332,6 +359,7 @@ def _bucketed_numeric(
         total=StratificationTotal(count=classified.height, balance=pool_total_balance),
         error=None,
         note=note,
+        weighted_average=weighted_average,
     )
 
 

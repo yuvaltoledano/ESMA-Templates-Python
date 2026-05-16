@@ -228,6 +228,62 @@ def test_seasoning_missing_values_excluded_with_note() -> None:
     assert s.total.balance == pytest.approx(175.0)
 
 
+def test_seasoning_weighted_average_matches_independent_computation() -> None:
+    """WA seasoning is the balance-weighted mean of `calc_seasoning * 12`
+    (months), excluding null-value rows from both numerator and
+    denominator. Expected value derived inline from the fixture.
+    """
+    df = _frame([
+        {"calc_seasoning": 1.0, "current_principal_balance": 100.0},   # 12 mo
+        {"calc_seasoning": 2.0, "current_principal_balance": 300.0},   # 24 mo
+        {"calc_seasoning": 5.0, "current_principal_balance": 200.0},   # 60 mo
+        # Null-seasoning row: excluded from WA, included in pool total.
+        {"calc_seasoning": None, "current_principal_balance": 1000.0},
+    ])
+    s = stratify_seasoning(df)
+    # WA = (12*100 + 24*300 + 60*200) / (100+300+200) = 20400 / 600 = 34.0
+    assert s.weighted_average == pytest.approx(34.0)
+
+
+def test_current_ltv_weighted_average_matches_independent_computation() -> None:
+    """WA current LTV is the balance-weighted mean of `calc_current_LTV`
+    (decimal, not percent). Expected value derived inline.
+    """
+    df = _frame([
+        {"calc_current_LTV": 0.40, "current_principal_balance": 100.0},
+        {"calc_current_LTV": 0.60, "current_principal_balance": 200.0},
+        {"calc_current_LTV": 0.80, "current_principal_balance": 700.0},
+    ])
+    s = stratify_current_ltv(df)
+    # WA = (0.40*100 + 0.60*200 + 0.80*700) / 1000 = 720 / 1000 = 0.72
+    assert s.weighted_average == pytest.approx(0.72)
+
+
+def test_categorical_and_geographic_have_null_weighted_average() -> None:
+    """WA only has a meaningful interpretation for the bucketed numeric
+    stratifications. Categoricals and the geographic cut return None.
+    """
+    df = _frame([
+        {"interest_rate_type": "FLIF", "current_principal_balance": 100.0},
+    ])
+    assert stratify_interest_rate_type(df).weighted_average is None
+
+    df_geo = _frame([
+        {"geographic_region_collateral": "NL-NH", "current_principal_balance": 100.0},
+    ])
+    assert stratify_geographic(df_geo).weighted_average is None
+
+    df_purpose = _frame([
+        {"purpose": "PURC", "current_principal_balance": 100.0},
+    ])
+    assert stratify_loan_purpose(df_purpose).weighted_average is None
+
+    df_occ = _frame([
+        {"occupancy_type": "FOWN", "current_principal_balance": 100.0},
+    ])
+    assert stratify_occupancy(df_occ).weighted_average is None
+
+
 def test_current_ltv_buckets_apply_closed_right_at_decimal_breaks() -> None:
     """LTV buckets at 0.50 / 0.70 / 0.80 / 0.90 / 1.00, closed="right".
     Values at exactly a break go to that bucket; values immediately
@@ -458,6 +514,13 @@ def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
         assert strat["total"]["count"] == summary["loan_count"], (
             f"{key} total count {strat['total']['count']} != pool loan_count {summary['loan_count']}"
         )
+
+    # Bucketed numeric strats (seasoning, current_ltv) carry a
+    # pool-level WA; categoricals and geographic do not.
+    assert body["stratifications"]["seasoning"]["weighted_average"] is not None
+    assert body["stratifications"]["current_ltv"]["weighted_average"] is not None
+    for key in ("interest_rate_type", "geographic", "loan_purpose", "occupancy"):
+        assert body["stratifications"][key]["weighted_average"] is None
 
 
 def test_analysis_only_response_includes_execution_summary() -> None:

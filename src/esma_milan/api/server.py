@@ -328,6 +328,7 @@ async def process(
                     ),
                     error=strat.error,
                     note=strat.note,
+                    weighted_average=strat.weighted_average,
                 )
                 for key, strat in result.stratifications.items()
             },

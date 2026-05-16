@@ -104,6 +104,7 @@ class Stratification(BaseModel):
     total: StratificationTotal
     error: str | None = None
     note: str | None = None
+    weighted_average: float | None = None
 
 
 class ExecutionSummaryRow(BaseModel):
