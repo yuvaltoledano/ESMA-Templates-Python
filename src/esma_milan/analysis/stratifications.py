@@ -20,28 +20,30 @@ Each function catches its own errors and returns a ``Stratification``
 with ``error`` populated rather than raising. One missing column on one
 cut must not blow up the other five.
 
-Asymmetric null handling between categorical and bucketed cuts is
-deliberate, not a bug: a null categorical value has a semantic home
-("we don't know what type this is" -> "Other"), but a null bucketed
-value doesn't ("we don't know seasoning" isn't a bucket), so the
-former routes to "Other" and the latter is excluded from the buckets
-and surfaced via ``Stratification.note``.
+Null handling: ESMA-coded categoricals route both nulls and codes
+outside the published taxonomy to a separate ``UNK`` bucket
+("Unknown / not in ESMA taxonomy"), which is emitted as a row only
+when its count is > 0 - clean data leaves it invisible, malformed
+data surfaces it as a data-quality signal. Bucketed numeric strats
+(seasoning, LTV) take the opposite route: missing-value rows are
+excluded from the buckets entirely and surfaced via
+``Stratification.note``. The asymmetry is intentional: an unknown
+ESMA code IS a category ("unknown"), but an unknown bucketed number
+isn't - there's no "we don't know seasoning" bucket on the number line.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import Literal
 
 import polars as pl
 
 from esma_milan.analysis.labels import (
     IR_TYPE_LABELS,
-    IR_TYPE_ORDER,
     LOAN_PURPOSE_LABELS,
-    LOAN_PURPOSE_ORDER,
     OCCUPANCY_LABELS,
-    OCCUPANCY_ORDER,
+    UNK_LABEL,
 )
 from esma_milan.analysis.types import Stratification, StratificationRow, StratificationTotal
 
@@ -115,33 +117,22 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0 else 0.0
 
 
-def _build_rows(
-    bucket_counts: dict[str, int],
-    bucket_balances: dict[str, float],
-    order: Iterable[str],
-    total_count: int,
-    total_balance: float,
-) -> list[StratificationRow]:
-    """Assemble the per-bucket rows in the requested label order.
+def _build_row(
+    label: str, count: int, balance: float,
+    total_count: int, total_balance: float,
+) -> StratificationRow:
+    """Assemble one stratification row with its count and balance shares.
 
-    Labels in `order` that have no rows in the input still appear with
-    zero values - the brief's "always show all spec buckets" convention
-    keeps the table layout consistent across pools.
+    Percentages are decimals against the table total - safe_div returns
+    0.0 on a zero denominator so an empty pool doesn't surface NaN.
     """
-    rows: list[StratificationRow] = []
-    for label in order:
-        count = bucket_counts.get(label, 0)
-        balance = bucket_balances.get(label, 0.0)
-        rows.append(
-            StratificationRow(
-                label=label,
-                count=count,
-                count_pct=_safe_div(count, total_count),
-                balance=balance,
-                balance_pct=_safe_div(balance, total_balance),
-            )
-        )
-    return rows
+    return StratificationRow(
+        label=label,
+        count=count,
+        count_pct=_safe_div(count, total_count),
+        balance=balance,
+        balance_pct=_safe_div(balance, total_balance),
+    )
 
 
 def _categorical_from_mapping(
@@ -150,17 +141,23 @@ def _categorical_from_mapping(
     source_col: str,
     title: str,
     label_map: dict[str, str],
-    order: tuple[str, ...],
     chart_type: ChartType = "pie",
 ) -> Stratification:
-    """Generic categorical stratification: map a source column's ESMA
-    codes to display labels via `label_map`, aggregate counts and balances,
-    emit rows in `order`. Codes not in `label_map` and nulls both route
-    to the last bucket in `order` (the "Other" bucket).
+    """Generic ESMA-coded categorical stratification.
 
-    `label_map` is the (code -> label) dict from ``labels.py``; `order`
-    is the canonical row order. The last entry in `order` is treated as
-    the catch-all - typically "Other".
+    Maps each ESMA value code via `label_map` (code -> "CODE - Description"
+    full label) and aggregates counts + balances. The output has one row
+    for every code in `label_map`, in `label_map` insertion order, even
+    when that code has count 0 - the brief's "all spec codes always
+    shown" rule, for layout stability across pools.
+
+    Values that the source column carries but aren't in `label_map` -
+    null, malformed, or a code outside the published taxonomy - route
+    to a separate ``UNK`` row. That row appears only when its count is
+    > 0; for valid ESMA data it stays invisible. The dual role is
+    deliberate: real ``OTHR`` data goes to its own ``OTHR`` row (since
+    OTHR is a valid ESMA code with a legitimate "Other" meaning), and
+    UNK signals data-quality issues distinctly.
     """
     if source_col not in df.columns:
         return _empty_stratification(
@@ -168,20 +165,16 @@ def _categorical_from_mapping(
             error=f"Column '{source_col}' not found in pool data.",
         )
 
-    other_label = order[-1]
-    # Replace unknown codes (including nulls) with the catch-all label.
-    # `strict=False` and explicit default keeps nulls bucketing as Other
-    # without a separate fill_null call.
-    labeled = (
+    # Aggregate by the raw ESMA code; the label translation happens
+    # below so codes outside `label_map` can be routed to UNK explicitly
+    # rather than being silently relabeled.
+    grouped = (
         df.lazy()
         .select(
-            pl.col(source_col)
-            .cast(pl.Utf8, strict=False)
-            .replace_strict(label_map, default=other_label)
-            .alias("_label"),
+            pl.col(source_col).cast(pl.Utf8, strict=False).alias("_code"),
             _balance_col(df).alias("_balance"),
         )
-        .group_by("_label")
+        .group_by("_code")
         .agg(
             pl.len().alias("_count"),
             pl.sum("_balance").alias("_sum"),
@@ -189,19 +182,49 @@ def _categorical_from_mapping(
         .collect()
     )
 
-    bucket_counts = dict(zip(labeled["_label"].to_list(), labeled["_count"].to_list(), strict=True))
-    bucket_balances = dict(zip(labeled["_label"].to_list(), labeled["_sum"].to_list(), strict=True))
+    by_code_count: dict[str | None, int] = {}
+    by_code_balance: dict[str | None, float] = {}
+    for code, count, balance in zip(
+        grouped["_code"].to_list(),
+        grouped["_count"].to_list(),
+        grouped["_sum"].to_list(),
+        strict=True,
+    ):
+        by_code_count[code] = int(count)
+        by_code_balance[code] = float(balance)
 
-    total_count = int(sum(bucket_counts.values()))
-    total_balance = float(sum(bucket_balances.values()))
+    total_count = int(sum(by_code_count.values()))
+    total_balance = float(sum(by_code_balance.values()))
 
-    rows = _build_rows(
-        {k: int(v) for k, v in bucket_counts.items()},
-        {k: float(v) for k, v in bucket_balances.items()},
-        order=order,
-        total_count=total_count,
-        total_balance=total_balance,
+    rows: list[StratificationRow] = []
+    # Always emit every spec code, even count=0.
+    for code, label in label_map.items():
+        rows.append(_build_row(
+            label,
+            by_code_count.get(code, 0),
+            by_code_balance.get(code, 0.0),
+            total_count,
+            total_balance,
+        ))
+
+    # UNK absorbs nulls and any code outside `label_map`. Only appended
+    # when its count is > 0, so clean data leaves the table at the
+    # spec-code length.
+    unk_count = sum(
+        by_code_count[code]
+        for code in by_code_count
+        if code is None or code not in label_map
     )
+    unk_balance = sum(
+        by_code_balance[code]
+        for code in by_code_balance
+        if code is None or code not in label_map
+    )
+    if unk_count > 0:
+        rows.append(_build_row(
+            UNK_LABEL, int(unk_count), float(unk_balance),
+            total_count, total_balance,
+        ))
 
     return Stratification(
         title=title,
@@ -282,13 +305,16 @@ def _bucketed_numeric(
     bucketed_total_count = int(sum(bucket_counts.values()))
     bucketed_total_balance = float(sum(bucket_balances.values()))
 
-    rows = _build_rows(
-        {k: int(v) for k, v in bucket_counts.items()},
-        {k: float(v) for k, v in bucket_balances.items()},
-        order=labels,
-        total_count=bucketed_total_count,
-        total_balance=bucketed_total_balance,
-    )
+    rows = [
+        _build_row(
+            bucket_label,
+            int(bucket_counts.get(bucket_label, 0)),
+            float(bucket_balances.get(bucket_label, 0.0)),
+            bucketed_total_count,
+            bucketed_total_balance,
+        )
+        for bucket_label in labels
+    ]
 
     # Pool-level total includes the rows excluded for being missing.
     pool_total_balance = float(_balance_col(df).sum() or 0.0)
@@ -315,14 +341,17 @@ def _bucketed_numeric(
 
 
 def stratify_interest_rate_type(df: pl.DataFrame) -> Stratification:
-    """Pool breakdown by interest_rate_type, collapsed into 4 buckets
-    (Fixed / Floating / Hybrid / Other) via the ESMA-code label map."""
+    """Pool breakdown by ESMA ``interest_rate_type`` (field RREL42).
+
+    All 13 published ESMA codes are emitted as rows, each labelled
+    "CODE — Description" verbatim from the taxonomy. Codes outside the
+    taxonomy and nulls route to a separate UNK row that appears only
+    when its count is > 0."""
     return _categorical_from_mapping(
         df,
         source_col="interest_rate_type",
         title="Interest Rate Type",
         label_map=IR_TYPE_LABELS,
-        order=IR_TYPE_ORDER,
         chart_type="pie",
     )
 
@@ -457,27 +486,31 @@ def stratify_geographic(df: pl.DataFrame) -> Stratification:
 
 
 def stratify_loan_purpose(df: pl.DataFrame) -> Stratification:
-    """Pool breakdown by `purpose`, collapsed into 5 buckets via the
-    ESMA-code label map."""
+    """Pool breakdown by ESMA ``purpose`` (field RREL27).
+
+    All 13 published ESMA codes are emitted as rows with their full
+    "CODE — Description" labels. See `stratify_interest_rate_type` for
+    the UNK fallback behaviour."""
     return _categorical_from_mapping(
         df,
         source_col="purpose",
         title="Loan Purpose",
         label_map=LOAN_PURPOSE_LABELS,
-        order=LOAN_PURPOSE_ORDER,
         chart_type="pie",
     )
 
 
 def stratify_occupancy(df: pl.DataFrame) -> Stratification:
-    """Pool breakdown by main-property `occupancy_type`, collapsed into 4
-    buckets via the ESMA-code label map. Reflects the main property only;
-    see module docstring for the multi-property attribution convention."""
+    """Pool breakdown by main-property ESMA ``occupancy_type`` (field RREC7).
+
+    Reflects the main property only; see module docstring for the
+    multi-property attribution convention. All 5 published ESMA codes
+    emitted as rows; see `stratify_interest_rate_type` for the UNK
+    fallback behaviour."""
     return _categorical_from_mapping(
         df,
         source_col="occupancy_type",
         title="Occupancy",
         label_map=OCCUPANCY_LABELS,
-        order=OCCUPANCY_ORDER,
         chart_type="pie",
     )

@@ -65,6 +65,25 @@ const PCT_FORMAT = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 1,
 })
 
+// Compact-EUR formatter for bar-chart Y-axis ticks. Real pools push
+// into the hundreds of millions; the full euro string overflows the
+// axis gutter. Convention is standard structured-finance:
+//   < €1K   -> exact (€500)
+//   €1K-€1M -> €1K, €500K (no decimals)
+//   €1M-€1B -> €1.5M, €500M (one decimal)
+//   >= €1B  -> €1.5B, €2.3B (one decimal)
+// The chart tooltip still uses the full EUR formatter so hover-over a
+// bar shows the precise number.
+function formatEurAxis(value) {
+  if (value == null || Number.isNaN(value)) return ''
+  const abs = Math.abs(value)
+  const sign = value < 0 ? '-' : ''
+  if (abs < 1_000) return `${sign}€${Math.round(abs)}`
+  if (abs < 1_000_000) return `${sign}€${Math.round(abs / 1_000)}K`
+  if (abs < 1_000_000_000) return `${sign}€${(abs / 1_000_000).toFixed(1)}M`
+  return `${sign}€${(abs / 1_000_000_000).toFixed(1)}B`
+}
+
 function HealthIndicator({ status }) {
   const config = {
     healthy: { color: 'bg-green-500', label: 'healthy' },
@@ -449,7 +468,9 @@ function StratificationTile({ stratKey, strat }) {
           <tbody>
             {rows.map((row) => (
               <tr key={row.label} className="border-b border-slate-100">
-                <td className="py-1.5 pr-2 text-slate-700">{row.label}</td>
+                <td className="py-1.5 pr-2 align-top text-slate-700 whitespace-normal break-words">
+                  {row.label}
+                </td>
                 <td className="py-1.5 pr-2 text-right tabular-nums">
                   {row.count.toLocaleString()}
                 </td>
@@ -526,7 +547,7 @@ function StratificationChart({ chartType, rows, stratKey }) {
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 20 }}>
+      <BarChart data={data} margin={{ top: 5, right: 10, left: 5, bottom: 20 }}>
         <XAxis
           dataKey="name"
           tick={{ fontSize: 10 }}
@@ -535,7 +556,7 @@ function StratificationChart({ chartType, rows, stratKey }) {
           height={40}
           interval={0}
         />
-        <YAxis tick={{ fontSize: 10 }} width={50} />
+        <YAxis tick={{ fontSize: 10 }} width={60} tickFormatter={formatEurAxis} />
         <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
         <Bar dataKey="value" fill={CHART_COLORS[0]} />
       </BarChart>

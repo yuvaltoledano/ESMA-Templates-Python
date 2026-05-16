@@ -31,6 +31,12 @@ from esma_milan.analysis import (
     STRATIFICATIONS,
     run_all_stratifications,
 )
+from esma_milan.analysis.labels import (
+    IR_TYPE_LABELS,
+    LOAN_PURPOSE_LABELS,
+    OCCUPANCY_LABELS,
+    UNK_LABEL,
+)
 from esma_milan.analysis.stratifications import (
     LTV_LABELS,
     SEASONING_LABELS,
@@ -80,11 +86,13 @@ def _frame(rows: list[dict[str, object]]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_interest_rate_type_collapses_codes_to_four_buckets() -> None:
-    """3 FLIF, 2 FXPR, 1 FLCF, 1 OTHR, 1 unknown code -> 3 floating,
-    2 hybrid, 1 fixed, 2 other (OTHR + the unknown code both fall
-    through to the catch-all). Percentages are decimals; balances are
-    summed from `current_principal_balance`."""
+def test_interest_rate_type_labels_each_code_faithfully() -> None:
+    """3 FLIF, 2 FXPR, 1 FLCF, 1 OTHR -> three populated rows for
+    those codes plus all the other ESMA codes at count=0. Each row's
+    label is the verbatim "CODE — Description" from the ESMA taxonomy
+    (no derived categories, no collapsing). The OTHR row carries the
+    OTHR data faithfully - it's a valid ESMA code with its own meaning,
+    not a catch-all bucket."""
     df = _frame([
         {"interest_rate_type": "FLIF", "current_principal_balance": 100.0},
         {"interest_rate_type": "FLIF", "current_principal_balance": 200.0},
@@ -93,33 +101,43 @@ def test_interest_rate_type_collapses_codes_to_four_buckets() -> None:
         {"interest_rate_type": "FXPR", "current_principal_balance": 100.0},
         {"interest_rate_type": "FLCF", "current_principal_balance": 400.0},
         {"interest_rate_type": "OTHR", "current_principal_balance": 25.0},
-        {"interest_rate_type": "ZZZZ", "current_principal_balance": 75.0},
     ])
 
     s = stratify_interest_rate_type(df)
 
     assert s.error is None
     assert s.chart_type == "pie"
-    assert [r.label for r in s.rows] == ["Fixed", "Floating", "Hybrid", "Other"]
+    # All 13 ESMA codes always appear, in IR_TYPE_LABELS insertion order.
+    assert [r.label for r in s.rows] == list(IR_TYPE_LABELS.values())
 
     by_label = {r.label: r for r in s.rows}
-    total_count = 8
-    total_balance = 100 + 200 + 50 + 300 + 100 + 400 + 25 + 75
+    total_count = 7
+    total_balance = 100 + 200 + 50 + 300 + 100 + 400 + 25
 
-    # Independently derived expected values.
-    assert by_label["Fixed"].count == 1
-    assert by_label["Fixed"].balance == pytest.approx(400.0)
-    assert by_label["Floating"].count == 3
-    assert by_label["Floating"].balance == pytest.approx(100 + 200 + 50)
-    assert by_label["Hybrid"].count == 2
-    assert by_label["Hybrid"].balance == pytest.approx(300 + 100)
-    # OTHR + ZZZZ unknown both bucket to "Other".
-    assert by_label["Other"].count == 2
-    assert by_label["Other"].balance == pytest.approx(25 + 75)
+    # Independently derived expected values, keyed by full label.
+    assert by_label[IR_TYPE_LABELS["FLIF"]].count == 3
+    assert by_label[IR_TYPE_LABELS["FLIF"]].balance == pytest.approx(100 + 200 + 50)
+    assert by_label[IR_TYPE_LABELS["FXPR"]].count == 2
+    assert by_label[IR_TYPE_LABELS["FXPR"]].balance == pytest.approx(300 + 100)
+    assert by_label[IR_TYPE_LABELS["FLCF"]].count == 1
+    assert by_label[IR_TYPE_LABELS["FLCF"]].balance == pytest.approx(400.0)
+    # OTHR data stays in OTHR (it's a valid ESMA code), NOT a generic
+    # catch-all. UNK is reserved for nulls / non-taxonomy codes.
+    assert by_label[IR_TYPE_LABELS["OTHR"]].count == 1
+    assert by_label[IR_TYPE_LABELS["OTHR"]].balance == pytest.approx(25.0)
+
+    # The codes not present in the fixture are still emitted as
+    # count=0 rows (layout-stable across pools).
+    for code in ("FXRL", "FINX", "FLFL", "CAPP", "FLCA", "DISC", "SWIC", "OBLS", "MODE"):
+        assert by_label[IR_TYPE_LABELS[code]].count == 0
+        assert by_label[IR_TYPE_LABELS[code]].balance == pytest.approx(0.0)
+
+    # No UNK row when there are no nulls or off-taxonomy codes.
+    assert UNK_LABEL not in by_label
 
     # Percentages are decimals against the table total.
-    assert by_label["Floating"].count_pct == pytest.approx(3 / total_count)
-    assert by_label["Floating"].balance_pct == pytest.approx(
+    assert by_label[IR_TYPE_LABELS["FLIF"]].count_pct == pytest.approx(3 / total_count)
+    assert by_label[IR_TYPE_LABELS["FLIF"]].balance_pct == pytest.approx(
         (100 + 200 + 50) / total_balance
     )
 
@@ -127,21 +145,35 @@ def test_interest_rate_type_collapses_codes_to_four_buckets() -> None:
     assert s.total.balance == pytest.approx(total_balance)
 
 
-def test_interest_rate_type_routes_nulls_to_other_bucket() -> None:
-    """Null `interest_rate_type` rows route to the "Other" bucket so
-    the per-row Total still equals the pool size. The brief allows
-    nulls in the pool; the stratification must not silently drop them."""
-    df = _frame([
+def test_categorical_emits_unk_row_only_when_nulls_or_off_taxonomy_present() -> None:
+    """Nulls and codes outside the published ESMA taxonomy route to the
+    UNK row; the row is emitted only when its count is > 0 so clean
+    data leaves the table at the spec-code length. Confirms both the
+    appearance condition AND its absence on clean data via a paired
+    setup."""
+    # Clean: only valid codes, no nulls. UNK row must NOT appear.
+    clean = _frame([
+        {"interest_rate_type": "FLIF", "current_principal_balance": 100.0},
+        {"interest_rate_type": "FXRL", "current_principal_balance": 50.0},
+    ])
+    clean_labels = [r.label for r in stratify_interest_rate_type(clean).rows]
+    assert UNK_LABEL not in clean_labels
+    # Spec-code row count is constant regardless of which codes appear.
+    assert len(clean_labels) == len(IR_TYPE_LABELS)
+
+    # Dirty: a null and a code outside the taxonomy. Both feed the UNK row.
+    dirty = _frame([
         {"interest_rate_type": "FLIF", "current_principal_balance": 100.0},
         {"interest_rate_type": None, "current_principal_balance": 50.0},
+        {"interest_rate_type": "ZZZZ", "current_principal_balance": 25.0},
     ])
-    s = stratify_interest_rate_type(df)
-    by_label = {r.label: r for r in s.rows}
-
-    assert by_label["Floating"].count == 1
-    assert by_label["Other"].count == 1
-    assert by_label["Other"].balance == pytest.approx(50.0)
-    assert s.total.count == 2
+    dirty_rows = stratify_interest_rate_type(dirty).rows
+    dirty_by_label = {r.label: r for r in dirty_rows}
+    assert UNK_LABEL in dirty_by_label
+    assert dirty_by_label[UNK_LABEL].count == 2
+    assert dirty_by_label[UNK_LABEL].balance == pytest.approx(50 + 25)
+    # The UNK row is appended after the spec codes.
+    assert dirty_rows[-1].label == UNK_LABEL
 
 
 def test_seasoning_buckets_apply_closed_right_convention() -> None:
@@ -262,30 +294,46 @@ def test_geographic_nulls_route_to_other() -> None:
     assert by_label["Other"].balance == pytest.approx(25.0)
 
 
-def test_loan_purpose_categorical_buckets() -> None:
-    """Purchase / Refinance / Equity Release / Construction / Other,
-    with RMRT and RMEQ both bucketing as Refinance."""
+def test_loan_purpose_labels_each_code_faithfully() -> None:
+    """Each ESMA purpose code appears as its own row with the
+    canonical "CODE — Description" label. No collapsing of RMRT and
+    RMEQ into a "Refinance" bucket - they're distinct ESMA codes and
+    surface distinctly."""
     df = _frame([
         {"purpose": "PURC", "current_principal_balance": 100.0},
         {"purpose": "RMRT", "current_principal_balance": 50.0},
         {"purpose": "RMEQ", "current_principal_balance": 25.0},
         {"purpose": "EQRE", "current_principal_balance": 30.0},
         {"purpose": "CNST", "current_principal_balance": 40.0},
-        {"purpose": "DCON", "current_principal_balance": 10.0},  # -> Other
+        {"purpose": "DCON", "current_principal_balance": 10.0},
     ])
     s = stratify_loan_purpose(df)
+
+    # All 13 ESMA purpose codes always emitted, in taxonomy order.
+    assert [r.label for r in s.rows] == list(LOAN_PURPOSE_LABELS.values())
+
     by_label = {r.label: r for r in s.rows}
-    assert by_label["Purchase"].count == 1
-    assert by_label["Refinance"].count == 2
-    assert by_label["Refinance"].balance == pytest.approx(75.0)
-    assert by_label["Equity Release"].count == 1
-    assert by_label["Construction"].count == 1
-    assert by_label["Other"].count == 1
+    assert by_label[LOAN_PURPOSE_LABELS["PURC"]].count == 1
+    # RMRT and RMEQ are distinct rows now, NOT collapsed.
+    assert by_label[LOAN_PURPOSE_LABELS["RMRT"]].count == 1
+    assert by_label[LOAN_PURPOSE_LABELS["RMRT"]].balance == pytest.approx(50.0)
+    assert by_label[LOAN_PURPOSE_LABELS["RMEQ"]].count == 1
+    assert by_label[LOAN_PURPOSE_LABELS["RMEQ"]].balance == pytest.approx(25.0)
+    assert by_label[LOAN_PURPOSE_LABELS["EQRE"]].count == 1
+    assert by_label[LOAN_PURPOSE_LABELS["CNST"]].count == 1
+    assert by_label[LOAN_PURPOSE_LABELS["DCON"]].count == 1
+
+    # The codes added to the label map for taxonomy completeness but
+    # absent from the fixture still show as count=0 rows.
+    for code in ("RENV", "BSFN", "CMRT", "IMRT", "RGBY", "GSPL", "OTHR"):
+        assert by_label[LOAN_PURPOSE_LABELS[code]].count == 0
 
 
-def test_occupancy_pown_buckets_as_investment() -> None:
-    """Match the MILAN grouping: POWN and TLET both bucket as
-    Investment; HOLD is Second Home; FOWN is Owner-Occupied."""
+def test_occupancy_labels_each_code_faithfully() -> None:
+    """POWN, TLET, HOLD, FOWN, OTHR each appear as their own row -
+    no derived "Investment"/"Second Home"/"Owner-Occupied" categories.
+    POWN ("Partially Owner Occupied") is its own row, not merged into
+    a broader investment bucket."""
     df = _frame([
         {"occupancy_type": "FOWN", "current_principal_balance": 100.0},
         {"occupancy_type": "FOWN", "current_principal_balance": 200.0},
@@ -294,13 +342,19 @@ def test_occupancy_pown_buckets_as_investment() -> None:
         {"occupancy_type": "POWN", "current_principal_balance": 25.0},
     ])
     s = stratify_occupancy(df)
+
+    assert [r.label for r in s.rows] == list(OCCUPANCY_LABELS.values())
+
     by_label = {r.label: r for r in s.rows}
-    assert by_label["Owner-Occupied"].count == 2
-    assert by_label["Owner-Occupied"].balance == pytest.approx(300.0)
-    assert by_label["Second Home"].count == 1
-    assert by_label["Investment"].count == 2
-    assert by_label["Investment"].balance == pytest.approx(100.0)
-    assert by_label["Other"].count == 0
+    assert by_label[OCCUPANCY_LABELS["FOWN"]].count == 2
+    assert by_label[OCCUPANCY_LABELS["FOWN"]].balance == pytest.approx(300.0)
+    assert by_label[OCCUPANCY_LABELS["HOLD"]].count == 1
+    # POWN and TLET are distinct rows now, NOT merged into Investment.
+    assert by_label[OCCUPANCY_LABELS["POWN"]].count == 1
+    assert by_label[OCCUPANCY_LABELS["POWN"]].balance == pytest.approx(25.0)
+    assert by_label[OCCUPANCY_LABELS["TLET"]].count == 1
+    assert by_label[OCCUPANCY_LABELS["TLET"]].balance == pytest.approx(75.0)
+    assert by_label[OCCUPANCY_LABELS["OTHR"]].count == 0
 
 
 # ---------------------------------------------------------------------------
