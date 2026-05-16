@@ -38,6 +38,11 @@ import polars as pl
 import structlog
 from fastapi import UploadFile
 
+from esma_milan.analysis import (
+    AnalysisResult,
+    AnalysisSummary,
+    run_all_stratifications,
+)
 from esma_milan.api.schemas import ErrorCode
 from esma_milan.runner import run_pipeline
 
@@ -137,9 +142,10 @@ class DryRunResult:
     warnings: list[str] = field(default_factory=list)
 
 
-# Either branch of POST /api/process: a workbook download, or - when
-# dry_run was requested - a structured JSON summary.
-ProcessResult = WorkbookResult | DryRunResult
+# Three branches of POST /api/process: a workbook download, a
+# dry-run summary, or - when analysis_only was requested - the
+# pre-aggregated stratifications JSON the GUI renders inline.
+ProcessResult = WorkbookResult | DryRunResult | AnalysisResult
 
 
 def _estimate_loan_row_count(loans_bytes: bytes) -> int:
@@ -263,6 +269,7 @@ def process_pipeline_from_bytes(
     aggregation: str,
     min_coverage: float,
     dry_run: bool,
+    analysis_only: bool = False,
 ) -> ProcessResult:
     """Run the ESMA -> MILAN pipeline against in-memory uploads.
 
@@ -291,6 +298,13 @@ def process_pipeline_from_bytes(
             are logged server-side, never surfaced in the `ApiError`.
     """
     validate_deal_name(deal_name)
+    if dry_run and analysis_only:
+        raise ApiError(
+            400,
+            "validation_error",
+            "analysis_only and dry_run are mutually exclusive; choose one.",
+            details={"fields": ["analysis_only", "dry_run"]},
+        )
     if aggregation not in _AGGREGATION_CHOICES:
         raise ApiError(
             400,
@@ -331,9 +345,16 @@ def process_pipeline_from_bytes(
         aggregation=aggregation,
         min_coverage=min_coverage,
         dry_run=dry_run,
+        analysis_only=analysis_only,
         estimated_rows=estimated_rows,
         taxonomy="uploaded" if taxonomy_bytes is not None else "default",
     )
+
+    # analysis_only reuses the dry_run code path internally: Stage 7's
+    # combined_flattened frame is enough to compute every stratification,
+    # so there's no reason to build the workbook just to throw it away.
+    # The dry_run flag passed to run_pipeline is the union of the two.
+    pipeline_dry_run = dry_run or analysis_only
 
     # --- Materialise uploads + run the pipeline ---------------------------
     # The temp dir holds only the *input* CSVs/XLSX; it is torn down on
@@ -374,7 +395,7 @@ def process_pipeline_from_bytes(
                 output_dir=None,  # in-memory: workbook returned as bytes
                 aggregation_method=aggregation_method,
                 min_coverage=min_coverage,
-                dry_run=dry_run,
+                dry_run=pipeline_dry_run,
                 verbose=True,
             )
         except ApiError:
@@ -412,6 +433,16 @@ def process_pipeline_from_bytes(
                 "internal_error",
                 "Pipeline error - check input data.",
             ) from exc
+
+        if analysis_only:
+            analysis = _build_analysis_result(result, deal_name, aggregation)
+            log.info(
+                "api_process_complete",
+                deal_name=deal_name,
+                analysis_only=True,
+                loan_count=analysis.summary.loan_count,
+            )
+            return analysis
 
         if dry_run:
             dry = _build_dry_run_result(result, deal_name, aggregation)
@@ -492,4 +523,62 @@ def _build_dry_run_result(
         # connected components, i.e. distinct collateral_group_id values.
         group_count=result.stage4.collateral_groups["collateral_group_id"].n_unique(),
         warnings=warnings,
+    )
+
+
+def _build_analysis_result(
+    result: object,
+    deal_name: str,
+    aggregation: str,
+) -> AnalysisResult:
+    """Pull the analysis-mode summary + stratifications out of a `PipelineResult`.
+
+    Same shape and stage-output invariants as `_build_dry_run_result`,
+    plus the per-stratification computation. Each stratification
+    function catches its own column-missing / data errors and returns
+    a `Stratification` with `error` populated rather than raising, so
+    one bad cut on one pool doesn't suppress the other five.
+    """
+    from esma_milan.runner import PipelineResult
+
+    assert isinstance(result, PipelineResult)
+    assert result.stage3 is not None
+    assert result.stage4 is not None
+    assert result.stage6 is not None
+    assert result.stage7 is not None
+    assert result.chosen_aggregation_method is not None
+
+    warnings: list[str] = []
+    if aggregation == "auto" and result.stage6.detected_method not in (
+        "by_loan",
+        "by_group",
+    ):
+        warnings.append(
+            f"Aggregation method could not be detected automatically; "
+            f"defaulted to '{result.chosen_aggregation_method}'. "
+            f"{result.stage6.message}"
+        )
+
+    combined = result.stage7.combined_flattened
+    total_balance = (
+        combined["current_principal_balance"]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .sum()
+    )
+    summary = AnalysisSummary(
+        loan_count=combined.height,
+        property_count=result.stage3.properties.height,
+        group_count=result.stage4.collateral_groups["collateral_group_id"].n_unique(),
+        total_current_balance=float(total_balance or 0.0),
+        chosen_aggregation=result.chosen_aggregation_method,
+        warnings=warnings,
+    )
+
+    stratifications = run_all_stratifications(combined)
+
+    return AnalysisResult(
+        deal_name=deal_name,
+        summary=summary,
+        stratifications=stratifications,
     )

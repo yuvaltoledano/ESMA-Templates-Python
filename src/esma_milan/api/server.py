@@ -36,6 +36,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from esma_milan.analysis import AnalysisResult
 from esma_milan.api.handlers import (
     CSV_CONTENT_TYPES,
     XLSX_CONTENT_TYPES,
@@ -45,10 +46,23 @@ from esma_milan.api.handlers import (
     validate_upload,
 )
 from esma_milan.api.schemas import (
+    AnalysisResponse,
     DryRunResponse,
     ErrorCode,
     ErrorResponse,
     HealthResponse,
+)
+from esma_milan.api.schemas import (
+    AnalysisSummary as AnalysisSummarySchema,
+)
+from esma_milan.api.schemas import (
+    Stratification as StratificationSchema,
+)
+from esma_milan.api.schemas import (
+    StratificationRow as StratificationRowSchema,
+)
+from esma_milan.api.schemas import (
+    StratificationTotal as StratificationTotalSchema,
 )
 
 # MIME type for .xlsx, matching the Content-Type R's output is served as.
@@ -241,6 +255,7 @@ async def process(
     aggregation: Annotated[Literal["auto", "by_loan", "by_group"], Form()] = "auto",
     min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = 0.85,
     dry_run: Annotated[bool, Form()] = False,
+    analysis_only: Annotated[bool, Form()] = False,
 ) -> Response:
     """Run the pipeline against an uploaded ESMA loans/collaterals pair.
 
@@ -277,7 +292,46 @@ async def process(
         aggregation=aggregation,
         min_coverage=min_coverage,
         dry_run=dry_run,
+        analysis_only=analysis_only,
     )
+
+    if isinstance(result, AnalysisResult):
+        analysis_body = AnalysisResponse(
+            deal_name=result.deal_name,
+            summary=AnalysisSummarySchema(
+                loan_count=result.summary.loan_count,
+                property_count=result.summary.property_count,
+                group_count=result.summary.group_count,
+                total_current_balance=result.summary.total_current_balance,
+                chosen_aggregation=result.summary.chosen_aggregation,
+                warnings=result.summary.warnings,
+            ),
+            stratifications={
+                key: StratificationSchema(
+                    title=strat.title,
+                    type=strat.type,
+                    chart_type=strat.chart_type,
+                    rows=[
+                        StratificationRowSchema(
+                            label=row.label,
+                            count=row.count,
+                            count_pct=row.count_pct,
+                            balance=row.balance,
+                            balance_pct=row.balance_pct,
+                        )
+                        for row in strat.rows
+                    ],
+                    total=StratificationTotalSchema(
+                        count=strat.total.count,
+                        balance=strat.total.balance,
+                    ),
+                    error=strat.error,
+                    note=strat.note,
+                )
+                for key, strat in result.stratifications.items()
+            },
+        )
+        return JSONResponse(content=analysis_body.model_dump())
 
     if isinstance(result, DryRunResult):
         body = DryRunResponse(
