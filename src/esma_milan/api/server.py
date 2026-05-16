@@ -56,6 +56,9 @@ from esma_milan.api.schemas import (
     AnalysisSummary as AnalysisSummarySchema,
 )
 from esma_milan.api.schemas import (
+    ExecutionSummaryRow as ExecutionSummaryRowSchema,
+)
+from esma_milan.api.schemas import (
     Stratification as StratificationSchema,
 )
 from esma_milan.api.schemas import (
@@ -327,9 +330,14 @@ async def process(
                     ),
                     error=strat.error,
                     note=strat.note,
+                    weighted_average=strat.weighted_average,
                 )
                 for key, strat in result.stratifications.items()
             },
+            execution_summary=[
+                ExecutionSummaryRowSchema(label=row.label, value=row.value)
+                for row in result.execution_summary
+            ],
         )
         return JSONResponse(content=analysis_body.model_dump())
 

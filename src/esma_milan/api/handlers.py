@@ -41,6 +41,7 @@ from fastapi import UploadFile
 from esma_milan.analysis import (
     AnalysisResult,
     AnalysisSummary,
+    ExecutionSummaryRow,
     run_all_stratifications,
 )
 from esma_milan.api.schemas import ErrorCode
@@ -577,8 +578,25 @@ def _build_analysis_result(
 
     stratifications = run_all_stratifications(combined)
 
+    # Stage 10's output is a 2-column Polars frame with R-faithful
+    # pre-formatted string values. The runner populates it on every
+    # successful path (including dry_run, which the analysis-mode
+    # endpoint reuses internally), so it's expected non-None here.
+    assert result.execution_summary is not None, (
+        "run_pipeline must populate execution_summary on a successful run"
+    )
+    exec_summary_rows = [
+        ExecutionSummaryRow(label=label, value=value)
+        for label, value in zip(
+            result.execution_summary["Metric"].to_list(),
+            result.execution_summary["Value"].to_list(),
+            strict=True,
+        )
+    ]
+
     return AnalysisResult(
         deal_name=deal_name,
         summary=summary,
         stratifications=stratifications,
+        execution_summary=exec_summary_rows,
     )

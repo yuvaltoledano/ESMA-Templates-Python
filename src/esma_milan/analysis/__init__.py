@@ -29,6 +29,7 @@ from esma_milan.analysis.stratifications import (
 from esma_milan.analysis.types import (
     AnalysisResult,
     AnalysisSummary,
+    ExecutionSummaryRow,
     Stratification,
     StratificationRow,
     StratificationTotal,
@@ -59,6 +60,7 @@ __all__ = [
     "STRATIFICATIONS",
     "AnalysisResult",
     "AnalysisSummary",
+    "ExecutionSummaryRow",
     "Stratification",
     "StratificationRow",
     "StratificationTotal",

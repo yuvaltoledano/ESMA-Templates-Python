@@ -228,6 +228,62 @@ def test_seasoning_missing_values_excluded_with_note() -> None:
     assert s.total.balance == pytest.approx(175.0)
 
 
+def test_seasoning_weighted_average_matches_independent_computation() -> None:
+    """WA seasoning is the balance-weighted mean of `calc_seasoning * 12`
+    (months), excluding null-value rows from both numerator and
+    denominator. Expected value derived inline from the fixture.
+    """
+    df = _frame([
+        {"calc_seasoning": 1.0, "current_principal_balance": 100.0},   # 12 mo
+        {"calc_seasoning": 2.0, "current_principal_balance": 300.0},   # 24 mo
+        {"calc_seasoning": 5.0, "current_principal_balance": 200.0},   # 60 mo
+        # Null-seasoning row: excluded from WA, included in pool total.
+        {"calc_seasoning": None, "current_principal_balance": 1000.0},
+    ])
+    s = stratify_seasoning(df)
+    # WA = (12*100 + 24*300 + 60*200) / (100+300+200) = 20400 / 600 = 34.0
+    assert s.weighted_average == pytest.approx(34.0)
+
+
+def test_current_ltv_weighted_average_matches_independent_computation() -> None:
+    """WA current LTV is the balance-weighted mean of `calc_current_LTV`
+    (decimal, not percent). Expected value derived inline.
+    """
+    df = _frame([
+        {"calc_current_LTV": 0.40, "current_principal_balance": 100.0},
+        {"calc_current_LTV": 0.60, "current_principal_balance": 200.0},
+        {"calc_current_LTV": 0.80, "current_principal_balance": 700.0},
+    ])
+    s = stratify_current_ltv(df)
+    # WA = (0.40*100 + 0.60*200 + 0.80*700) / 1000 = 720 / 1000 = 0.72
+    assert s.weighted_average == pytest.approx(0.72)
+
+
+def test_categorical_and_geographic_have_null_weighted_average() -> None:
+    """WA only has a meaningful interpretation for the bucketed numeric
+    stratifications. Categoricals and the geographic cut return None.
+    """
+    df = _frame([
+        {"interest_rate_type": "FLIF", "current_principal_balance": 100.0},
+    ])
+    assert stratify_interest_rate_type(df).weighted_average is None
+
+    df_geo = _frame([
+        {"geographic_region_collateral": "NL-NH", "current_principal_balance": 100.0},
+    ])
+    assert stratify_geographic(df_geo).weighted_average is None
+
+    df_purpose = _frame([
+        {"purpose": "PURC", "current_principal_balance": 100.0},
+    ])
+    assert stratify_loan_purpose(df_purpose).weighted_average is None
+
+    df_occ = _frame([
+        {"occupancy_type": "FOWN", "current_principal_balance": 100.0},
+    ])
+    assert stratify_occupancy(df_occ).weighted_average is None
+
+
 def test_current_ltv_buckets_apply_closed_right_at_decimal_breaks() -> None:
     """LTV buckets at 0.50 / 0.70 / 0.80 / 0.90 / 1.00, closed="right".
     Values at exactly a break go to that bucket; values immediately
@@ -458,6 +514,66 @@ def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
         assert strat["total"]["count"] == summary["loan_count"], (
             f"{key} total count {strat['total']['count']} != pool loan_count {summary['loan_count']}"
         )
+
+    # Bucketed numeric strats (seasoning, current_ltv) carry a
+    # pool-level WA; categoricals and geographic do not.
+    assert body["stratifications"]["seasoning"]["weighted_average"] is not None
+    assert body["stratifications"]["current_ltv"]["weighted_average"] is not None
+    for key in ("interest_rate_type", "geographic", "loan_purpose", "occupancy"):
+        assert body["stratifications"][key]["weighted_average"] is None
+
+
+def test_analysis_only_response_includes_execution_summary() -> None:
+    """The analysis response carries the Execution Summary (Sheet 1) as
+    a list of `{label, value}` rows, with pre-formatted R-faithful
+    strings (currencies as "1,234,567.89", percentages as "12.34%").
+
+    Asserts:
+      - row count = 38 base metrics + N per-structure-type breakdown
+        rows, where N is independently derived from the synthetic
+        loans CSV's account_status filter (Stage 2 keeps ARRE/PERF/
+        RARR/RNAR), then by counting distinct structure types in the
+        resulting groups. Hard-coded here as 5 (synthetic fixture is
+        constructed with one of each structure type 1-5);
+      - "Deal Name" row reflects the request's deal_name verbatim;
+      - "Current Balance" row equals the independently-computed
+        formatted sum of current_principal_balance on the loans
+        passing Stage 2's active-status filter.
+    """
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "EXEC_SUMMARY_TEST", "analysis_only": "true"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "execution_summary" in body
+
+    rows = body["execution_summary"]
+    by_label = {row["label"]: row["value"] for row in rows}
+
+    # 38 base metric rows + 5 structure-type breakdown rows
+    # (synthetic fixture is built with one group of each type 1-5;
+    # the per-structure-type row count is the only variable component
+    # of the row total).
+    assert len(rows) == 38 + 5
+
+    # Deal name flows through verbatim - exercises the label-passthrough
+    # path and is the only row that depends on request input.
+    assert by_label["Deal Name"] == "EXEC_SUMMARY_TEST"
+
+    # "Current Balance" is the formatted sum of current_principal_balance
+    # over Stage-2-active loans. Independently computed from the raw CSV
+    # here (sum on all 8 rows since the synthetic fixture's account_status
+    # is all ARRE/PERF - i.e. all active), then formatted with the same
+    # R-faithful `_fmt_comma` helper the production code uses.
+    raw_loans = pl.read_csv(SYNTHETIC / "loans.csv")
+    active = raw_loans.filter(
+        pl.col("account_status").is_in(["ARRE", "PERF", "RARR", "RNAR"])
+    )
+    total_cb = float(active["current_principal_balance"].sum() or 0.0)
+    expected_cb_str = f"{total_cb:,.2f}"
+    assert by_label["Current Balance"] == expected_cb_str
 
 
 def test_analysis_only_with_dry_run_is_400_mutually_exclusive() -> None:

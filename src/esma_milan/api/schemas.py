@@ -104,6 +104,20 @@ class Stratification(BaseModel):
     total: StratificationTotal
     error: str | None = None
     note: str | None = None
+    weighted_average: float | None = None
+
+
+class ExecutionSummaryRow(BaseModel):
+    """One row of the Execution Summary (Sheet 1).
+
+    `value` is a pre-formatted string with R-faithful formatting:
+    currencies as "1,234,567.89", percentages as "12.34%", dates as
+    ISO, missing as "<not available>". See
+    ``esma_milan.analysis.types.ExecutionSummaryRow`` for rationale.
+    """
+
+    label: str
+    value: str
 
 
 class AnalysisSummary(BaseModel):
@@ -128,6 +142,7 @@ class AnalysisResponse(BaseModel):
     deal_name: str
     summary: AnalysisSummary
     stratifications: dict[str, Stratification]
+    execution_summary: list[ExecutionSummaryRow] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

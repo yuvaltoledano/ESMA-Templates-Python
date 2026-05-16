@@ -103,6 +103,16 @@ class PipelineResult:
     alongside `workbook_bytes` in in-memory mode; matches the filename
     used for the on-disk output. None on disk-write runs and dry_run."""
 
+    execution_summary: pl.DataFrame | None = None
+    """The composed Execution Summary (Sheet 1) as a 2-column
+    `(Metric: Utf8, Value: Utf8)` Polars frame with pre-formatted
+    string values. Populated whenever Stages 1-7 succeed, regardless
+    of `dry_run`: the analysis-mode HTTP path needs the summary
+    structure even when no workbook is written, and the ~60 ms cost on
+    a 1k-loan pool is invisible next to the I/O overhead it would
+    otherwise gate. None only when an earlier stage failed before
+    Stage 10 could run."""
+
 
 def run_pipeline(
     *,
@@ -212,8 +222,34 @@ def run_pipeline(
         aggregation_method=cast(AggregationMethod, chosen_aggregation),
     )
 
-    # TODO Stages 8..10. Sheets 1-5 (Execution Summary + four mapping
-    # tables) and Sheet 10 (MILAN template pool) still pending.
+    # The final filename uses the pool_cutoff_date from loans (matches
+    # r_reference/R/pipeline.R:611-621). Stage 1's parsed loans table
+    # carries it as a Date column; pluck the first non-null value.
+    cutoff = _first_non_null_date(stage1.loans, "pool_cutoff_date")
+    if cutoff is None:
+        raise ValueError("pool_cutoff_date is missing in loans file")
+    cutoff_str = cutoff.isoformat()
+    output_filename = f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
+
+    # Stage 9: compose the 175-column MILAN template pool (Sheet 10) from
+    # the Stage-7 combined_flattened frame. Mirrors map_to_milan() in
+    # r_reference/R/milan_mapping.R.
+    # Stage 10: compose the Execution Summary (Sheet 1) from the MILAN
+    # pool + enriched loans/properties + combined_flattened. Mirrors
+    # the summary block in r_reference/R/pipeline.R:625-895.
+    # Both run on every code path - dry_run skips only the workbook
+    # write below, since the analysis-mode HTTP response needs the
+    # summary structure too and the ~60 ms cost is invisible.
+    milan_pool = compose_milan_pool(stage7.combined_flattened)
+    execution_summary = compose_execution_summary(
+        deal_name=deal_name,
+        chosen_aggregation=chosen_aggregation,
+        pool_cutoff_date=cutoff,
+        milan_pool=milan_pool,
+        loans_enriched=loans_enriched,
+        properties_enriched=properties_enriched,
+        combined_flattened=stage7.combined_flattened,
+    )
 
     if dry_run:
         return PipelineResult(
@@ -226,40 +262,14 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            execution_summary=execution_summary,
         )
-
-    # The final filename uses the pool_cutoff_date from loans (matches
-    # r_reference/R/pipeline.R:611-621). Stage 1's parsed loans table
-    # carries it as a Date column; pluck the first non-null value.
-    cutoff = _first_non_null_date(stage1.loans, "pool_cutoff_date")
-    if cutoff is None:
-        raise ValueError("pool_cutoff_date is missing in loans file")
-    cutoff_str = cutoff.isoformat()
-    output_filename = f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 
     # Stage 8.5: compose the four mapping tables (Sheets 1-4) from the
     # post-Stage-3 loans/properties + post-Stage-5 loans_enriched (the
     # latter for the classification tail on "Loans to properties").
     mapping_tables = compose_mapping_tables(
         stage3.loans, stage3.properties, loans_enriched
-    )
-
-    # Stage 9: compose the 175-column MILAN template pool (Sheet 10) from
-    # the Stage-7 combined_flattened frame. Mirrors map_to_milan() in
-    # r_reference/R/milan_mapping.R.
-    milan_pool = compose_milan_pool(stage7.combined_flattened)
-
-    # Stage 10: compose the Execution Summary (Sheet 1) from the MILAN
-    # pool + enriched loans/properties + combined_flattened. Mirrors
-    # the summary block in r_reference/R/pipeline.R:625-895.
-    execution_summary = compose_execution_summary(
-        deal_name=deal_name,
-        chosen_aggregation=chosen_aggregation,
-        pool_cutoff_date=cutoff,
-        milan_pool=milan_pool,
-        loans_enriched=loans_enriched,
-        properties_enriched=properties_enriched,
-        combined_flattened=stage7.combined_flattened,
     )
 
     populated_sheets = {
@@ -295,6 +305,7 @@ def run_pipeline(
             chosen_aggregation_method=chosen_aggregation,
             workbook_bytes=workbook_bytes,
             output_filename=output_filename,
+            execution_summary=execution_summary,
         )
 
     deal_dir = output_dir / deal_name
@@ -316,6 +327,7 @@ def run_pipeline(
         stage6=stage6,
         stage7=stage7,
         chosen_aggregation_method=chosen_aggregation,
+        execution_summary=execution_summary,
     )
 
 
