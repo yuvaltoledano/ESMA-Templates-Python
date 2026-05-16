@@ -11,10 +11,21 @@ then highest valuation). For multi-property loans this means the whole
 loan balance is attributed to the main property's region / occupancy -
 the same convention the existing pipeline applies for the Execution
 Summary, kept here so the GUI analysis matches what the workbook reports.
+This includes cross-collateralised loans (Stage 4 Type 5): a loan whose
+property pool spans regions is attributed entirely to the main property's
+region. Known simplification of the existing convention; pro-rata
+attribution is a future iteration if domain feedback wants it.
 
 Each function catches its own errors and returns a ``Stratification``
 with ``error`` populated rather than raising. One missing column on one
 cut must not blow up the other five.
+
+Asymmetric null handling between categorical and bucketed cuts is
+deliberate, not a bug: a null categorical value has a semantic home
+("we don't know what type this is" -> "Other"), but a null bucketed
+value doesn't ("we don't know seasoning" isn't a bucket), so the
+former routes to "Other" and the latter is excluded from the buckets
+and surfaced via ``Stratification.note``.
 """
 
 from __future__ import annotations

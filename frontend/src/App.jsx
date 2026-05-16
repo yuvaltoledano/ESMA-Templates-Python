@@ -1,4 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
+import {
+  Bar,
+  BarChart,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 
 // Mirrors the API's deal_name rule (handlers.py::validate_deal_name):
 // letters, digits, space, hyphen, underscore, period; length 1-100.
@@ -11,6 +23,14 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024
 
 const NETWORK_ERROR_MESSAGE =
   'Cannot reach API at localhost:8000. Is `uv run esma-milan-server` running?'
+
+// Categorical pie-chart palette. Long enough for the biggest categorical
+// (loan purpose has 5 buckets); cycled for the geographic bar chart.
+const CHART_COLORS = [
+  '#0f766e', '#1d4ed8', '#b45309', '#7c3aed',
+  '#be123c', '#0369a1', '#15803d', '#c2410c',
+  '#475569', '#a16207', '#9f1239',
+]
 
 // Pull the download filename out of a Content-Disposition header. The API
 // produces a simple `attachment; filename="<name>"`, so a basic extraction
@@ -31,6 +51,19 @@ function triggerDownload(blob, filename) {
   anchor.remove()
   URL.revokeObjectURL(url)
 }
+
+// EUR formatter without decimals - pool balances are large enough that
+// cent-level precision in a stratification table is noise.
+const EUR_FORMAT = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'EUR',
+  maximumFractionDigits: 0,
+})
+const PCT_FORMAT = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
 
 function HealthIndicator({ status }) {
   const config = {
@@ -55,7 +88,11 @@ function App() {
 
   // 'idle' | 'processing' | 'success' | 'error'
   const [phase, setPhase] = useState('idle')
-  const [result, setResult] = useState(null) // { filename }
+  // The download mode produces { filename }; analysis mode produces the
+  // full AnalysisResponse JSON. One state holder, distinguished by
+  // `mode`, keeps the success-banner / results-section render paths
+  // mutually exclusive without a second state machine.
+  const [result, setResult] = useState(null) // { mode: 'download'|'analysis', ... }
   const [error, setError] = useState(null) // { type, message, code?, details? }
   const [formError, setFormError] = useState(null) // client-side validation
 
@@ -113,9 +150,10 @@ function App() {
     ['taxonomy', taxonomyFile],
   ].filter(([, file]) => file && file.size > MAX_FILE_SIZE)
 
-  async function handleSubmit(event) {
-    event.preventDefault()
-
+  // Both buttons share validation + the POST; only the response handling
+  // diverges. The intent is signalled by the `mode` argument, which maps
+  // directly onto the API's `analysis_only` form field.
+  async function submit(mode) {
     if (!loansFile || !collateralsFile) {
       setFormError('Both a loans CSV and a collaterals CSV are required.')
       return
@@ -142,6 +180,7 @@ function App() {
     formData.append('collaterals', collateralsFile)
     formData.append('deal_name', dealName)
     if (taxonomyFile) formData.append('taxonomy', taxonomyFile)
+    if (mode === 'analysis') formData.append('analysis_only', 'true')
 
     try {
       const response = await fetch('/api/process', {
@@ -173,13 +212,18 @@ function App() {
         return
       }
 
-      const blob = await response.blob()
-      const filename = parseFilename(
-        response.headers.get('Content-Disposition'),
-        'pool.xlsx',
-      )
-      triggerDownload(blob, filename)
-      setResult({ filename })
+      if (mode === 'analysis') {
+        const body = await response.json()
+        setResult({ mode: 'analysis', data: body })
+      } else {
+        const blob = await response.blob()
+        const filename = parseFilename(
+          response.headers.get('Content-Disposition'),
+          'pool.xlsx',
+        )
+        triggerDownload(blob, filename)
+        setResult({ mode: 'download', filename })
+      }
       setPhase('success')
     } catch {
       setError({ type: 'network', message: NETWORK_ERROR_MESSAGE })
@@ -197,9 +241,12 @@ function App() {
         </h1>
       </header>
 
-      <main className="mx-auto w-full max-w-2xl flex-1 p-6">
+      <main className="mx-auto w-full max-w-5xl flex-1 p-6">
         <form
-          onSubmit={handleSubmit}
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit('download')
+          }}
           className="space-y-5 rounded-lg border border-slate-200 bg-white p-6"
         >
           <FileField
@@ -254,13 +301,23 @@ function App() {
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-          >
-            Process Pool
-          </button>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex-1 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              Process Pool &amp; Download
+            </button>
+            <button
+              type="button"
+              onClick={() => submit('analysis')}
+              disabled={busy}
+              className="flex-1 rounded border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Analyze Pool
+            </button>
+          </div>
         </form>
 
         <div className="mt-5">
@@ -277,7 +334,7 @@ function App() {
             </div>
           )}
 
-          {phase === 'success' && result && (
+          {phase === 'success' && result?.mode === 'download' && (
             <p className="rounded border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800">
               Downloaded: {result.filename}
             </p>
@@ -300,12 +357,189 @@ function App() {
             </div>
           )}
         </div>
+
+        {phase === 'success' && result?.mode === 'analysis' && (
+          <AnalysisResults analysis={result.data} />
+        )}
       </main>
 
       <footer className="border-t border-slate-200 bg-white px-6 py-3">
         <HealthIndicator status={health} />
       </footer>
     </div>
+  )
+}
+
+function AnalysisResults({ analysis }) {
+  const { deal_name: dealName, summary, stratifications } = analysis
+  return (
+    <section className="mt-6 space-y-4">
+      <header className="rounded-lg border border-slate-200 bg-white p-4">
+        <h2 className="text-base font-semibold text-slate-800">
+          Pool analysis: {dealName}
+        </h2>
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-600 sm:grid-cols-4">
+          <SummaryStat label="Loans" value={summary.loan_count.toLocaleString()} />
+          <SummaryStat label="Properties" value={summary.property_count.toLocaleString()} />
+          <SummaryStat label="Groups" value={summary.group_count.toLocaleString()} />
+          <SummaryStat
+            label="Total balance"
+            value={EUR_FORMAT.format(summary.total_current_balance)}
+          />
+        </dl>
+        <p className="mt-2 text-xs text-slate-500">
+          Aggregation: {summary.chosen_aggregation}
+        </p>
+        {summary.warnings && summary.warnings.length > 0 && (
+          <ul className="mt-2 list-disc pl-5 text-xs text-amber-700">
+            {summary.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        )}
+      </header>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {Object.entries(stratifications).map(([key, strat]) => (
+          <StratificationTile key={key} stratKey={key} strat={strat} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SummaryStat({ label, value }) {
+  return (
+    <div>
+      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="text-sm font-medium text-slate-800">{value}</dd>
+    </div>
+  )
+}
+
+function StratificationTile({ stratKey, strat }) {
+  const { title, chart_type: chartType, rows, total, error, note } = strat
+
+  if (error) {
+    return (
+      <article className="rounded-lg border border-slate-200 bg-white p-4">
+        <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+        <p className="mt-2 text-sm text-slate-500">Not available: {error}</p>
+      </article>
+    )
+  }
+
+  return (
+    <article className="rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+      <div className="mt-3 h-[220px]">
+        <StratificationChart chartType={chartType} rows={rows} stratKey={stratKey} />
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <th className="py-1.5 pr-2">Bucket</th>
+              <th className="py-1.5 pr-2 text-right">Count</th>
+              <th className="py-1.5 pr-2 text-right">% Count</th>
+              <th className="py-1.5 pr-2 text-right">Balance</th>
+              <th className="py-1.5 text-right">% Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.label} className="border-b border-slate-100">
+                <td className="py-1.5 pr-2 text-slate-700">{row.label}</td>
+                <td className="py-1.5 pr-2 text-right tabular-nums">
+                  {row.count.toLocaleString()}
+                </td>
+                <td className="py-1.5 pr-2 text-right tabular-nums text-slate-500">
+                  {PCT_FORMAT.format(row.count_pct)}
+                </td>
+                <td className="py-1.5 pr-2 text-right tabular-nums">
+                  {EUR_FORMAT.format(row.balance)}
+                </td>
+                <td className="py-1.5 text-right tabular-nums text-slate-500">
+                  {PCT_FORMAT.format(row.balance_pct)}
+                </td>
+              </tr>
+            ))}
+            <tr className="bg-slate-50 font-medium text-slate-800">
+              <td className="py-1.5 pr-2">Total</td>
+              <td className="py-1.5 pr-2 text-right tabular-nums">
+                {total.count.toLocaleString()}
+              </td>
+              <td />
+              <td className="py-1.5 pr-2 text-right tabular-nums">
+                {EUR_FORMAT.format(total.balance)}
+              </td>
+              <td />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {note && <p className="mt-2 text-xs text-slate-500">{note}</p>}
+    </article>
+  )
+}
+
+function StratificationChart({ chartType, rows, stratKey }) {
+  // Pie charts: skip zero-balance slices - rendering a zero slice
+  // shows up as a phantom edge label. Bar charts keep zero rows for
+  // layout stability (a missing-bar gap is fine; a phantom pie wedge
+  // isn't).
+  const data = rows
+    .filter((row) =>
+      chartType === 'pie' ? row.balance > 0 : true,
+    )
+    .map((row) => ({ name: row.label, value: row.balance }))
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-slate-400">
+        No data to chart
+      </div>
+    )
+  }
+
+  if (chartType === 'pie') {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="name"
+            innerRadius="35%"
+            outerRadius="75%"
+          >
+            {data.map((entry, i) => (
+              <Cell key={entry.name} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
+          <Legend verticalAlign="bottom" height={28} iconSize={8} />
+        </PieChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 20 }}>
+        <XAxis
+          dataKey="name"
+          tick={{ fontSize: 10 }}
+          angle={stratKey === 'geographic' ? -30 : 0}
+          textAnchor={stratKey === 'geographic' ? 'end' : 'middle'}
+          height={40}
+          interval={0}
+        />
+        <YAxis tick={{ fontSize: 10 }} width={50} />
+        <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
+        <Bar dataKey="value" fill={CHART_COLORS[0]} />
+      </BarChart>
+    </ResponsiveContainer>
   )
 }
 
