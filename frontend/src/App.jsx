@@ -3,7 +3,6 @@ import {
   Bar,
   BarChart,
   Cell,
-  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -82,6 +81,16 @@ function formatEurAxis(value) {
   if (abs < 1_000_000) return `${sign}€${Math.round(abs / 1_000)}K`
   if (abs < 1_000_000_000) return `${sign}€${(abs / 1_000_000).toFixed(1)}M`
   return `${sign}€${(abs / 1_000_000_000).toFixed(1)}B`
+}
+
+// X-axis tick formatter for bucketed bar charts. Strips the unit
+// suffix from the bucketed labels (seasoning's " months", LTV's "%")
+// since the chart's title already conveys the unit and the suffix
+// just crowds the tick text. Tables keep the full label. Geography
+// bar-chart labels (NL-NH, NL-UT, ...) carry neither suffix, so the
+// formatter passes them through unchanged.
+function formatBucketTick(value) {
+  return String(value).replace(/ months$/, '').replace(/%$/, '')
 }
 
 function HealthIndicator({ status }) {
@@ -448,11 +457,31 @@ function StratificationTile({ stratKey, strat }) {
     )
   }
 
+  // Stable color per spec-row index. Keyed off the row's position in
+  // `rows` (not in the filtered chart data), so the same ESMA code
+  // always gets the same colour across pools: a "FLIF" slice is the
+  // same colour in every run, even when other codes drop in and out
+  // of being non-zero. The table swatch and the pie slice read from
+  // the same array, so the two stay in sync.
+  const rowColors = rows.map((_, i) => CHART_COLORS[i % CHART_COLORS.length])
+
+  // Swatches replace the pie chart's removed legend - they're the
+  // bridge between slice colour and bucket name. Bar charts use a
+  // single colour for all bars and already carry the x-axis label
+  // under each bar, so no swatch is needed there (and a different
+  // swatch colour next to identically-coloured bars would mislead).
+  const showSwatches = chartType === 'pie'
+
   return (
     <article className="rounded-lg border border-slate-200 bg-white p-4">
       <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
       <div className="mt-3 h-[220px]">
-        <StratificationChart chartType={chartType} rows={rows} stratKey={stratKey} />
+        <StratificationChart
+          chartType={chartType}
+          rows={rows}
+          rowColors={rowColors}
+          stratKey={stratKey}
+        />
       </div>
       <div className="mt-3 overflow-x-auto">
         <table className="w-full text-left text-sm">
@@ -466,10 +495,19 @@ function StratificationTile({ stratKey, strat }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row, i) => (
               <tr key={row.label} className="border-b border-slate-100">
                 <td className="py-1.5 pr-2 align-top text-slate-700 whitespace-normal break-words">
-                  {row.label}
+                  <div className="flex items-start gap-2">
+                    {showSwatches && (
+                      <span
+                        className="mt-1 inline-block h-3 w-3 shrink-0 rounded-sm"
+                        style={{ backgroundColor: rowColors[i] }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>{row.label}</span>
+                  </div>
                 </td>
                 <td className="py-1.5 pr-2 text-right tabular-nums">
                   {row.count.toLocaleString()}
@@ -504,16 +542,17 @@ function StratificationTile({ stratKey, strat }) {
   )
 }
 
-function StratificationChart({ chartType, rows, stratKey }) {
-  // Pie charts: skip zero-balance slices - rendering a zero slice
-  // shows up as a phantom edge label. Bar charts keep zero rows for
-  // layout stability (a missing-bar gap is fine; a phantom pie wedge
-  // isn't).
+function StratificationChart({ chartType, rows, rowColors, stratKey }) {
+  // Carry each row's stable colour into the chart data: filtering out
+  // zero-balance pie slices would otherwise re-shift index-based
+  // colour assignment, breaking the swatch <-> slice match.
   const data = rows
-    .filter((row) =>
-      chartType === 'pie' ? row.balance > 0 : true,
-    )
-    .map((row) => ({ name: row.label, value: row.balance }))
+    .map((row, i) => ({
+      name: row.label,
+      value: row.balance,
+      color: rowColors[i],
+    }))
+    .filter((row) => (chartType === 'pie' ? row.value > 0 : true))
 
   if (data.length === 0) {
     return (
@@ -524,6 +563,10 @@ function StratificationChart({ chartType, rows, stratKey }) {
   }
 
   if (chartType === 'pie') {
+    // No <Legend>: faithful ESMA labels are long enough that Recharts'
+    // default legend layout wraps and overflows onto the table below.
+    // The colour swatches in the table row labels are the legend's
+    // replacement.
     return (
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
@@ -532,14 +575,13 @@ function StratificationChart({ chartType, rows, stratKey }) {
             dataKey="value"
             nameKey="name"
             innerRadius="35%"
-            outerRadius="75%"
+            outerRadius="80%"
           >
-            {data.map((entry, i) => (
-              <Cell key={entry.name} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            {data.map((entry) => (
+              <Cell key={entry.name} fill={entry.color} />
             ))}
           </Pie>
           <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
-          <Legend verticalAlign="bottom" height={28} iconSize={8} />
         </PieChart>
       </ResponsiveContainer>
     )
@@ -555,6 +597,7 @@ function StratificationChart({ chartType, rows, stratKey }) {
           textAnchor={stratKey === 'geographic' ? 'end' : 'middle'}
           height={40}
           interval={0}
+          tickFormatter={formatBucketTick}
         />
         <YAxis tick={{ fontSize: 10 }} width={60} tickFormatter={formatEurAxis} />
         <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
