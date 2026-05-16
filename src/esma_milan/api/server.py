@@ -50,11 +50,13 @@ from esma_milan.api.schemas import (
     DryRunResponse,
     ErrorCode,
     ErrorResponse,
-    ExecutionSummaryRow as ExecutionSummaryRowSchema,
     HealthResponse,
 )
 from esma_milan.api.schemas import (
     AnalysisSummary as AnalysisSummarySchema,
+)
+from esma_milan.api.schemas import (
+    ExecutionSummaryRow as ExecutionSummaryRowSchema,
 )
 from esma_milan.api.schemas import (
     Stratification as StratificationSchema,
