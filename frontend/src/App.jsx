@@ -586,15 +586,45 @@ function StratificationTile({ stratKey, strat }) {
   )
 }
 
+// Custom tooltip shared by pie + bar charts. Recharts 3.x routes the
+// hovered datum through `payload[0].payload`; we carry count, count_pct,
+// balance and balance_pct on every data point so a single hover surfaces
+// all four metrics that show in the table below.
+function ChartTooltip({ active, payload }) {
+  if (!active || !payload || payload.length === 0) return null
+  const datum = payload[0].payload
+  if (!datum) return null
+  return (
+    <div className="rounded-md bg-slate-900/95 px-3 py-2 text-xs text-white shadow-lg">
+      <div className="mb-1 font-medium">{datum.name}</div>
+      <div className="tabular-nums">
+        Count: {datum.count.toLocaleString()} (
+        {PCT_FORMAT.format(datum.count_pct)})
+      </div>
+      <div className="tabular-nums">
+        Balance: {EUR_FORMAT.format(datum.balance)} (
+        {PCT_FORMAT.format(datum.balance_pct)})
+      </div>
+    </div>
+  )
+}
+
 function StratificationChart({ chartType, rows, rowColors, stratKey }) {
   // Carry each row's stable colour into the chart data: filtering out
   // zero-balance pie slices would otherwise re-shift index-based
   // colour assignment, breaking the swatch <-> slice match.
+  // count / count_pct / balance_pct ride along on every point so the
+  // ChartTooltip can show all four metrics on hover without a second
+  // data structure or a lookup back into `rows`.
   const data = rows
     .map((row, i) => ({
       name: row.label,
       value: row.balance,
       color: rowColors[i],
+      count: row.count,
+      count_pct: row.count_pct,
+      balance: row.balance,
+      balance_pct: row.balance_pct,
     }))
     .filter((row) => (chartType === 'pie' ? row.value > 0 : true))
 
@@ -625,7 +655,7 @@ function StratificationChart({ chartType, rows, rowColors, stratKey }) {
               <Cell key={entry.name} fill={entry.color} />
             ))}
           </Pie>
-          <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
+          <Tooltip content={<ChartTooltip />} />
         </PieChart>
       </ResponsiveContainer>
     )
@@ -644,7 +674,7 @@ function StratificationChart({ chartType, rows, rowColors, stratKey }) {
           tickFormatter={formatBucketTick}
         />
         <YAxis tick={{ fontSize: 10 }} width={60} tickFormatter={formatEurAxis} />
-        <Tooltip formatter={(value) => EUR_FORMAT.format(value)} />
+        <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(15,23,42,0.05)' }} />
         <Bar dataKey="value" fill={CHART_COLORS[0]} />
       </BarChart>
     </ResponsiveContainer>
