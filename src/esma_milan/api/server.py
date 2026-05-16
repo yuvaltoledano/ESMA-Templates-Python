@@ -50,6 +50,7 @@ from esma_milan.api.schemas import (
     DryRunResponse,
     ErrorCode,
     ErrorResponse,
+    ExecutionSummaryRow as ExecutionSummaryRowSchema,
     HealthResponse,
 )
 from esma_milan.api.schemas import (
@@ -330,6 +331,10 @@ async def process(
                 )
                 for key, strat in result.stratifications.items()
             },
+            execution_summary=[
+                ExecutionSummaryRowSchema(label=row.label, value=row.value)
+                for row in result.execution_summary
+            ],
         )
         return JSONResponse(content=analysis_body.model_dump())
 

@@ -71,6 +71,23 @@ class Stratification:
 
 
 @dataclass(frozen=True)
+class ExecutionSummaryRow:
+    """One row of the Execution Summary table (Sheet 1).
+
+    Value is a pre-formatted string with the same byte-shape the
+    workbook writes - currencies as "1,234,567.89", percentages as
+    "12.34%", dates as ISO, missing values as the "<not available>"
+    sentinel. The heterogeneous types in the source sheet
+    (currency / pct / count / ratio / date) make a typed numeric
+    field impractical; pre-formatting server-side avoids duplicating
+    the R-faithful format logic on the frontend.
+    """
+
+    label: str
+    value: str
+
+
+@dataclass(frozen=True)
 class AnalysisSummary:
     """Top-level pool summary that sits alongside the stratifications.
 
@@ -100,3 +117,4 @@ class AnalysisResult:
     deal_name: str
     summary: AnalysisSummary
     stratifications: dict[str, Stratification]
+    execution_summary: list[ExecutionSummaryRow] = field(default_factory=list)

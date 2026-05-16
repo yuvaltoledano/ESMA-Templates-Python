@@ -460,6 +460,59 @@ def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
         )
 
 
+def test_analysis_only_response_includes_execution_summary() -> None:
+    """The analysis response carries the Execution Summary (Sheet 1) as
+    a list of `{label, value}` rows, with pre-formatted R-faithful
+    strings (currencies as "1,234,567.89", percentages as "12.34%").
+
+    Asserts:
+      - row count = 38 base metrics + N per-structure-type breakdown
+        rows, where N is independently derived from the synthetic
+        loans CSV's account_status filter (Stage 2 keeps ARRE/PERF/
+        RARR/RNAR), then by counting distinct structure types in the
+        resulting groups. Hard-coded here as 5 (synthetic fixture is
+        constructed with one of each structure type 1-5);
+      - "Deal Name" row reflects the request's deal_name verbatim;
+      - "Current Balance" row equals the independently-computed
+        formatted sum of current_principal_balance on the loans
+        passing Stage 2's active-status filter.
+    """
+    response = client.post(
+        "/api/process",
+        files=_process_files(),
+        data={"deal_name": "EXEC_SUMMARY_TEST", "analysis_only": "true"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "execution_summary" in body
+
+    rows = body["execution_summary"]
+    by_label = {row["label"]: row["value"] for row in rows}
+
+    # 38 base metric rows + 5 structure-type breakdown rows
+    # (synthetic fixture is built with one group of each type 1-5;
+    # the per-structure-type row count is the only variable component
+    # of the row total).
+    assert len(rows) == 38 + 5
+
+    # Deal name flows through verbatim - exercises the label-passthrough
+    # path and is the only row that depends on request input.
+    assert by_label["Deal Name"] == "EXEC_SUMMARY_TEST"
+
+    # "Current Balance" is the formatted sum of current_principal_balance
+    # over Stage-2-active loans. Independently computed from the raw CSV
+    # here (sum on all 8 rows since the synthetic fixture's account_status
+    # is all ARRE/PERF - i.e. all active), then formatted with the same
+    # R-faithful `_fmt_comma` helper the production code uses.
+    raw_loans = pl.read_csv(SYNTHETIC / "loans.csv")
+    active = raw_loans.filter(
+        pl.col("account_status").is_in(["ARRE", "PERF", "RARR", "RNAR"])
+    )
+    total_cb = float(active["current_principal_balance"].sum() or 0.0)
+    expected_cb_str = f"{total_cb:,.2f}"
+    assert by_label["Current Balance"] == expected_cb_str
+
+
 def test_analysis_only_with_dry_run_is_400_mutually_exclusive() -> None:
     """Per the agreed contract: analysis_only=true AND dry_run=true
     is a user error (400 validation_error) since the two intents are

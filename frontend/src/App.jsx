@@ -399,7 +399,12 @@ function App() {
 }
 
 function AnalysisResults({ analysis }) {
-  const { deal_name: dealName, summary, stratifications } = analysis
+  const {
+    deal_name: dealName,
+    summary,
+    stratifications,
+    execution_summary: executionSummary,
+  } = analysis
   return (
     <section className="mt-6 space-y-4">
       <header className="rounded-lg border border-slate-200 bg-white p-4">
@@ -427,12 +432,51 @@ function AnalysisResults({ analysis }) {
         )}
       </header>
 
+      {executionSummary && executionSummary.length > 0 && (
+        <ExecutionSummary rows={executionSummary} />
+      )}
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {Object.entries(stratifications).map(([key, strat]) => (
           <StratificationTile key={key} stratKey={key} strat={strat} />
         ))}
       </div>
     </section>
+  )
+}
+
+function ExecutionSummary({ rows }) {
+  // The Execution Summary mirrors Sheet 1 of the workbook: ~43 rows
+  // of pre-formatted metric/value pairs (38 base metrics + per-
+  // structure-type breakdown rows). Values are byte-equal to what the
+  // workbook writes - the server pre-formats with R-faithful helpers
+  // (`_fmt_comma`, `_fmt_pct`) so the frontend renders them verbatim.
+  return (
+    <article className="rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-800">Execution Summary</h3>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <th className="py-1.5 pr-2">Metric</th>
+              <th className="py-1.5 pr-2 text-right">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={`${row.label}-${i}`} className="border-b border-slate-100">
+                <td className="py-1.5 pr-2 align-top text-slate-700 whitespace-normal break-words">
+                  {row.label}
+                </td>
+                <td className="py-1.5 pr-2 text-right align-top tabular-nums text-slate-800">
+                  {row.value}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </article>
   )
 }
 
