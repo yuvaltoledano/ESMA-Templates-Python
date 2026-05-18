@@ -19,11 +19,16 @@ from collections.abc import Callable
 import polars as pl
 
 from esma_milan.analysis.stratifications import (
+    stratify_amortisation_type,
+    stratify_current_interest_rate,
     stratify_current_ltv,
+    stratify_employment_type,
     stratify_geographic,
     stratify_interest_rate_type,
     stratify_loan_purpose,
     stratify_occupancy,
+    stratify_property_type,
+    stratify_property_valuation_type,
     stratify_seasoning,
 )
 from esma_milan.analysis.types import (
@@ -36,14 +41,23 @@ from esma_milan.analysis.types import (
 )
 
 # Order matters: this is the order the frontend renders tiles in. The
-# six chosen for the Phase 1 brief; add new entries at the end.
+# Phase-2 layout groups by analytical kinship: loan-structure rate
+# fields first (IR type / amortisation / current rate), then bucketed
+# numeric loan metrics (seasoning / current LTV), then property-side
+# (geography / property type / valuation type), then loan-purpose /
+# occupancy / borrower-side employment last.
 STRATIFICATIONS: dict[str, Callable[[pl.DataFrame], Stratification]] = {
     "interest_rate_type": stratify_interest_rate_type,
+    "amortisation_type": stratify_amortisation_type,
+    "current_interest_rate": stratify_current_interest_rate,
     "seasoning": stratify_seasoning,
     "current_ltv": stratify_current_ltv,
     "geographic": stratify_geographic,
+    "property_type": stratify_property_type,
+    "property_valuation_type": stratify_property_valuation_type,
     "loan_purpose": stratify_loan_purpose,
     "occupancy": stratify_occupancy,
+    "employment_type": stratify_employment_type,
 }
 
 

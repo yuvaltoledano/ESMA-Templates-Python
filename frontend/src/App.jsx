@@ -491,15 +491,20 @@ function SummaryStat({ label, value }) {
 
 // Pool-level weighted-average formatter, keyed on the stratification's
 // registry key. seasoning's WA is in months (zero decimals, "months"
-// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent).
-// Other strats have `weighted_average: null` so this is only called
-// for the two numeric ones.
+// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent);
+// current_interest_rate's is already in percent units (two decimals
+// since Dutch RMBS rates discriminate at basis-point level). Other
+// strats have `weighted_average: null` so this is only called for
+// the three numeric ones.
 function formatWeightedAverage(stratKey, value) {
   if (stratKey === 'seasoning') {
     return `WA: ${Math.round(value).toLocaleString()} months`
   }
   if (stratKey === 'current_ltv') {
     return `WA: ${(value * 100).toFixed(1)}%`
+  }
+  if (stratKey === 'current_interest_rate') {
+    return `WA: ${value.toFixed(2)}%`
   }
   return `WA: ${value}`
 }
@@ -689,15 +694,25 @@ function StratificationChart({ chartType, rows, rowColors, stratKey }) {
     )
   }
 
+  // Dense bucket axes (current_interest_rate: 17 buckets) need steeper
+  // rotation and more vertical room so the long labels don't overlap;
+  // geographic's 10-or-fewer regions read fine at a shallow tilt; all
+  // other bucketed charts have short enough labels to stay horizontal.
+  const denseAxis = stratKey === 'current_interest_rate'
+  const tiltedAxis = stratKey === 'geographic'
+  const axisAngle = denseAxis ? -45 : tiltedAxis ? -30 : 0
+  const axisAnchor = denseAxis || tiltedAxis ? 'end' : 'middle'
+  const axisHeight = denseAxis ? 60 : 40
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={data} margin={{ top: 5, right: 10, left: 5, bottom: 20 }}>
         <XAxis
           dataKey="name"
           tick={{ fontSize: 10 }}
-          angle={stratKey === 'geographic' ? -30 : 0}
-          textAnchor={stratKey === 'geographic' ? 'end' : 'middle'}
-          height={40}
+          angle={axisAngle}
+          textAnchor={axisAnchor}
+          height={axisHeight}
           interval={0}
           tickFormatter={formatBucketTick}
         />

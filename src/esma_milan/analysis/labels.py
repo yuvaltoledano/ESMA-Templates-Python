@@ -92,3 +92,74 @@ OCCUPANCY_LABELS: dict[str, str] = {
     "HOLD": "HOLD — Holiday or Second Home",
     "OTHR": "OTHR — Other",
 }
+
+
+# Amortisation Type (ESMA field RREL35). Source: ESMA template taxonomy,
+# RREL35 "Content to report". Each ESMA description carries an
+# "- i.e. Amortisation in which ..." clause spelling out the schedule
+# shape; trimmed per the Phase-1 convention since the code + heading
+# already disambiguate the cases. 5 codes total.
+AMORTISATION_TYPE_LABELS: dict[str, str] = {
+    "FRXX": "FRXX — French",
+    "DEXX": "DEXX — German",
+    "FIXE": "FIXE — Fixed amortisation schedule",
+    "BLLT": "BLLT — Bullet",
+    "OTHR": "OTHR — Other",
+}
+
+
+# Property Type (ESMA field RREC9). Source: ESMA template taxonomy,
+# RREC9 "Content to report". Per-code trim judgment: descriptive
+# qualifiers in parentheses that add substantive disambiguation (MULF's
+# "more than four units", PCMM's commercial/residential threshold) are
+# kept; redundant "(House, detached or semi-detached)"-style restatements
+# of the code's name are kept too since they're the canonical taxonomy
+# wording. 9 codes total.
+PROPERTY_TYPE_LABELS: dict[str, str] = {
+    "RHOS": "RHOS — Residential (House, detached or semi-detached)",
+    "RFLT": "RFLT — Residential (Flat or Apartment)",
+    "RBGL": "RBGL — Residential (Bungalow)",
+    "RTHS": "RTHS — Residential (Terraced House)",
+    "MULF": "MULF — Multifamily House (more than four units securing one underlying exposure)",
+    "PCMM": "PCMM — Partial Commercial use (less than 50% of value from commercial use)",
+    "BIZZ": "BIZZ — Commercial or Business Use",
+    "LAND": "LAND — Land Only",
+    "OTHR": "OTHR — Other",
+}
+
+
+# Employment Status (ESMA field RREL13). Source: ESMA template taxonomy,
+# RREL13 "Content to report". Reflects the *primary obligor* per the
+# field definition. Descriptions are already concise; no trims needed.
+# 9 codes total.
+EMPLOYMENT_STATUS_LABELS: dict[str, str] = {
+    "EMRS": "EMRS — Employed - Private Sector",
+    "EMBL": "EMBL — Employed - Public Sector",
+    "EMUK": "EMUK — Employed - Sector Unknown",
+    "UNEM": "UNEM — Unemployed",
+    "SFEM": "SFEM — Self-employed",
+    "NOEM": "NOEM — No Employment, Obligor is Legal Entity",
+    "STNT": "STNT — Student",
+    "PNNR": "PNNR — Pensioner",
+    "OTHR": "OTHR — Other",
+}
+
+
+# Valuation Method (ESMA fields RREC14 / RREC18 - same code list shared
+# between current and original valuation method). Source: ESMA template
+# taxonomy, RREC14 "Content to report". Used here for the Property
+# Valuation Type stratification, which reads `final_valuation_method`
+# on `combined_flattened` - the method tied to the authoritative
+# valuation Stage 2 picked (current OR original) for the main property.
+# 9 codes total.
+VALUATION_METHOD_LABELS: dict[str, str] = {
+    "FIEI": "FIEI — Full, internal and external inspection",
+    "FOEI": "FOEI — Full, only external inspection",
+    "DRVB": "DRVB — Drive-by",
+    "AUVM": "AUVM — Automated Value Model",
+    "IDXD": "IDXD — Indexed",
+    "DKTP": "DKTP — Desktop",
+    "MAEA": "MAEA — Managing Agent or Estate Agent",
+    "TXAT": "TXAT — Tax Authority",
+    "OTHR": "OTHR — Other",
+}
