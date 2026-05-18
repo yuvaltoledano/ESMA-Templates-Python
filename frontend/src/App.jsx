@@ -694,15 +694,25 @@ function StratificationChart({ chartType, rows, rowColors, stratKey }) {
     )
   }
 
+  // Dense bucket axes (current_interest_rate: 17 buckets) need steeper
+  // rotation and more vertical room so the long labels don't overlap;
+  // geographic's 10-or-fewer regions read fine at a shallow tilt; all
+  // other bucketed charts have short enough labels to stay horizontal.
+  const denseAxis = stratKey === 'current_interest_rate'
+  const tiltedAxis = stratKey === 'geographic'
+  const axisAngle = denseAxis ? -45 : tiltedAxis ? -30 : 0
+  const axisAnchor = denseAxis || tiltedAxis ? 'end' : 'middle'
+  const axisHeight = denseAxis ? 60 : 40
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={data} margin={{ top: 5, right: 10, left: 5, bottom: 20 }}>
         <XAxis
           dataKey="name"
           tick={{ fontSize: 10 }}
-          angle={stratKey === 'geographic' ? -30 : 0}
-          textAnchor={stratKey === 'geographic' ? 'end' : 'middle'}
-          height={40}
+          angle={axisAngle}
+          textAnchor={axisAnchor}
+          height={axisHeight}
           interval={0}
           tickFormatter={formatBucketTick}
         />
