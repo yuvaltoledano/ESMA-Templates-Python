@@ -40,10 +40,14 @@ from typing import Literal
 import polars as pl
 
 from esma_milan.analysis.labels import (
+    AMORTISATION_TYPE_LABELS,
+    EMPLOYMENT_STATUS_LABELS,
     IR_TYPE_LABELS,
     LOAN_PURPOSE_LABELS,
     OCCUPANCY_LABELS,
+    PROPERTY_TYPE_LABELS,
     UNK_LABEL,
+    VALUATION_METHOD_LABELS,
 )
 from esma_milan.analysis.types import Stratification, StratificationRow, StratificationTotal
 
@@ -78,6 +82,36 @@ LTV_LABELS: tuple[str, ...] = (
     "80-90%",
     "90-100%",
     ">100%",
+)
+
+# Current-interest-rate buckets, on the same closed="right" convention.
+# `current_interest_rate` on combined_flattened is stored as percent
+# units (e.g. 2.5 means 2.5%), confirmed by milan_map's _divide_by_100
+# divisor at write time - so breaks here are in percent units too. The
+# first bucket "<=0.5%" absorbs any sub-zero rates (rare in Dutch RMBS
+# but defensive). The last bucket "8%+" is strictly > 8%.
+CURRENT_RATE_BREAKS: tuple[float, ...] = (
+    0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0,
+    4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0,
+)
+CURRENT_RATE_LABELS: tuple[str, ...] = (
+    "<=0.5%",
+    "0.5-1%",
+    "1-1.5%",
+    "1.5-2%",
+    "2-2.5%",
+    "2.5-3%",
+    "3-3.5%",
+    "3.5-4%",
+    "4-4.5%",
+    "4.5-5%",
+    "5-5.5%",
+    "5.5-6%",
+    "6-6.5%",
+    "6.5-7%",
+    "7-7.5%",
+    "7.5-8%",
+    "8%+",
 )
 
 
@@ -540,5 +574,95 @@ def stratify_occupancy(df: pl.DataFrame) -> Stratification:
         source_col="occupancy_type",
         title="Occupancy",
         label_map=OCCUPANCY_LABELS,
+        chart_type="pie",
+    )
+
+
+def stratify_amortisation_type(df: pl.DataFrame) -> Stratification:
+    """Pool breakdown by ESMA ``amortisation_type`` (field RREL35).
+
+    All 5 published ESMA codes are emitted as rows in taxonomy order;
+    see `stratify_interest_rate_type` for the UNK fallback behaviour."""
+    return _categorical_from_mapping(
+        df,
+        source_col="amortisation_type",
+        title="Amortisation Type",
+        label_map=AMORTISATION_TYPE_LABELS,
+        chart_type="pie",
+    )
+
+
+def stratify_current_interest_rate(df: pl.DataFrame) -> Stratification:
+    """Pool breakdown by current interest rate (ESMA field RREL43).
+
+    Source `current_interest_rate` is stored as a percentage value
+    (e.g. 2.5 == 2.5%) - milan_map.py:1010 confirms this via the
+    `_divide_by_100_expr` it applies at workbook write time. Breaks
+    here are in percent units too, so no transform is needed.
+
+    17 buckets at 0.5% steps from 0 to 8; first bucket absorbs sub-zero
+    rates defensively, last is strictly > 8%. WA is computed inline
+    on raw loan-level rates (not bucket midpoints) and is in percent
+    units to match the source column."""
+    return _bucketed_numeric(
+        df,
+        source_col="current_interest_rate",
+        title="Current Interest Rate",
+        breaks=CURRENT_RATE_BREAKS,
+        labels=CURRENT_RATE_LABELS,
+        chart_type="bar",
+    )
+
+
+def stratify_property_type(df: pl.DataFrame) -> Stratification:
+    """Pool breakdown by main-property ESMA ``property_type`` (field RREC9).
+
+    Reflects the main property only; see module docstring for the
+    multi-property attribution convention. All 9 published ESMA codes
+    emitted as rows; see `stratify_interest_rate_type` for the UNK
+    fallback behaviour."""
+    return _categorical_from_mapping(
+        df,
+        source_col="property_type",
+        title="Property Type",
+        label_map=PROPERTY_TYPE_LABELS,
+        chart_type="pie",
+    )
+
+
+def stratify_property_valuation_type(df: pl.DataFrame) -> Stratification:
+    """Pool breakdown by main-property valuation method
+    (ESMA field RREC14 / RREC18 - same code list).
+
+    Source is `final_valuation_method` on combined_flattened: the method
+    tied to the authoritative valuation Stage 2 picked (current OR
+    original) for each property, propagated to the loan row via the
+    main-property attribution at Stage 7 (see module docstring).
+    Carries the "what valuation was actually used" semantic the
+    workbook reports, rather than a current-vs-original methodology
+    split. All 9 published ESMA codes emitted as rows."""
+    return _categorical_from_mapping(
+        df,
+        source_col="final_valuation_method",
+        title="Property Valuation Type",
+        label_map=VALUATION_METHOD_LABELS,
+        chart_type="pie",
+    )
+
+
+def stratify_employment_type(df: pl.DataFrame) -> Stratification:
+    """Pool breakdown by ESMA ``employment_status`` (field RREL13).
+
+    RREL13's definition is "Employment status of the **primary obligor**":
+    the field is loan-level (not borrower-table-level), so no borrower
+    join is needed - the value carried on each combined_flattened row
+    already reflects the primary borrower. All 9 published ESMA codes
+    emitted as rows; nulls / off-taxonomy values route to UNK and
+    surface as a data-quality signal."""
+    return _categorical_from_mapping(
+        df,
+        source_col="employment_status",
+        title="Employment Type",
+        label_map=EMPLOYMENT_STATUS_LABELS,
         chart_type="pie",
     )

@@ -32,19 +32,29 @@ from esma_milan.analysis import (
     run_all_stratifications,
 )
 from esma_milan.analysis.labels import (
+    AMORTISATION_TYPE_LABELS,
+    EMPLOYMENT_STATUS_LABELS,
     IR_TYPE_LABELS,
     LOAN_PURPOSE_LABELS,
     OCCUPANCY_LABELS,
+    PROPERTY_TYPE_LABELS,
     UNK_LABEL,
+    VALUATION_METHOD_LABELS,
 )
 from esma_milan.analysis.stratifications import (
+    CURRENT_RATE_LABELS,
     LTV_LABELS,
     SEASONING_LABELS,
+    stratify_amortisation_type,
+    stratify_current_interest_rate,
     stratify_current_ltv,
+    stratify_employment_type,
     stratify_geographic,
     stratify_interest_rate_type,
     stratify_loan_purpose,
     stratify_occupancy,
+    stratify_property_type,
+    stratify_property_valuation_type,
     stratify_seasoning,
 )
 from esma_milan.api.server import app, limiter
@@ -414,6 +424,267 @@ def test_occupancy_labels_each_code_faithfully() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase-2 categoricals: amortisation, property type, valuation type, employment
+# ---------------------------------------------------------------------------
+
+
+def test_amortisation_type_labels_each_code_faithfully() -> None:
+    """All 5 ESMA amortisation codes always appear as their own row;
+    fixture data lands in FRXX (3 loans), BLLT (1), OTHR (1), with
+    DEXX / FIXE absent and emitted as count=0 layout-stable rows."""
+    df = _frame([
+        {"amortisation_type": "FRXX", "current_principal_balance": 100.0},
+        {"amortisation_type": "FRXX", "current_principal_balance": 200.0},
+        {"amortisation_type": "FRXX", "current_principal_balance": 50.0},
+        {"amortisation_type": "BLLT", "current_principal_balance": 300.0},
+        {"amortisation_type": "OTHR", "current_principal_balance": 25.0},
+    ])
+
+    s = stratify_amortisation_type(df)
+
+    assert s.error is None
+    assert s.chart_type == "pie"
+    assert [r.label for r in s.rows] == list(AMORTISATION_TYPE_LABELS.values())
+
+    by_label = {r.label: r for r in s.rows}
+    assert by_label[AMORTISATION_TYPE_LABELS["FRXX"]].count == 3
+    assert by_label[AMORTISATION_TYPE_LABELS["FRXX"]].balance == pytest.approx(350.0)
+    assert by_label[AMORTISATION_TYPE_LABELS["BLLT"]].count == 1
+    assert by_label[AMORTISATION_TYPE_LABELS["OTHR"]].count == 1
+    assert by_label[AMORTISATION_TYPE_LABELS["DEXX"]].count == 0
+    assert by_label[AMORTISATION_TYPE_LABELS["FIXE"]].count == 0
+    assert UNK_LABEL not in by_label
+
+    assert s.total.count == 5
+    assert s.total.balance == pytest.approx(675.0)
+
+
+def test_amortisation_type_unk_routes_nulls_and_off_taxonomy() -> None:
+    """Null and off-taxonomy codes route to UNK; the row appears only
+    when its count > 0."""
+    df = _frame([
+        {"amortisation_type": "FRXX", "current_principal_balance": 100.0},
+        {"amortisation_type": None, "current_principal_balance": 50.0},
+        {"amortisation_type": "ZZZZ", "current_principal_balance": 25.0},
+    ])
+    rows = stratify_amortisation_type(df).rows
+    by_label = {r.label: r for r in rows}
+    assert UNK_LABEL in by_label
+    assert by_label[UNK_LABEL].count == 2
+    assert by_label[UNK_LABEL].balance == pytest.approx(75.0)
+    assert rows[-1].label == UNK_LABEL
+
+
+def test_property_type_labels_each_code_faithfully() -> None:
+    """All 9 ESMA property-type codes always appear as their own row;
+    RHOS and RFLT carry the fixture's data, others sit at count=0."""
+    df = _frame([
+        {"property_type": "RHOS", "current_principal_balance": 100.0},
+        {"property_type": "RHOS", "current_principal_balance": 200.0},
+        {"property_type": "RFLT", "current_principal_balance": 75.0},
+        {"property_type": "MULF", "current_principal_balance": 50.0},
+    ])
+
+    s = stratify_property_type(df)
+
+    assert s.error is None
+    assert s.chart_type == "pie"
+    assert [r.label for r in s.rows] == list(PROPERTY_TYPE_LABELS.values())
+
+    by_label = {r.label: r for r in s.rows}
+    assert by_label[PROPERTY_TYPE_LABELS["RHOS"]].count == 2
+    assert by_label[PROPERTY_TYPE_LABELS["RHOS"]].balance == pytest.approx(300.0)
+    assert by_label[PROPERTY_TYPE_LABELS["RFLT"]].count == 1
+    assert by_label[PROPERTY_TYPE_LABELS["MULF"]].count == 1
+    for code in ("RBGL", "RTHS", "PCMM", "BIZZ", "LAND", "OTHR"):
+        assert by_label[PROPERTY_TYPE_LABELS[code]].count == 0
+    assert UNK_LABEL not in by_label
+
+
+def test_property_type_unk_only_when_present() -> None:
+    """Null property_type values route to UNK."""
+    df = _frame([
+        {"property_type": "RHOS", "current_principal_balance": 100.0},
+        {"property_type": None, "current_principal_balance": 50.0},
+    ])
+    by_label = {r.label: r for r in stratify_property_type(df).rows}
+    assert UNK_LABEL in by_label
+    assert by_label[UNK_LABEL].count == 1
+
+
+def test_property_valuation_type_reads_final_valuation_method() -> None:
+    """`stratify_property_valuation_type` reads `final_valuation_method`
+    (the Stage-7-propagated main-property method) - not
+    current_valuation_method or original_valuation_method. Each of the
+    9 ESMA codes appears as its own row in taxonomy order."""
+    df = _frame([
+        {"final_valuation_method": "FIEI", "current_principal_balance": 100.0},
+        {"final_valuation_method": "DRVB", "current_principal_balance": 50.0},
+        {"final_valuation_method": "DRVB", "current_principal_balance": 75.0},
+        {"final_valuation_method": "AUVM", "current_principal_balance": 25.0},
+    ])
+
+    s = stratify_property_valuation_type(df)
+
+    assert s.error is None
+    assert s.chart_type == "pie"
+    assert [r.label for r in s.rows] == list(VALUATION_METHOD_LABELS.values())
+
+    by_label = {r.label: r for r in s.rows}
+    assert by_label[VALUATION_METHOD_LABELS["FIEI"]].count == 1
+    assert by_label[VALUATION_METHOD_LABELS["DRVB"]].count == 2
+    assert by_label[VALUATION_METHOD_LABELS["DRVB"]].balance == pytest.approx(125.0)
+    assert by_label[VALUATION_METHOD_LABELS["AUVM"]].count == 1
+    for code in ("FOEI", "IDXD", "DKTP", "MAEA", "TXAT", "OTHR"):
+        assert by_label[VALUATION_METHOD_LABELS[code]].count == 0
+    assert UNK_LABEL not in by_label
+
+
+def test_property_valuation_type_missing_column_errors() -> None:
+    """If the upstream join didn't produce `final_valuation_method`,
+    the strat returns a populated error rather than blowing up."""
+    df = _frame([{"current_principal_balance": 100.0}])
+    s = stratify_property_valuation_type(df)
+    assert s.error is not None
+    assert "final_valuation_method" in s.error
+
+
+def test_employment_type_labels_each_code_faithfully() -> None:
+    """All 9 ESMA RREL13 codes always emitted; fixture exercises four
+    distinct codes plus a UNK-routed null. RREL13 is the *primary
+    obligor's* employment status, captured at the loan row directly -
+    no borrower-table join is needed."""
+    df = _frame([
+        {"employment_status": "EMRS", "current_principal_balance": 100.0},
+        {"employment_status": "EMRS", "current_principal_balance": 200.0},
+        {"employment_status": "SFEM", "current_principal_balance": 50.0},
+        {"employment_status": "PNNR", "current_principal_balance": 75.0},
+        {"employment_status": "UNEM", "current_principal_balance": 25.0},
+        {"employment_status": None, "current_principal_balance": 30.0},
+    ])
+
+    s = stratify_employment_type(df)
+
+    assert s.error is None
+    assert s.chart_type == "pie"
+    # All 9 spec codes plus one UNK row (the null) = 10 entries.
+    expected_spec_labels = list(EMPLOYMENT_STATUS_LABELS.values())
+    actual_labels = [r.label for r in s.rows]
+    assert actual_labels[: len(expected_spec_labels)] == expected_spec_labels
+    assert actual_labels[-1] == UNK_LABEL
+
+    by_label = {r.label: r for r in s.rows}
+    assert by_label[EMPLOYMENT_STATUS_LABELS["EMRS"]].count == 2
+    assert by_label[EMPLOYMENT_STATUS_LABELS["EMRS"]].balance == pytest.approx(300.0)
+    assert by_label[EMPLOYMENT_STATUS_LABELS["SFEM"]].count == 1
+    assert by_label[EMPLOYMENT_STATUS_LABELS["PNNR"]].count == 1
+    assert by_label[EMPLOYMENT_STATUS_LABELS["UNEM"]].count == 1
+    # Codes absent from fixture still emitted at count=0.
+    for code in ("EMBL", "EMUK", "NOEM", "STNT", "OTHR"):
+        assert by_label[EMPLOYMENT_STATUS_LABELS[code]].count == 0
+    # Null routed to UNK as data-quality signal.
+    assert by_label[UNK_LABEL].count == 1
+    assert by_label[UNK_LABEL].balance == pytest.approx(30.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 bucketed numeric: current interest rate
+# ---------------------------------------------------------------------------
+
+
+def test_current_interest_rate_buckets_apply_closed_right_in_percent_units() -> None:
+    """`current_interest_rate` is stored as percent units (2.5 == 2.5%),
+    not decimals. Breaks apply directly; right-closed convention puts
+    a value exactly at a break edge into the lower bucket. Boundary
+    cases tested: 0.5 -> "<=0.5%", 0.5001 -> "0.5-1%", 8.0 -> "7.5-8%",
+    8.0001 -> "8%+"."""
+    df = _frame([
+        {"current_interest_rate": 0.0, "current_principal_balance": 10.0},     # <=0.5%
+        {"current_interest_rate": 0.5, "current_principal_balance": 10.0},     # <=0.5% (right-closed)
+        {"current_interest_rate": 0.51, "current_principal_balance": 10.0},    # 0.5-1%
+        {"current_interest_rate": 2.5, "current_principal_balance": 10.0},     # 2-2.5%
+        {"current_interest_rate": 3.67, "current_principal_balance": 10.0},    # 3.5-4%
+        {"current_interest_rate": 8.0, "current_principal_balance": 10.0},     # 7.5-8% (right-closed)
+        {"current_interest_rate": 8.01, "current_principal_balance": 10.0},    # 8%+
+    ])
+
+    s = stratify_current_interest_rate(df)
+
+    assert s.error is None
+    assert s.chart_type == "bar"
+    assert [r.label for r in s.rows] == list(CURRENT_RATE_LABELS)
+
+    by_label = {r.label: r for r in s.rows}
+    assert by_label["<=0.5%"].count == 2
+    assert by_label["0.5-1%"].count == 1
+    assert by_label["2-2.5%"].count == 1
+    assert by_label["3.5-4%"].count == 1
+    assert by_label["7.5-8%"].count == 1
+    assert by_label["8%+"].count == 1
+    # Buckets not exercised stay at zero count.
+    assert by_label["5-5.5%"].count == 0
+
+
+def test_current_interest_rate_missing_values_excluded_with_note() -> None:
+    """Null-rate rows are excluded from the bucket rows but counted in
+    the pool total; a `note` surfaces the count."""
+    df = _frame([
+        {"current_interest_rate": 3.0, "current_principal_balance": 100.0},
+        {"current_interest_rate": None, "current_principal_balance": 50.0},
+        {"current_interest_rate": None, "current_principal_balance": 25.0},
+    ])
+    s = stratify_current_interest_rate(df)
+
+    assert s.note is not None
+    assert "2 loans" in s.note
+    bucket_count_sum = sum(r.count for r in s.rows)
+    assert bucket_count_sum == 1
+    assert s.total.count == 3
+    assert s.total.balance == pytest.approx(175.0)
+
+
+def test_current_interest_rate_weighted_average_matches_independent_computation() -> None:
+    """WA current rate is the balance-weighted mean of
+    `current_interest_rate` (percent units), excluding null-value rows
+    from both numerator and denominator. Expected value derived inline."""
+    df = _frame([
+        {"current_interest_rate": 2.0, "current_principal_balance": 100.0},
+        {"current_interest_rate": 3.0, "current_principal_balance": 300.0},
+        {"current_interest_rate": 5.0, "current_principal_balance": 600.0},
+        # Null-rate row: excluded from WA, included in pool total.
+        {"current_interest_rate": None, "current_principal_balance": 1000.0},
+    ])
+    s = stratify_current_interest_rate(df)
+    # WA = (2.0*100 + 3.0*300 + 5.0*600) / 1000 = 4100 / 1000 = 4.1
+    assert s.weighted_average == pytest.approx(4.1)
+
+
+def test_phase2_categoricals_have_null_weighted_average() -> None:
+    """WA is meaningful only for the bucketed numerics; the four new
+    Phase-2 categoricals (amortisation, property type, valuation type,
+    employment) leave it at None."""
+    df_amort = _frame(
+        [{"amortisation_type": "FRXX", "current_principal_balance": 100.0}]
+    )
+    assert stratify_amortisation_type(df_amort).weighted_average is None
+
+    df_ptype = _frame(
+        [{"property_type": "RHOS", "current_principal_balance": 100.0}]
+    )
+    assert stratify_property_type(df_ptype).weighted_average is None
+
+    df_vtype = _frame(
+        [{"final_valuation_method": "FIEI", "current_principal_balance": 100.0}]
+    )
+    assert stratify_property_valuation_type(df_vtype).weighted_average is None
+
+    df_emp = _frame(
+        [{"employment_status": "EMRS", "current_principal_balance": 100.0}]
+    )
+    assert stratify_employment_type(df_emp).weighted_average is None
+
+
+# ---------------------------------------------------------------------------
 # Missing-column error isolation
 # ---------------------------------------------------------------------------
 
@@ -426,8 +697,13 @@ def test_missing_column_returns_error_in_one_strat_others_succeed() -> None:
     and assert that only the occupancy entry has `error` populated."""
     df = _frame([{
         "interest_rate_type": "FLIF",
+        "amortisation_type": "FRXX",
+        "current_interest_rate": 3.0,
         "purpose": "PURC",
         "geographic_region_collateral": "NL-NH",
+        "property_type": "RHOS",
+        "final_valuation_method": "FIEI",
+        "employment_status": "EMRS",
         "calc_seasoning": 2.0,
         "calc_current_LTV": 0.65,
         "current_principal_balance": 100.0,
@@ -440,7 +716,8 @@ def test_missing_column_returns_error_in_one_strat_others_succeed() -> None:
     assert out["occupancy"].error is not None
     assert "occupancy_type" in out["occupancy"].error
     # Everything else still produced rows.
-    for key in ("interest_rate_type", "seasoning", "current_ltv", "geographic", "loan_purpose"):
+    everything_else = set(STRATIFICATIONS.keys()) - {"occupancy"}
+    for key in everything_else:
         assert out[key].error is None, f"{key} unexpectedly errored"
         assert len(out[key].rows) > 0, f"{key} unexpectedly produced no rows"
 
@@ -470,13 +747,16 @@ def _process_files() -> dict[str, tuple[str, bytes, str]]:
 
 def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
     """POST /api/process with `analysis_only=true` returns a JSON
-    AnalysisResponse with all six stratification keys populated.
+    AnalysisResponse with all 11 stratification keys populated (Phase
+    1's six plus the five added in Phase 2 Session 1: amortisation,
+    current interest rate, property type, property valuation type,
+    employment).
 
     Asserts only the shape + invariants derivable from the raw CSV
-    (loan_count > 0, summary positive, six keys present, per-row total
-    counts equal between strats since every cut sees the same pool).
-    Specific bucket values aren't pinned here: the per-function tests
-    above lock those.
+    (loan_count > 0, summary positive, all 11 keys present, per-row
+    total counts equal between strats since every cut sees the same
+    pool). Specific bucket values aren't pinned here: the per-function
+    tests above lock those.
     """
     response = client.post(
         "/api/process",
@@ -497,29 +777,45 @@ def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
 
     expected_keys = {
         "interest_rate_type",
+        "amortisation_type",
+        "current_interest_rate",
         "seasoning",
         "current_ltv",
         "geographic",
+        "property_type",
+        "property_valuation_type",
         "loan_purpose",
         "occupancy",
+        "employment_type",
     }
     assert set(body["stratifications"].keys()) == expected_keys
 
     # Every stratification on the same pool sees the same loan count.
-    # Categorical strats route nulls to "Other" so row sum == loan_count;
-    # bucketed strats may exclude rows with null source values from the
-    # bucket rows but the total still equals the pool size.
+    # Categorical strats route nulls to "Other"/UNK so row sum ==
+    # loan_count; bucketed strats may exclude rows with null source
+    # values from the bucket rows but the total still equals the pool
+    # size.
     for key, strat in body["stratifications"].items():
         assert strat["error"] is None, f"{key} errored: {strat['error']}"
         assert strat["total"]["count"] == summary["loan_count"], (
             f"{key} total count {strat['total']['count']} != pool loan_count {summary['loan_count']}"
         )
 
-    # Bucketed numeric strats (seasoning, current_ltv) carry a
-    # pool-level WA; categoricals and geographic do not.
+    # Bucketed numeric strats (seasoning, current_ltv,
+    # current_interest_rate) carry a pool-level WA; categoricals and
+    # geographic do not.
     assert body["stratifications"]["seasoning"]["weighted_average"] is not None
     assert body["stratifications"]["current_ltv"]["weighted_average"] is not None
-    for key in ("interest_rate_type", "geographic", "loan_purpose", "occupancy"):
+    assert (
+        body["stratifications"]["current_interest_rate"]["weighted_average"]
+        is not None
+    )
+    categorical_keys = (
+        "interest_rate_type", "amortisation_type", "geographic",
+        "property_type", "property_valuation_type", "loan_purpose",
+        "occupancy", "employment_type",
+    )
+    for key in categorical_keys:
         assert body["stratifications"][key]["weighted_average"] is None
 
 

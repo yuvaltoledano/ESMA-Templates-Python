@@ -491,15 +491,20 @@ function SummaryStat({ label, value }) {
 
 // Pool-level weighted-average formatter, keyed on the stratification's
 // registry key. seasoning's WA is in months (zero decimals, "months"
-// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent).
-// Other strats have `weighted_average: null` so this is only called
-// for the two numeric ones.
+// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent);
+// current_interest_rate's is already in percent units (two decimals
+// since Dutch RMBS rates discriminate at basis-point level). Other
+// strats have `weighted_average: null` so this is only called for
+// the three numeric ones.
 function formatWeightedAverage(stratKey, value) {
   if (stratKey === 'seasoning') {
     return `WA: ${Math.round(value).toLocaleString()} months`
   }
   if (stratKey === 'current_ltv') {
     return `WA: ${(value * 100).toFixed(1)}%`
+  }
+  if (stratKey === 'current_interest_rate') {
+    return `WA: ${value.toFixed(2)}%`
   }
   return `WA: ${value}`
 }
