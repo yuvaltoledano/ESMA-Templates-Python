@@ -1,5 +1,10 @@
-"""ESMA -> MILAN CLI. Strict superset of r_reference/R/main.R's CLI surface
-(see §10 of project brief - deliberate documented deviation).
+"""ESMA -> MILAN CLI.
+
+A strict superset of r_reference/R/main.R's CLI surface: the same
+--loans/--collaterals/--taxonomy/--deal/--output flags, plus
+--aggregation, --min-coverage, --dry-run and --verbose/--quiet, which
+R exposes only as function arguments. This is a deliberate, documented
+deviation from the R reference.
 """
 
 from __future__ import annotations
@@ -85,8 +90,10 @@ def run(
     _configure_logging(verbose)
 
     if taxonomy_file is None:
-        # Default to the taxonomy bundled with the R reference. Project brief
-        # treats r_reference/ as read-only but reading from it is fine.
+        # Default to the taxonomy bundled with the R reference submodule
+        # (read-only, but reading from it is fine). The path is relative
+        # to the current working directory, so this only works from the
+        # repo root with the submodule checked out.
         taxonomy_file = Path("r_reference/inputs/ESMA template taxonomy.xlsx")
         if not taxonomy_file.exists():
             click.echo(

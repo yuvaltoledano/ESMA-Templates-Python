@@ -1,5 +1,7 @@
-"""Stage 8.5: mapping-tables composer for Sheets 1-4.
+"""Mapping-tables composer for the four ID-mapping sheets.
 
+Produces "Loans to properties", "Properties to loans", "Borrowers to
+loans" and "Borrowers to properties" (Sheets 2-5 of the workbook).
 Mirrors r_reference/R/pipeline.R:333-391 (the four pivot_wider blocks)
 plus :452-465 (the classification-tail extension on Loans to properties).
 
@@ -8,7 +10,6 @@ loans-properties join, distinct it, then per-key pivot the values into
 suffix-numbered columns. Only Loans to properties gets a classification
 tail (collateral_group_id + cross_collateralized_set + full_set +
 structure_type) appended after the pivot.
-
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ def compose_mapping_tables(
     stage3_properties: pl.DataFrame,
     loans_enriched: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
-    """Build the four mapping tables written to Sheets 1-4.
+    """Build the four mapping tables written to Sheets 2-5.
 
     Args:
         stage3_loans: post-Stage-3 loans frame, must carry calc_loan_id
@@ -107,7 +108,9 @@ def compose_mapping_tables(
         )
         .unique(maintain_order=True)
     )
-    # Deviates from R: r_reference/R/pipeline.R:458-464 wraps this join in tryCatch silent-fallback. We fail loud — see R-repo issue tracker entry #6.
+    # Deviates from R: r_reference/R/pipeline.R:458-464 wraps this join in
+    # a tryCatch that silently falls back to the un-tailed table on error.
+    # We let any join error propagate instead of hiding it.
     loans_to_properties = loans_to_properties.join(
         classification_tail,
         left_on="loan_id",

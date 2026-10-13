@@ -5,13 +5,13 @@ shape responses; all the real work - the size guardrail, materialising
 uploads, running the pipeline, classifying failures - lives in
 ``handlers.py``. Pipeline logic does not live here.
 
-Day 2 hardens the surface: per-IP rate limiting (``slowapi``, in-memory
-backend), a consistent ``ErrorResponse`` shape on every failure path,
-and transport-level input validation (per-file size cap, Content-Type
-allowlist, ``deal_name`` character validation). Still deferred:
-authentication, the asynchronous job-queue endpoint for very large
-pools, and reverse-proxy ``X-Forwarded-For`` handling - rate limiting
-keys on the peer IP for now. See the PR description.
+The surface today: ``GET /api/health`` and ``POST /api/process``, per-IP
+rate limiting (``slowapi``, in-memory backend), a consistent
+``ErrorResponse`` shape on every failure path, and transport-level input
+validation (per-file size cap, Content-Type allowlist, ``deal_name``
+character validation). Not implemented: authentication, an asynchronous
+job endpoint for very large pools, and reverse-proxy ``X-Forwarded-For``
+handling (rate limiting keys on the peer IP).
 
 Note: this module deliberately omits ``from __future__ import
 annotations``. slowapi's ``@limiter.limit`` decorator wraps the endpoint
@@ -67,6 +67,7 @@ from esma_milan.api.schemas import (
 from esma_milan.api.schemas import (
     StratificationTotal as StratificationTotalSchema,
 )
+from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
 
 # MIME type for .xlsx, matching the Content-Type R's output is served as.
 _XLSX_MEDIA_TYPE = (
@@ -78,9 +79,8 @@ _XLSX_MEDIA_TYPE = (
 # NOTE: slowapi's in-memory backend keeps one counter set per worker
 # process, so with N uvicorn workers the effective per-IP ceiling is
 # N x the configured value (uvicorn round-robins connections across
-# workers). Day 3+ migration to a shared (Redis) backend makes the
-# limits truly cross-worker; until then this gap is tracked in PR #17's
-# known limitations.
+# workers). A shared backend (e.g. Redis) would make the limits
+# cross-worker; that is a known limitation, not a planned change here.
 #
 # Module-level so a deployment can tune them without a code change: set
 # ESMA_MILAN_RATE_LIMIT_PROCESS / ESMA_MILAN_RATE_LIMIT_HEALTH (slowapi
@@ -112,11 +112,9 @@ _configure_logging()
 log = structlog.get_logger(__name__)
 
 # Rate limiter with an in-memory backend - one counter set per worker
-# process, which is fine for the single-VPS Day 2 deployment. A shared
-# (Redis) backend is Day 3+, alongside the async job queue that needs
-# cross-worker state anyway. The key is the peer IP; behind a reverse
-# proxy that is the proxy's IP, so X-Forwarded-For handling is Day 3+
-# when the service actually deploys behind Caddy/nginx.
+# process (see the note above RATE_LIMIT_PROCESS). The key is the peer
+# IP; behind a reverse proxy that is the proxy's IP, since there is no
+# X-Forwarded-For handling.
 limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
@@ -256,7 +254,7 @@ async def process(
     deal_name: Annotated[str, Form()],
     taxonomy: Annotated[UploadFile | None, File()] = None,
     aggregation: Annotated[Literal["auto", "by_loan", "by_group"], Form()] = "auto",
-    min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = 0.85,
+    min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_MIN_LOAN_ID_COVERAGE,
     dry_run: Annotated[bool, Form()] = False,
     analysis_only: Annotated[bool, Form()] = False,
 ) -> Response:
@@ -370,11 +368,10 @@ def run() -> None:
     Starts uvicorn with 4 worker processes. Each worker is single-
     threaded and handles one request at a time; four workers serve four
     concurrent users. Workers are independent OS processes with no
-    shared memory - fine for Day 1 since every request is fully
-    independent, and it forces any cross-request state added later
-    (e.g. a Redis-backed job registry for the async endpoint) to live
-    outside the workers by construction. Host/port/worker count are
-    hard-coded Day 1 defaults; CLI-flag configurability is Day 2 polish.
+    shared memory, which is fine because every request is fully
+    independent (the per-worker rate-limit counters are the one
+    consequence; see RATE_LIMIT_PROCESS). Host, port and worker count
+    are hard-coded; there are no CLI flags for them.
     """
     uvicorn.run(
         "esma_milan.api.server:app",

@@ -1,23 +1,24 @@
 """10-sheet output workbook writer (openpyxl write-only mode).
 
-Mirrors the workbook layout in r_reference/R/pipeline.R:903-933 - ten
-sheets in canonical order, each empty-or-populated according to which
-pipeline stages have produced data so far.
+Mirrors the workbook layout in r_reference/R/pipeline.R:903-933: ten
+sheets in canonical order (config.OUTPUT_SHEET_ORDER), each holding a
+header row plus one row per DataFrame row.
 
-Cell-level styling (bold + #D9D9D9 fill on header, left-align on data,
-autofilter, column widths = 25) is omitted while stages stack up, since
-the parity diff library reads values-only and compares values, not
-formatting. Full styling lands with the Stage-10 writer.
+The writer emits cell values only. R's openxlsx output additionally
+carries a bold header with a #D9D9D9 fill, left-aligned data cells, an
+autofilter and column widths of 25; none of that is reproduced here.
+The parity diff library compares values, not formatting, so this is a
+known cosmetic gap rather than a parity gap.
 
-Date encoding (Stage 6.5):
+Date encoding:
   R's openxlsx writes R Date columns as bare numeric Excel serials with
   no number-format applied. openpyxl reads such cells as `int` (no
   fractional component) rather than as `datetime.date`. To round-trip
   cell-by-cell with the staged R fixture, this writer converts Polars
   `pl.Date` columns to Excel serial integers (`(d - 1899-12-30).days`)
   before handing rows to openpyxl. This applies to every sheet that
-  carries dates outside the MILAN sheet; the MILAN sheet writes ISO
-  date strings in Stage 9.
+  carries Date-typed columns; the MILAN sheet is all-string by the time
+  it reaches the writer and carries ISO date strings instead.
 """
 
 from __future__ import annotations
@@ -30,21 +31,17 @@ from typing import Any
 import openpyxl
 import polars as pl
 
-from esma_milan.config import OUTPUT_SHEET_ORDER
-
-# Excel 1900-system epoch with leap-year-bug compensation. Same constant
-# Stage 1's parse_iso_or_excel_date uses for the inverse direction.
-_EXCEL_EPOCH: date = date(1899, 12, 30)
+from esma_milan.config import EXCEL_EPOCH, OUTPUT_SHEET_ORDER
 
 
 def _date_to_excel_serial(d: date) -> int:
     """Convert a `datetime.date` to its Excel-1900 serial integer.
 
-    Inverse of `parse_iso_or_excel_date` in Stage 1: for every Date
-    parsed by that function, this round-trips back to the same serial
-    (verified by tests/unit/test_write_workbook.py).
+    Inverse of `parse_iso_or_excel_date` in Stage 1 (same EXCEL_EPOCH):
+    for every Date parsed by that function, this round-trips back to the
+    same serial (verified by tests/unit/test_write_workbook.py).
     """
-    return (d - _EXCEL_EPOCH).days
+    return (d - EXCEL_EPOCH).days
 
 
 def _populate_workbook(
@@ -145,10 +142,3 @@ def _encode_dates(
         else:
             out.append(v)
     return out
-
-
-# Compatibility shim: the original API took no populated-sheets dict.
-# Removed once nothing imports it.
-def write_stub_workbook(path: Path) -> None:
-    """Deprecated: call write_pipeline_workbook(path) instead."""
-    write_pipeline_workbook(path)

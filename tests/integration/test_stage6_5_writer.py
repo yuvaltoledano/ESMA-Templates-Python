@@ -1,4 +1,4 @@
-"""Stage 6.5 integration test: Sheet 6 + Sheet 7 cell-by-cell parity.
+"""Integration test for Sheets 6 + 7 (Cleaned ESMA loans / properties).
 
 Layered:
 
@@ -152,8 +152,8 @@ def test_cleaned_properties_column_order_matches_r_fixture(
 
 
 # ---------------------------------------------------------------------------
-# Full cell-by-cell parity (anchors what the SHEET_STATUS gate already
-# checks but with explicit error messages tied to Stage 6.5)
+# Full cell-by-cell parity (anchors what test_parity_synthetic already
+# checks but with explicit error messages tied to these two sheets)
 # ---------------------------------------------------------------------------
 
 

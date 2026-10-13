@@ -1,3 +1,17 @@
+// ESMA-MILAN GUI: a single-page client for the pipeline API.
+//
+// Two modes share one upload form (loans CSV, collaterals CSV, optional
+// taxonomy XLSX, deal name):
+//   - download: POST /api/process -> .xlsx workbook, saved via a blob
+//     download; the filename comes from Content-Disposition.
+//   - analysis: POST /api/process with analysis_only=true -> JSON
+//     AnalysisResponse ({deal_name, summary, stratifications,
+//     execution_summary}) rendered inline as the Analyze Pool view.
+// Every non-2xx response is the API's ErrorResponse ({error, message,
+// details}); a non-JSON failure is treated as "API unreachable". The
+// footer polls GET /api/health. All requests use relative /api URLs,
+// proxied to localhost:8000 by the Vite dev server (vite.config.js).
+// See docs/api.md and docs/analysis.md for the contract.
 import { useCallback, useEffect, useState } from 'react'
 import {
   Bar,
@@ -23,12 +37,16 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024
 const NETWORK_ERROR_MESSAGE =
   'Cannot reach API at localhost:8000. Is `uv run esma-milan-server` running?'
 
-// Categorical pie-chart palette. Long enough for the biggest categorical
-// (loan purpose has 5 buckets); cycled for the geographic bar chart.
+// Categorical pie-chart palette. Indexed by spec-row position, so the
+// biggest categoricals (interest rate type and loan purpose, 13 ESMA
+// codes each, plus a possible UNK row) each get a distinct colour without
+// cycling. The first 11 entries are the original palette; the last four
+// extend it. The bar charts use only CHART_COLORS[0].
 const CHART_COLORS = [
   '#0f766e', '#1d4ed8', '#b45309', '#7c3aed',
   '#be123c', '#0369a1', '#15803d', '#c2410c',
-  '#475569', '#a16207', '#9f1239',
+  '#475569', '#a16207', '#9f1239', '#4d7c0f',
+  '#6d28d9', '#0e7490', '#b91c1c',
 ]
 
 // Pull the download filename out of a Content-Disposition header. The API
@@ -317,7 +335,7 @@ function App() {
               value={dealName}
               onChange={onDealNameChange}
               disabled={busy}
-              placeholder="e.g. Domi 2025-1"
+              placeholder="e.g. DEAL_2025-1"
               className="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none disabled:bg-slate-100"
             />
           </div>
@@ -492,10 +510,10 @@ function SummaryStat({ label, value }) {
 // Pool-level weighted-average formatter, keyed on the stratification's
 // registry key. seasoning's WA is in months (zero decimals, "months"
 // suffix); current_ltv's is a decimal 0..1+ (one decimal, percent);
-// current_interest_rate's is already in percent units (two decimals
-// since Dutch RMBS rates discriminate at basis-point level). Other
-// strats have `weighted_average: null` so this is only called for
-// the three numeric ones.
+// current_interest_rate's is already in percent units (two decimals,
+// i.e. basis-point resolution). Other strats have
+// `weighted_average: null` so this is only called for the three
+// numeric ones.
 function formatWeightedAverage(stratKey, value) {
   if (stratKey === 'seasoning') {
     return `WA: ${Math.round(value).toLocaleString()} months`

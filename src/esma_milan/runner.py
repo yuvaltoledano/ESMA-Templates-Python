@@ -1,9 +1,12 @@
 """Single library entry point for the pipeline.
 
-Same function backs both the CLI and the FastAPI service. As stages port
-over, each stage's driver is composed in here in §9 order. Stages still
-to land write a no-op slot in the workbook so the parity harness can
-keep diffing against the staged R reference.
+`run_pipeline` backs both the CLI (`cli.py`) and the FastAPI service
+(`api/handlers.py`). It composes the stage drivers in the order R's
+`run_pipeline()` (r_reference/R/pipeline.R) executes them: read and clean
+(Stage 1), filter (2), identifiers (3), graph (4), classification (5),
+enrichment, aggregation detection (6), flatten and derived fields (7/8),
+mapping tables, MILAN mapping (9), Execution Summary (10), workbook write.
+The stage numbers in the flow comments below are a map of that sequence.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import polars as pl
 import structlog
@@ -27,7 +31,7 @@ from esma_milan.pipeline.enriched import (
 )
 from esma_milan.pipeline.exec_summary import compose_execution_summary
 from esma_milan.pipeline.filters import Stage2Output, run_stage2
-from esma_milan.pipeline.flatten import Stage7Output, run_stage7
+from esma_milan.pipeline.flatten import AggregationMethod, Stage7Output, run_stage7
 from esma_milan.pipeline.graph import GraphResult, run_stage4
 from esma_milan.pipeline.identifiers import Stage3Output, run_stage3
 from esma_milan.pipeline.mapping_tables import compose_mapping_tables
@@ -72,7 +76,7 @@ class PipelineResult:
 
     stage6: Stage6Output | None = None
     """Auto-detected aggregation method from Stage 6 (None if Stage 6
-    didn't run). When the user passed an explicit `aggregation_method`
+    didn't run). When the caller passed an explicit `aggregation_method`
     argument, Stage 6 runs anyway as a sanity check; the explicit
     argument wins for the actual flatten in Stage 7."""
 
@@ -138,6 +142,12 @@ def run_pipeline(
         touching disk (the FastAPI service's no-disk-persistence path).
     `dry_run=True` skips workbook composition entirely regardless of
     `output_dir`.
+
+    `interactive_mode` is accepted for signature compatibility with R's
+    `run_pipeline(interactive_mode = ...)` and has no effect: when Stage 6
+    cannot determine the aggregation method, this port always falls back
+    to "by_loan" (with a warning) instead of prompting, exactly as R does
+    in non-interactive mode. The CLI and the API never prompt.
     """
     if verbose:
         log.info(
@@ -211,10 +221,6 @@ def run_pipeline(
     # --- Stage 7: flatten + derived fields (Combined flattened pool) -----
     # `chosen_aggregation` is a str at runtime constrained to {"by_loan",
     # "by_group"} by the resolution above; cast for mypy strict.
-    from typing import cast
-
-    from esma_milan.pipeline.flatten import AggregationMethod
-
     stage7 = run_stage7(
         loans_enriched,
         properties_enriched,
@@ -265,9 +271,9 @@ def run_pipeline(
             execution_summary=execution_summary,
         )
 
-    # Stage 8.5: compose the four mapping tables (Sheets 1-4) from the
-    # post-Stage-3 loans/properties + post-Stage-5 loans_enriched (the
-    # latter for the classification tail on "Loans to properties").
+    # Mapping tables (Sheets 2-5): composed from the post-Stage-3
+    # loans/properties + post-Stage-5 loans_enriched (the latter for the
+    # classification tail on "Loans to properties").
     mapping_tables = compose_mapping_tables(
         stage3.loans, stage3.properties, loans_enriched
     )
@@ -279,7 +285,7 @@ def run_pipeline(
         "Group classifications": stage5.classifications,
         "Combined flattened pool": stage7.combined_flattened,
         "MILAN template pool": milan_pool,  # Stage 9: Sheet 10
-        **mapping_tables,  # Stage 8.5: Sheets 1-4 (mapping tables)
+        **mapping_tables,  # Sheets 2-5 (mapping tables)
     }
 
     if output_dir is None:

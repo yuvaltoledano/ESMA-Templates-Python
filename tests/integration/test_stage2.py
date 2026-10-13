@@ -2,8 +2,7 @@
 
 Confirms that on the synthetic CSV - all 8 loans active, all 12 properties
 RRE with positive valuations - Stage 2 is a no-op (nothing dropped).
-The dropped-loan branch coverage lives in tests/unit/test_filters.py
-per the user's directive on Stage 2.
+The dropped-loan branch coverage lives in tests/unit/test_filters.py.
 """
 
 from __future__ import annotations

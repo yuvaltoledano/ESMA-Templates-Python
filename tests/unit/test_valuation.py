@@ -342,11 +342,6 @@ def test_run_stage6_wraps_detect_aggregation_method() -> None:
     assert out.detected_method == "by_loan"
 
 
-# Unused-import guard: keep `date` imported to make it cheap to add date-
-# bearing fixtures in future without a re-import churn.
-_ = date
-
-
 # ---------------------------------------------------------------------------
 # select_valuation_fields - full Stage-1/Stage-2 helper used by Stage 7
 # ---------------------------------------------------------------------------
@@ -606,7 +601,7 @@ def test_select_valuation_fields_handles_null_current_method_safely() -> None:
 
 
 # ---------------------------------------------------------------------------
-# calculate_unique_property_values - Stage 7 B-2
+# calculate_unique_property_values - Stage 7 helper
 # ---------------------------------------------------------------------------
 
 
@@ -748,7 +743,7 @@ def test_calculate_unique_by_loan_warning_includes_property_ids() -> None:
 
 
 def test_calculate_unique_by_loan_result_invariant_to_row_shuffling_when_group_has_one_non_null() -> None:
-    """Determinism anchor (per user direction):
+    """Determinism anchor:
 
     For a fixture where each (group, property) has at most one non-null
     valuation, "first non-null" must produce the SAME result regardless

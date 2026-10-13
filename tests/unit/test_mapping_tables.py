@@ -261,7 +261,7 @@ def test_max_properties_per_loan_warning_does_not_fire_at_threshold() -> None:
 def test_max_properties_per_loan_warning_fires_above_threshold_with_exact_text() -> None:
     """Loan with > 50 properties triggers the warning. The text must
     match R's `warning("Some loans have ", N, " properties (threshold:
-    ", THRESH, ").")` exactly. Pinning text catches a future R-repo
+    ", THRESH, ").")` exactly. Pinning text catches a future R-reference
     update that changes the threshold or message format."""
     n = MAX_PROPERTIES_PER_LOAN_WARNING_THRESHOLD + 1  # 51
     loans = _stage3_loans(["L1"], ["B1"])

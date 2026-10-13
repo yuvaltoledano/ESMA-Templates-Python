@@ -12,9 +12,9 @@ Two layers:
      all 12 properties survive on the staged fixture (no drops), proving
      Stage 2 is a no-op there.
 
-The 9-loan inline test below is the one the user explicitly requested:
-exactly 8 of the 9 input loans must survive Stage 2, with a comment
-identifying the dropped loan and the reason.
+The 9-loan inline test below pins the drop path: exactly 8 of the 9
+input loans must survive Stage 2, with a comment identifying the dropped
+loan and the reason.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from esma_milan.pipeline.filters import (
 
 
 def test_nine_loans_one_dropped_for_dflt_status() -> None:
-    """The user-requested branch coverage for Stage 2.
+    """Branch coverage for the Stage 2 drop path.
 
     Construct a 9-loan inline DataFrame where exactly one loan is
     inactive: LOAN_009 has account_status = "DFLT" (defaulted, not in
@@ -153,7 +153,7 @@ def test_collect_active_loan_ids_handles_missing_column() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _properties_skeleton(**overrides: object) -> pl.DataFrame:
+def _property_row(**overrides: object) -> pl.DataFrame:
     """Build a single-row properties DataFrame with sensible defaults
     for every column the filter inspects. Any overrides win."""
     base: dict[str, list[object]] = {
@@ -170,7 +170,7 @@ def _properties_skeleton(**overrides: object) -> pl.DataFrame:
 
 
 def test_property_with_null_property_type_dropped() -> None:
-    df = _properties_skeleton(property_type=[None])
+    df = _property_row(property_type=[None])
     out = filter_residential_properties(df, active_loan_ids={"L1"})
     assert out.height == 0
 
@@ -181,19 +181,19 @@ def test_property_with_null_property_type_dropped() -> None:
 )
 def test_excluded_collateral_types_dropped(code: str) -> None:
     """A handful of EXCLUDED_COLLATERAL_TYPES codes must drop the row."""
-    df = _properties_skeleton(collateral_type=[code])
+    df = _property_row(collateral_type=[code])
     out = filter_residential_properties(df, active_loan_ids={"L1"})
     assert out.height == 0, f"collateral_type={code!r} should be dropped"
 
 
 def test_property_referencing_unknown_loan_dropped() -> None:
-    df = _properties_skeleton(underlying_exposure_identifier=["L_DOES_NOT_EXIST"])
+    df = _property_row(underlying_exposure_identifier=["L_DOES_NOT_EXIST"])
     out = filter_residential_properties(df, active_loan_ids={"L1"})
     assert out.height == 0
 
 
 def test_property_with_both_valuations_zero_dropped() -> None:
-    df = _properties_skeleton(
+    df = _property_row(
         original_valuation_amount=[0.0],
         current_valuation_amount=[0.0],
     )
@@ -202,7 +202,7 @@ def test_property_with_both_valuations_zero_dropped() -> None:
 
 
 def test_property_with_both_valuations_negative_dropped() -> None:
-    df = _properties_skeleton(
+    df = _property_row(
         original_valuation_amount=[-1.0],
         current_valuation_amount=[-100.0],
     )
@@ -213,7 +213,7 @@ def test_property_with_both_valuations_negative_dropped() -> None:
 def test_property_with_both_valuations_null_dropped() -> None:
     """coalesce(NA, 0) = 0 -> both <= 0 -> dropped. Mirrors R's
     `coalesce(original_valuation_amount, 0)` treatment."""
-    df = _properties_skeleton(
+    df = _property_row(
         original_valuation_amount=[None],
         current_valuation_amount=[None],
     )
@@ -224,13 +224,13 @@ def test_property_with_both_valuations_null_dropped() -> None:
 def test_property_with_one_positive_valuation_kept() -> None:
     """If at least one of the two valuations is positive, the row stays.
     Two cases: (positive, null) and (null, positive)."""
-    df1 = _properties_skeleton(
+    df1 = _property_row(
         original_valuation_amount=[150000.0],
         current_valuation_amount=[None],
     )
     assert filter_residential_properties(df1, active_loan_ids={"L1"}).height == 1
 
-    df2 = _properties_skeleton(
+    df2 = _property_row(
         original_valuation_amount=[None],
         current_valuation_amount=[200000.0],
     )
@@ -240,7 +240,7 @@ def test_property_with_one_positive_valuation_kept() -> None:
 def test_property_with_one_positive_one_zero_kept() -> None:
     """Edge: one valuation == 0, the other > 0 -> kept (only DROPS when
     BOTH are <= 0)."""
-    df = _properties_skeleton(
+    df = _property_row(
         original_valuation_amount=[0.0],
         current_valuation_amount=[200000.0],
     )
@@ -248,7 +248,7 @@ def test_property_with_one_positive_one_zero_kept() -> None:
 
 
 def test_residential_property_with_active_loan_kept() -> None:
-    df = _properties_skeleton()
+    df = _property_row()
     out = filter_residential_properties(df, active_loan_ids={"L1"})
     assert out.height == 1
 
@@ -272,7 +272,7 @@ def test_run_stage2_hard_errors_when_no_properties_remain() -> None:
     )
     # Property references an unknown loan so the filter empties the
     # table; Stage 2 must hard-error.
-    properties = _properties_skeleton(
+    properties = _property_row(
         underlying_exposure_identifier=["L_NOT_PRESENT"]
     )
     with pytest.raises(ValueError, match="No properties remaining"):

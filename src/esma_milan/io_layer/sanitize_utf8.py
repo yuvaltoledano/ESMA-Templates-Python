@@ -15,8 +15,15 @@ on invalid byte sequences. This helper performs a best-effort cascade:
 
 A None/NaN input is returned as None. The implementation operates on
 Python `str` (already-decoded text) and on raw `bytes` produced by
-upstream readers. For Polars Series in the pipeline, sanitisation runs at
-the row level on the values backing each Utf8 column.
+upstream readers. For Polars Series, sanitisation runs at the row level
+on the values backing each Utf8 column.
+
+Status: this module is NOT wired into the pipeline. `read_csv.read_and_clean`
+reads CSVs as strict UTF-8 via Polars, so a file with Windows-1252 bytes
+fails at read time rather than reaching the writer. Wiring this helper
+in, together with lossy-UTF-8 CSV reading, is a separate planned task;
+until then the module and its unit tests exist as a tested port of the R
+helper, called from nowhere.
 """
 
 from __future__ import annotations

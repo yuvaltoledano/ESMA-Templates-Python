@@ -7,24 +7,17 @@ size guardrail, materialising uploads, invoking the pipeline,
 classifying failures - lives here.
 
 `process_pipeline_from_bytes` is deliberately synchronous and
-side-effect-light (bytes in, a `ProcessResult` out, plus logging). That
-shape is what makes the Day 3+ asynchronous job endpoint a clean
-addition rather than a refactor: the same function gets called from a
-background task instead of straight from an endpoint handler.
-
-The file was originally stubbed as ``jobs.py`` in anticipation of that
-async job queue. Day 1 builds only the synchronous endpoint, so it is
-named ``handlers.py`` for what it actually is today; ``jobs.py`` returns
-when the async queue does.
+side-effect-light (bytes in, a `ProcessResult` out, plus logging), so
+it could equally be called from a background task if an asynchronous
+job endpoint is ever added.
 
 Disk note: the pipeline's input interface (`runner.run_pipeline` ->
 `stage1` -> `read_csv` / `read_taxonomy`) is path-based. Refactoring
 that whole chain to accept in-memory bytes would touch the most
-parity-sensitive code in the repo, so Day 1 instead materialises
+parity-sensitive code in the repo, so the handler instead materialises
 uploads into a per-request `tempfile.TemporaryDirectory()` that is torn
-down before this function returns. The workbook *output* is true
-in-memory (`runner.run_pipeline(output_dir=None)` -> bytes). A future
-`Path | bytes` refactor of the read chain would close the input gap.
+down before the function returns. The workbook *output* is true
+in-memory (`runner.run_pipeline(output_dir=None)` -> bytes).
 """
 
 from __future__ import annotations
@@ -51,8 +44,8 @@ log = structlog.get_logger(__name__)
 
 # Hard cap on pool size for the synchronous /api/process endpoint. Pools
 # larger than this risk exceeding reverse-proxy HTTP timeouts on a
-# synchronous request, so they are rejected with HTTP 413 and pointed at
-# the (Day 3+) asynchronous job endpoint.
+# synchronous request, so they are rejected with HTTP 413. There is no
+# asynchronous alternative endpoint.
 #
 # The count is approximate: it is the data-row limit derived via newline
 # counting on the uploaded loans CSV, not a full parse. With a trailing
@@ -286,10 +279,13 @@ def process_pipeline_from_bytes(
             [0.0, 1.0].
         dry_run: when True, skip workbook composition and return a
             `DryRunResult` summary instead of a `WorkbookResult`.
+        analysis_only: when True, skip workbook composition and return
+            an `AnalysisResult` (pool stratifications + Execution
+            Summary). Mutually exclusive with `dry_run`.
 
     Returns:
-        A `WorkbookResult` (dry_run=False) or `DryRunResult`
-        (dry_run=True).
+        A `WorkbookResult` (default), a `DryRunResult` (dry_run=True) or
+        an `AnalysisResult` (analysis_only=True).
 
     Raises:
         ApiError: every failure mode, already classified into an HTTP
@@ -328,9 +324,7 @@ def process_pipeline_from_bytes(
             "size_limit_exceeded",
             "Pool size exceeds the synchronous endpoint limit "
             "(approximately 30,000 loans; the check counts CSV lines, so "
-            "the effective cap is ~29,999 data rows). For larger pools, "
-            "use the asynchronous job endpoint at `POST /api/jobs` "
-            "(not yet implemented).",
+            "the effective cap is ~29,999 data rows).",
             details={
                 "estimated_loan_rows": estimated_rows,
                 "limit": MAX_SYNC_LOAN_COUNT,
@@ -538,7 +532,7 @@ def _build_analysis_result(
     plus the per-stratification computation. Each stratification
     function catches its own column-missing / data errors and returns
     a `Stratification` with `error` populated rather than raising, so
-    one bad cut on one pool doesn't suppress the other five.
+    one bad cut on one pool doesn't suppress the others.
     """
     from esma_milan.runner import PipelineResult
 
@@ -578,7 +572,7 @@ def _build_analysis_result(
 
     stratifications = run_all_stratifications(combined)
 
-    # Stage 10's output is a 2-column Polars frame with R-faithful
+    # The Execution Summary is a 2-column Polars frame with R-faithful
     # pre-formatted string values. The runner populates it on every
     # successful path (including dry_run, which the analysis-mode
     # endpoint reuses internally), so it's expected non-None here.

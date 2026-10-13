@@ -18,7 +18,7 @@ attribution is a future iteration if domain feedback wants it.
 
 Each function catches its own errors and returns a ``Stratification``
 with ``error`` populated rather than raising. One missing column on one
-cut must not blow up the other five.
+cut must not blow up the others.
 
 Null handling: ESMA-coded categoricals route both nulls and codes
 outside the published taxonomy to a separate ``UNK`` bucket
@@ -55,19 +55,19 @@ ChartType = Literal["pie", "bar"]
 StratType = Literal["categorical", "bucketed"]
 
 # Cap on the number of distinct regions shown before collapsing the tail
-# into a single "Other" bucket. 10 matches the brief.
+# into a single "Other" bucket.
 GEOGRAPHIC_TOP_N: int = 10
 
-# Seasoning buckets, in months. Per the brief: closed="right" - the
-# first bucket's left edge is -inf so it includes 0; "120+" is strictly
-# greater than 120.
+# Seasoning buckets, in months. closed="right": each bucket is (a, b], the
+# first bucket's left edge is -inf so it includes 0, and "120+" is
+# strictly greater than 120. Labels name the edges of the (a, b] interval.
 SEASONING_BREAKS_MONTHS: tuple[float, ...] = (12.0, 24.0, 36.0, 60.0, 120.0)
 SEASONING_LABELS: tuple[str, ...] = (
     "0-12 months",
-    "13-24 months",
-    "25-36 months",
-    "37-60 months",
-    "61-120 months",
+    "12-24 months",
+    "24-36 months",
+    "36-60 months",
+    "60-120 months",
     "120+ months",
 )
 
@@ -88,8 +88,8 @@ LTV_LABELS: tuple[str, ...] = (
 # `current_interest_rate` on combined_flattened is stored as percent
 # units (e.g. 2.5 means 2.5%), confirmed by milan_map's _divide_by_100
 # divisor at write time - so breaks here are in percent units too. The
-# first bucket "<=0.5%" absorbs any sub-zero rates (rare in Dutch RMBS
-# but defensive). The last bucket "8%+" is strictly > 8%.
+# first bucket "<=0.5%" absorbs any sub-zero rates (defensive). The last
+# bucket "8%+" is strictly > 8%.
 CURRENT_RATE_BREAKS: tuple[float, ...] = (
     0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0,
     4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0,
@@ -182,8 +182,8 @@ def _categorical_from_mapping(
     Maps each ESMA value code via `label_map` (code -> "CODE - Description"
     full label) and aggregates counts + balances. The output has one row
     for every code in `label_map`, in `label_map` insertion order, even
-    when that code has count 0 - the brief's "all spec codes always
-    shown" rule, for layout stability across pools.
+    when that code has count 0 - "all spec codes always shown", for
+    layout stability across pools.
 
     Values that the source column carries but aren't in `label_map` -
     null, malformed, or a code outside the published taxonomy - route
@@ -398,7 +398,7 @@ def _bucketed_numeric(
 
 
 # ---------------------------------------------------------------------------
-# The six stratifications
+# The stratifications (one function per registry entry in __init__.py)
 # ---------------------------------------------------------------------------
 
 
@@ -419,7 +419,7 @@ def stratify_interest_rate_type(df: pl.DataFrame) -> Stratification:
 
 
 def stratify_seasoning(df: pl.DataFrame) -> Stratification:
-    """Months since origination, bucketed per the brief.
+    """Months since origination, bucketed.
 
     Stage 7 carries `calc_seasoning` as float years; multiply by 12 for
     the month-based buckets. Negative seasoning (origination after pool
@@ -596,9 +596,10 @@ def stratify_current_interest_rate(df: pl.DataFrame) -> Stratification:
     """Pool breakdown by current interest rate (ESMA field RREL43).
 
     Source `current_interest_rate` is stored as a percentage value
-    (e.g. 2.5 == 2.5%) - milan_map.py:1010 confirms this via the
-    `_divide_by_100_expr` it applies at workbook write time. Breaks
-    here are in percent units too, so no transform is needed.
+    (e.g. 2.5 == 2.5%) - `milan_map.compose_milan_pool` confirms this
+    by applying `_divide_by_100_expr` to it for the MILAN "Interest
+    Rate" column. Breaks here are in percent units too, so no transform
+    is needed.
 
     17 buckets at 0.5% steps from 0 to 8; first bucket absorbs sub-zero
     rates defensively, last is strictly > 8%. WA is computed inline

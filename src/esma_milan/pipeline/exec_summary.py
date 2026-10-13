@@ -1,8 +1,9 @@
-"""Stage 10: Execution Summary helpers.
+"""Stage 10: Execution Summary (Sheet 1).
 
-Mirrors the metric calculations and formatting helpers in the
-Execution Summary block of r_reference/R/pipeline.R:625-895. The
-composer itself lands in C-2; this module covers the primitives.
+Mirrors the metric calculations, formatting helpers and row assembly of
+the Execution Summary block in r_reference/R/pipeline.R:625-895. The
+helpers come first; `compose_execution_summary` at the bottom assembles
+the 38 base rows plus the per-structure-type breakdown.
 
 Design notes:
 
@@ -23,9 +24,9 @@ Design notes:
     real_anonymised data without per-bug forensics.
 
   - _milan_as_num collapses BOTH "ND" tokens AND null / empty
-    strings to null - matching R's milan_as_num(x). The asymmetric
-    defaults from R-repo entry #9 (Pari Passu emits "0" on ND
-    input while External Prior emits "ND") flow through here:
+    strings to null - matching R's milan_as_num(x). The MILAN
+    mapping's asymmetric defaults (Pari Passu emits "0" on ND input
+    while External Prior Ranks CB emits "ND") flow through here:
     "0" contributes 0 to a sum, "ND" is excluded entirely.
     Verified by test_milan_as_num_handles_asymmetric_defaults.
 """
@@ -36,6 +37,8 @@ import math
 from datetime import date
 
 import polars as pl
+
+from esma_milan.config import AVERAGE_DAYS_PER_MONTH, DAYS_PER_YEAR
 
 # ---------------------------------------------------------------------------
 # Sentinel for missing values in formatted output
@@ -98,9 +101,9 @@ def _milan_as_num(s: pl.Series) -> pl.Series:
 
         suppressWarnings(as.numeric(if_else(x == "ND", NA_character_, x)))
 
-    Asymmetric-defaults note (R-repo entry #9): "ND" -> null (excluded
-    from sums); "0" -> 0.0 (contributes 0 to sums but counts as a row
-    with a value). This asymmetry is intentional in MILAN's contract -
+    Asymmetric-defaults note: "ND" -> null (excluded from sums); "0" ->
+    0.0 (contributes 0 to sums but counts as a row with a value). This
+    asymmetry is intentional in MILAN's contract -
     External Prior Ranks emits "ND" on missing-input rows, Pari Passu
     emits "0", and Total External Prior Ranks vs Total External Equal
     Ranks compute differently as a consequence.
@@ -164,7 +167,7 @@ def _top_20_borrower_exposure(
 ) -> float | None:
     """sum(top 20 borrower balances) / total_cb.
 
-    Mirrors r_reference/R/pipeline.R:670-684. Iterates the top-20
+    Mirrors r_reference/R/pipeline.R:672-687. Iterates the top-20
     slice in descending order - same as R's `sum(head(borrower_balances,
     20))` where `borrower_balances` is sort-desc. Returns None if
     total_cb <= 0 or no eligible borrowers.
@@ -184,7 +187,7 @@ def _effective_borrowers(
 ) -> float | None:
     """Inverse Herfindahl-Hirschman: 1 / sum((share)^2).
 
-    Mirrors r_reference/R/pipeline.R:670-684:
+    Mirrors r_reference/R/pipeline.R:672-687:
 
         effective_borrowers <- 1 / sum((borrower_balances / total_cb)^2)
 
@@ -192,8 +195,7 @@ def _effective_borrowers(
     descending order; this function iterates the same desc-sorted
     list directly without re-sorting. Imposing an ascending sort
     here would diverge from R's accumulation order on IEEE-754 -
-    matching R is the goal, not Python-side determinism (see
-    R-repo issue tracker entry #10).
+    matching R is the goal, not Python-side determinism.
     """
     if total_cb <= 0:
         return None
@@ -219,8 +221,8 @@ def _weighted_mean(values: pl.Series, weights: pl.Series) -> float | None:
     NaN. NO sort applied - R's `weighted.mean` accumulates in input
     row order, and Polars' `Series.sum()` after `filter` does the
     same in storage order. Imposing a sort here would diverge from
-    R's accumulation order on IEEE-754 (see R-repo issue tracker
-    entry #10: matching R is the goal, not Python-side determinism).
+    R's accumulation order on IEEE-754 (matching R is the goal, not
+    Python-side determinism).
     """
     df = pl.DataFrame({"v": values.cast(pl.Float64, strict=False),
                        "w": weights.cast(pl.Float64, strict=False)}).filter(
@@ -243,7 +245,7 @@ def _pct_of_cb_mask(
 ) -> float | None:
     """sum(balances[mask]) / total_cb, with zero-denominator guard.
 
-    Mirrors r_reference/R/pipeline.R:768-771 (`pct_of_cb`). Returns
+    Mirrors r_reference/R/pipeline.R:761-763 (`pct_of_cb`). Returns
     None if total_cb <= 0; mask all False -> 0.0 / total_cb = 0.0.
     """
     if total_cb <= 0:
@@ -258,7 +260,7 @@ def _pct_of_cb_mask(
 def _structure_breakdown(structure_type_col: pl.Series) -> pl.DataFrame:
     """Per-structure-type loan count rows for the bottom of the summary.
 
-    Mirrors r_reference/R/pipeline.R:805-820. Returns a 2-column
+    Mirrors r_reference/R/pipeline.R:800-812. Returns a 2-column
     Polars DataFrame:
 
         Metric                                      | Value
@@ -294,12 +296,12 @@ def _structure_breakdown(structure_type_col: pl.Series) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Composer (Stage 10 / C-2)
+# Composer
 # ---------------------------------------------------------------------------
 
 
 # Canonical 38 base-row Metric labels in the order they appear on Sheet 1.
-# Mirrors r_reference/R/pipeline.R:823-862. The structure breakdown rows
+# Mirrors r_reference/R/pipeline.R:815-855. The structure breakdown rows
 # follow the base 38 (variable count depending on which structure types
 # are present in the MILAN pool).
 _BASE_METRIC_LABELS: tuple[str, ...] = (
@@ -355,15 +357,6 @@ def _n_distinct_excluding_nd(s: pl.Series) -> int:
     return df["x"].n_unique()
 
 
-def _max_or_none(s: pl.Series) -> object | None:
-    """`max(x, na.rm=TRUE)` returning None on all-null. Polars' `Series.max()`
-    already skips nulls and returns None on all-null; this thin wrapper is
-    a parity-anchor for the `Maximum Maturity Date` metric.
-    """
-    out = s.max()
-    return out
-
-
 def compose_execution_summary(
     *,
     deal_name: str,
@@ -381,8 +374,8 @@ def compose_execution_summary(
     38 + n_structure_types rows, ready for the workbook writer.
     """
     # Parse MILAN numeric columns via _milan_as_num (ND -> null,
-    # numeric strings -> floats). Asymmetric defaults from R-repo
-    # entry #9: External Prior emits "ND" on missing-input rows;
+    # numeric strings -> floats). The MILAN mapping's asymmetric
+    # defaults apply: External Prior emits "ND" on missing-input rows;
     # Pari Passu emits "0". After _milan_as_num, External Prior
     # null-rows are excluded from the sum; Pari Passu zero-rows
     # contribute 0. Different totals on real data; preserved per R.
@@ -407,6 +400,8 @@ def compose_execution_summary(
     total_pari_passu = float(m_pari_passu.sum() or 0.0)
 
     # Counts. R uses dplyr::n_distinct on non-null non-ND values.
+    # "Number Of Complete Loans" is the number of distinct non-ND
+    # "Property Identifier" values in the MILAN pool (r_reference/R/pipeline.R:659).
     nr_unique_borrowers = (
         loans_enriched.filter(pl.col("calc_borrower_id").is_not_null())[
             "calc_borrower_id"
@@ -452,7 +447,9 @@ def compose_execution_summary(
     )
 
     # months_to_reset (vector aligned with milan_pool rows).
-    months_to_reset = (reset_dates - pool_cutoff_date).dt.total_days() / 30.4375
+    months_to_reset = (
+        (reset_dates - pool_cutoff_date).dt.total_days() / AVERAGE_DAYS_PER_MONTH
+    )
     # reset_mask: ir_type in {3, 4} AND non-null reset date.
     reset_mask = (
         m_ir_types.is_not_null()
@@ -465,9 +462,9 @@ def compose_execution_summary(
         if total_cb > 0
         else None
     )
-    # "Average Months To Reset For All Loans" - per R-repo entry #11
-    # (preserved-quirk): Moody's-domain formula. Numerator is the weighted
-    # contribution of reset-eligible loans only; denominator is total_cb.
+    # "Average Months To Reset For All Loans" is a preserved R quirk
+    # (Moody's-domain formula): the numerator is the weighted contribution
+    # of reset-eligible loans only, the denominator is total_cb.
     if total_cb > 0:
         # sum_contribution = sum(months_to_reset[reset_mask] * m_loan_cb[reset_mask])
         df_rm = pl.DataFrame(
@@ -485,16 +482,18 @@ def compose_execution_summary(
 
     # Seasoning + maturity.
     seasoning_years = (
-        (pool_cutoff_date - origination_dates).dt.total_days() / 365.25
+        (pool_cutoff_date - origination_dates).dt.total_days() / DAYS_PER_YEAR
     )
     wa_seasoning = (
         _weighted_mean(seasoning_years, m_loan_cb) if total_cb > 0 else None
     )
-    yrs_to_maturity = (maturity_dates - pool_cutoff_date).dt.total_days() / 365.25
+    yrs_to_maturity = (maturity_dates - pool_cutoff_date).dt.total_days() / DAYS_PER_YEAR
     wa_yrs_to_maturity = (
         _weighted_mean(yrs_to_maturity, m_loan_cb) if total_cb > 0 else None
     )
-    max_maturity = _max_or_none(maturity_dates)
+    # Series.max() skips nulls and returns None on all-null, matching
+    # R's `max(x, na.rm = TRUE)` for the "Maximum Maturity Date" metric.
+    max_maturity = maturity_dates.max()
     max_maturity_str = (
         max_maturity.isoformat() if isinstance(max_maturity, date) else None
     )

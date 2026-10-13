@@ -16,11 +16,6 @@ from pydantic import BaseModel, Field
 # Stable, machine-readable error codes. Clients branch on `error` rather
 # than parsing `message` strings, so these are part of the API contract:
 # add new codes as failure modes appear, never repurpose an existing one.
-#
-# The vocabulary is defined in full here even though the validators that
-# raise `file_too_large`, `invalid_content_type`, and `invalid_deal_name`
-# land in the Day 2 hardening commit - keeping the type stable across
-# commits is cheaper than widening it twice.
 ErrorCode = Literal[
     "missing_field",  # a required upload or form field was absent
     "validation_error",  # a field was present but malformed (bad type/range)
@@ -134,9 +129,11 @@ class AnalysisSummary(BaseModel):
 class AnalysisResponse(BaseModel):
     """Body of ``POST /api/process`` when ``analysis_only=true``.
 
-    The pipeline runs through Stage 7 (the workbook itself is not
-    composed); the response carries the six pool stratifications as
-    pre-aggregated JSON for the GUI to render inline.
+    The pipeline runs through the Execution Summary (the workbook itself
+    is not composed); the response carries every registered pool
+    stratification (eleven today; see ``esma_milan.analysis``) as
+    pre-aggregated JSON, plus the Execution Summary rows, for the GUI to
+    render inline.
     """
 
     deal_name: str

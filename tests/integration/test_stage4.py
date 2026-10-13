@@ -130,15 +130,10 @@ def test_synthetic_type_5_group_has_three_edges(stage4_synthetic: GraphResult) -
     """Type 5 (cross-collateralised) is identified by edge count < L*P.
     Group 5 has 2 loans, 2 properties, 3 edges (one missing) - this
     pins that the graph builder didn't synthesise the missing edge."""
-    type5_edges = stage4_synthetic.edges_with_group.filter(
-        # Group 5 contains NEW_007 / NEW_008.
-        # Use the loan_exposure_id to identify the group.
-    )
     n_edges_in_g5 = stage4_synthetic.edges_with_group.filter(
         stage4_synthetic.edges_with_group["collateral_group_id"] == 5
     ).height
     assert n_edges_in_g5 == 3
-    _ = type5_edges  # silence unused
 
 
 def test_synthetic_type_4_group_has_four_edges(stage4_synthetic: GraphResult) -> None:

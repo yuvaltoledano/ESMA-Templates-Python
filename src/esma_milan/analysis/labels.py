@@ -12,8 +12,7 @@ the taxonomy. Don't invent groupings.
 **Source**: ``r_reference/inputs/ESMA template taxonomy.xlsx`` -
 "CONTENT TO REPORT" column - for each indicated field (RREL42 for
 interest_rate_type, RREL27 for purpose, RREC7 for occupancy_type).
-Descriptions are taxonomy-verbatim with two pragmatic trims agreed
-with the user:
+Descriptions are taxonomy-verbatim with two pragmatic trims:
 
   1. The qualifier "underlying exposure" - which appears in every
      interest-rate-type description - is dropped, since the field
@@ -97,7 +96,7 @@ OCCUPANCY_LABELS: dict[str, str] = {
 # Amortisation Type (ESMA field RREL35). Source: ESMA template taxonomy,
 # RREL35 "Content to report". Each ESMA description carries an
 # "- i.e. Amortisation in which ..." clause spelling out the schedule
-# shape; trimmed per the Phase-1 convention since the code + heading
+# shape; trimmed by the same convention as above since the code + heading
 # already disambiguate the cases. 5 codes total.
 AMORTISATION_TYPE_LABELS: dict[str, str] = {
     "FRXX": "FRXX — French",

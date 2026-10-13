@@ -1,10 +1,12 @@
 """Pipeline constants. Mirrors r_reference/R/utils.R exactly.
 
-Any change here is a deviation from the R reference and must be flagged
-in writing per §10 / §11 of the project brief.
+Any change here is a deviation from the R reference and must be documented
+as such; the R reference is the contract.
 """
 
 from __future__ import annotations
+
+from datetime import date
 
 # Minimum valid property value - values at or below this are considered
 # invalid/placeholder and trigger the Stage-2 valuation flip in flattening.
@@ -27,7 +29,7 @@ VALUATION_METHODS_FULL_INSPECTION: frozenset[str] = frozenset({"FIEI", "FOEI"})
 # Collateral types to exclude from analysis. These are non-residential-real-
 # estate codes from the ESMA RMBS taxonomy. Any property row carrying one of
 # these codes is dropped before the loan-collateral graph is built.
-# r_reference/R/utils.R:22-33  (19 codes - the prompt's "20" was a miscount)
+# r_reference/R/utils.R:22-33  (19 codes)
 EXCLUDED_COLLATERAL_TYPES: frozenset[str] = frozenset({
     # Guarantees
     "GUAR",
@@ -45,6 +47,22 @@ EXCLUDED_COLLATERAL_TYPES: frozenset[str] = frozenset({
 # r_reference/R/utils.R:36
 MAX_FILENAME_LENGTH: int = 255
 
+# Excel 1900-system epoch: origin 1899-12-30 absorbs the 1900 leap-year bug.
+# Used by parse_iso_or_excel_date (serial -> date, r_reference/R/utils.R:640)
+# and by the workbook writer for the inverse (date -> serial).
+EXCEL_EPOCH: date = date(1899, 12, 30)
+
+# Day-count divisors used for the year- and month-denominated derived
+# fields. R divides day differences by these literals directly:
+#   calc_seasoning, WA seasoning, WA years to maturity -> days / 365.25
+#     (r_reference/R/pipeline.R:546, :716, :726)
+#   Months Current, Months In Arrears, months to reset -> days / 30.4375
+#     (r_reference/R/milan_mapping.R:570, :725; pipeline.R:701)
+# 30.4375 is 365.25 / 12 and is exactly representable as a double, so
+# `days / AVERAGE_DAYS_PER_MONTH` is bit-identical to `days / 30.4375`.
+DAYS_PER_YEAR: float = 365.25
+AVERAGE_DAYS_PER_MONTH: float = 30.4375
+
 # Default minimum coverage of the chosen calc_loan_id column against the
 # collaterals file. Coverage below this threshold errors; coverage at or
 # above the threshold (but below 1.0) warns and continues.
@@ -52,8 +70,9 @@ MAX_FILENAME_LENGTH: int = 255
 DEFAULT_MIN_LOAN_ID_COVERAGE: float = 0.85
 
 # CSV NA tokens passed to the loader. Matches readr's `na` argument in
-# r_reference/R/utils.R:75 / 82. The MD doc at docs/ESMA_PROCESSING_DOCUMENTATION.md
-# omits "ND" and "ND3"; the code is the truth.
+# r_reference/R/utils.R:75 / 82. The narrative doc at
+# r_reference/docs/ESMA_PROCESSING_DOCUMENTATION.md omits "ND" and "ND3";
+# the R code is the truth.
 CSV_NA_TOKENS: tuple[str, ...] = ("", "NA", "ND", "ND1", "ND2", "ND3", "ND4", "ND5")
 
 # ND-equivalent string set used by `is_nd()` in milan_mapping.R:19. Note this

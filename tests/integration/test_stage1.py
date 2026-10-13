@@ -1,12 +1,9 @@
 """Stage 1 integration test against the staged synthetic fixture.
 
 Pins the shape and key properties of the cleaned loans / properties
-tables that fall out of Stage 1. Used to lock down filter/parse
-behaviour without yet needing a fully-implemented pipeline.
-
-Per the user's directive on Stage 2 (and applied here at Stage 1 too):
-the dropped-loan branch coverage lives in tests/unit/test_filters.py
-when Stage 2 lands. This integration test exercises the happy path.
+tables that fall out of Stage 1. The dropped-loan branch coverage lives
+in tests/unit/test_filters.py; this integration test exercises the
+happy path.
 """
 
 from __future__ import annotations
@@ -108,10 +105,9 @@ def test_stage1_id_columns_kept_as_string(stage1_synthetic: Stage1Output) -> Non
 
 
 def test_run_pipeline_against_synthetic_fixture(tmp_path: Path) -> None:
-    """End-to-end smoke test: run_pipeline executes Stage 1, derives the
+    """End-to-end smoke test: run_pipeline runs every stage, derives the
     filename from pool_cutoff_date, and produces a workbook on disk.
-    Sheet content remains a stub (parity gated by SHEET_STATUS until
-    Stage 5)."""
+    Sheet content is checked by the parity tests, not here."""
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",

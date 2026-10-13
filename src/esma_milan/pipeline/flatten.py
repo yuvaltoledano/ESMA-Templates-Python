@@ -2,13 +2,11 @@
 
 This module hosts the helpers that compose the Stage-7 flattening
 pipeline and the Stage-8 derived-fields work that produces the
-"Combined flattened pool" sheet.
-
-  B-1 select_valuation_fields           -> pipeline/valuation.py
-  B-2 calculate_unique_property_values  -> pipeline/valuation.py
-  B-3 select_main_property              -> THIS MODULE (B-3 commit)
-  B-4 flatten_loan_collateral           -> THIS MODULE (B-4 commit)
-  B-5 apply_derived_fields + run_stage7 -> THIS MODULE (this commit)
+"Combined flattened pool" sheet. The valuation-selection helpers it
+builds on (`select_valuation_fields`, `calculate_unique_property_values`)
+live in pipeline/valuation.py; this module provides
+`select_main_property`, `flatten_loan_collateral`, `apply_derived_fields`
+and the `run_stage7` driver.
 
 `flatten_loan_collateral` produces the one-row-per-loan frame with
 pro-rata aggregated_property_value, main-property fields, and
@@ -35,7 +33,7 @@ from typing import Literal
 import polars as pl
 import structlog
 
-from esma_milan.config import VALUATION_METHODS_FULL_INSPECTION
+from esma_milan.config import DAYS_PER_YEAR, VALUATION_METHODS_FULL_INSPECTION
 from esma_milan.pipeline.valuation import (
     calculate_unique_property_values,
     select_valuation_fields,
@@ -183,7 +181,7 @@ def select_main_property(
 
 
 # ---------------------------------------------------------------------------
-# B-4: flatten_loan_collateral orchestrator
+# flatten_loan_collateral orchestrator
 # ---------------------------------------------------------------------------
 
 
@@ -243,11 +241,11 @@ def flatten_loan_collateral(
       The MILAN cols 73/74 contract requires Property Valuation Type /
       Date / Property Value to all reference the same valuation source
       (current OR original; never split). `select_valuation_fields`
-      enforces this at the per-property row level (B-1's co-vary
+      enforces this at the per-property row level (its co-vary
       invariance test). This orchestrator carries it forward by
       renaming the per-row `valuation_method` / `valuation_date` to
       `final_valuation_method` / `final_valuation_date` on the
-      main_property record. The B-4 propagation test
+      main_property record. The propagation test
       (`test_flatten_propagates_final_valuation_method_date_amount_
       together_after_stage2_flip`) verifies this end-to-end on a
       deliberately-asymmetric fixture.
@@ -298,7 +296,7 @@ def flatten_loan_collateral(
     # Step 5: main property per group.
     main_properties = select_main_property(properties_with_vals, unique_property_values)
 
-    # Step 6: unclassified hard error. R: pipeline.R:135-145.
+    # Step 6: unclassified hard error. R: property_flattening_function.R:135-145.
     classification_minimal = group_classification.select(
         "collateral_group_id", "structure_type"
     )
@@ -335,7 +333,7 @@ def flatten_loan_collateral(
         total_loan_balance=pl.col("current_principal_balance").drop_nans().sum()
     )
 
-    # Warning on bad-balance groups (R: pipeline.R:166-173).
+    # Warning on bad-balance groups (R: property_flattening_function.R:164-172).
     bad_balance_count = (
         group_loan_totals.filter(
             (pl.col("total_loan_balance") == 0)
@@ -454,7 +452,7 @@ def flatten_loan_collateral(
 
 
 # ---------------------------------------------------------------------------
-# B-5 / Stage 8: derived fields + calc_ rename + column reorder
+# Stage 8: derived fields + calc_ rename + column reorder
 # ---------------------------------------------------------------------------
 
 
@@ -514,7 +512,7 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
                                        na.rm=TRUE) / denom,
                                    NA_real_)
 
-    NaN handling (per user direction): R's `sum(coalesce(x,0), na.rm=TRUE)`
+    NaN handling: R's `sum(coalesce(x,0), na.rm=TRUE)`
     treats both null AND NaN as zero-contribution to the sum. Polars'
     `is_null()` only catches Polars null, NOT NaN; sum without explicit
     NaN handling propagates NaN. So we apply `fill_null(0).fill_nan(0)`
@@ -525,11 +523,11 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
                                         (other rows in the group still
                                          contribute)
       - all rows NaN denominator    -> all fill to 0, sum=0, denom-gate
-                                        fails -> LTV = NaN (per user's
-                                        third addition: the boundary
+                                        fails -> LTV = null (a boundary
                                         case the synthetic fixture
-                                        doesn't exercise)
-      - explicit zero denominator   -> denom-gate fails -> LTV = NaN
+                                        doesn't exercise; pinned by a
+                                        unit test)
+      - explicit zero denominator   -> denom-gate fails -> LTV = null
                                         (different code path, same
                                         result; pinned separately)
 
@@ -547,7 +545,7 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
     Negative seasoning (origination_date AFTER pool_cutoff_date) produces
     a negative value with no warning, matching R behaviour. Treated as
     an analyst-input data-quality issue rather than a pipeline error;
-    the issue is logged in the R-repo tracker for upstream review.
+    whether R should warn is a question for the R reference, not this port.
 
     Calc rename + reorder (R: pipeline.R:553-592):
 
@@ -616,7 +614,7 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
             (pl.col("pool_cutoff_date") - pl.col("origination_date"))
             .dt.total_days()
             .cast(pl.Float64)
-            / 365.25
+            / DAYS_PER_YEAR
         )
     )
 

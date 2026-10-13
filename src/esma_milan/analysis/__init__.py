@@ -1,9 +1,9 @@
 """Pool stratifications for the GUI analysis view.
 
-Registry pattern: every stratification is one entry in `STRATIFICATIONS`.
-Adding a seventh is one new function in `stratifications.py` plus one
-line here - no other module changes. `run_all_stratifications` walks
-the registry and assembles the dict the API returns.
+Registry pattern: every stratification is one entry in `STRATIFICATIONS`
+(eleven today). Adding one is one new function in `stratifications.py`
+plus one line here - no other module changes. `run_all_stratifications`
+walks the registry and assembles the dict the API returns.
 
 Each function is responsible for catching its own data errors and
 returning a `Stratification` with `error` populated; the registry
@@ -41,7 +41,7 @@ from esma_milan.analysis.types import (
 )
 
 # Order matters: this is the order the frontend renders tiles in. The
-# Phase-2 layout groups by analytical kinship: loan-structure rate
+# layout groups by analytical kinship: loan-structure rate
 # fields first (IR type / amortisation / current rate), then bucketed
 # numeric loan metrics (seasoning / current LTV), then property-side
 # (geography / property type / valuation type), then loan-purpose /

@@ -1,4 +1,4 @@
-"""Stage 6.5: compose loans_enriched / properties_enriched.
+"""Compose loans_enriched / properties_enriched (between Stages 5 and 6).
 
 Mirrors the join sequence in r_reference/R/pipeline.R:405-450 that
 produces the frames written to the workbook's "Cleaned ESMA loans"

@@ -1,4 +1,4 @@
-"""Tests for Stage-10 / C-1 Execution Summary helpers.
+"""Tests for the Execution Summary helpers (Stage 10).
 
 Mirrors r_reference/R/pipeline.R:625-820 metric calculations and
 formatting helpers.
@@ -95,7 +95,7 @@ def test_milan_as_num_collapses_nd_to_null() -> None:
 
 
 def test_milan_as_num_handles_asymmetric_defaults() -> None:
-    """R-repo entry #9 anchor: "0" must contribute 0 to a sum,
+    """Asymmetric-default anchor: "0" must contribute 0 to a sum,
     "ND" must be excluded entirely.
 
     Construct a column mixing both. sum(milan_as_num) over the
@@ -367,9 +367,9 @@ def test_structure_breakdown_drops_null_rows() -> None:
 
 
 # -----------------------------------------------------------------------------
-# IEEE-754 accumulation-order regression tests (Stage 10 / C-1.5)
+# IEEE-754 accumulation-order regression tests
 #
-# These tests pin the contract surfaced by the C-1 audit: each Σ-over-many-
+# These tests pin the accumulation-order contract: each Σ-over-many-
 # rows helper must accumulate in the same order R does, not just any
 # deterministic order. The synthetic fixture's value range is too small for
 # IEEE-754 drift to differentiate buggy vs fixed numerically; the tests below
@@ -382,7 +382,7 @@ def test_effective_borrowers_iterates_squared_shares_in_descending_order() -> No
     """Pin the accumulation order: _effective_borrowers iterates the
     desc-sorted balance list directly without re-sorting.
 
-    R's recipe (pipeline.R:670-684):
+    R's recipe (pipeline.R:672-687):
         borrower_balances <- sort(borrower_agg$x, decreasing = TRUE)
         effective_borrowers <- 1 / sum((borrower_balances / total_cb)^2)
 

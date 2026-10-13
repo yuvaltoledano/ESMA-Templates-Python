@@ -1,4 +1,4 @@
-"""Stage 8.5 integration tests against the staged synthetic fixture.
+"""Mapping-tables integration tests against the staged synthetic fixture.
 
 Pins the synthetic-fixture-specific dedup contracts that the unit-level
 tests cover with synthetic in-memory frames. Anchored on actual
@@ -44,7 +44,7 @@ def synthetic_mapping_tables() -> dict[str, pl.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# Borrower dedup contract (the explicit dedup test from the user's plan)
+# Borrower dedup contract
 # ---------------------------------------------------------------------------
 
 
@@ -79,8 +79,7 @@ def test_synthetic_shared_borrowers_dedup_properties(
 
 
 # ---------------------------------------------------------------------------
-# Non-dedup control (per user direction — verify dedup is selective, not
-# blanket)
+# Non-dedup control (verify dedup is selective, not blanket)
 # ---------------------------------------------------------------------------
 
 

@@ -187,19 +187,19 @@ def test_categorical_emits_unk_row_only_when_nulls_or_off_taxonomy_present() -> 
 
 
 def test_seasoning_buckets_apply_closed_right_convention() -> None:
-    """Per the brief, lower edge exclusive, upper edge inclusive
-    (closed="right"); the first bucket includes 0. Test values
-    straddle every break boundary: 12 -> first bucket (right edge
-    of 12 inclusive); 13 -> second bucket (just over 12); 36 ->
-    third bucket (right edge of 36 inclusive); 121 -> last bucket
-    (strictly >120). Source column is calc_seasoning in years."""
+    """Lower edge exclusive, upper edge inclusive (closed="right");
+    the first bucket includes 0. Test values straddle every break
+    boundary: 12 -> first bucket (right edge of 12 inclusive); 13 ->
+    second bucket (just over 12); 36 -> third bucket (right edge of
+    36 inclusive); 121 -> last bucket (strictly >120). Source column
+    is calc_seasoning in years."""
     df = _frame([
         {"calc_seasoning": 0.0, "current_principal_balance": 10.0},   # -> 0-12
         {"calc_seasoning": 1.0, "current_principal_balance": 10.0},   # 12 mo -> 0-12
-        {"calc_seasoning": 13 / 12, "current_principal_balance": 10.0},  # ~13 mo -> 13-24
-        {"calc_seasoning": 3.0, "current_principal_balance": 10.0},   # 36 mo -> 25-36
-        {"calc_seasoning": 5.0, "current_principal_balance": 10.0},   # 60 mo -> 37-60
-        {"calc_seasoning": 10.0, "current_principal_balance": 10.0},  # 120 mo -> 61-120
+        {"calc_seasoning": 13 / 12, "current_principal_balance": 10.0},  # ~13 mo -> 12-24
+        {"calc_seasoning": 3.0, "current_principal_balance": 10.0},   # 36 mo -> 24-36
+        {"calc_seasoning": 5.0, "current_principal_balance": 10.0},   # 60 mo -> 36-60
+        {"calc_seasoning": 10.0, "current_principal_balance": 10.0},  # 120 mo -> 60-120
         {"calc_seasoning": 121 / 12, "current_principal_balance": 10.0},  # >120 -> 120+
     ])
 
@@ -210,10 +210,10 @@ def test_seasoning_buckets_apply_closed_right_convention() -> None:
 
     by_label = {r.label: r for r in s.rows}
     assert by_label["0-12 months"].count == 2     # 0 mo + 12 mo
-    assert by_label["13-24 months"].count == 1
-    assert by_label["25-36 months"].count == 1
-    assert by_label["37-60 months"].count == 1
-    assert by_label["61-120 months"].count == 1
+    assert by_label["12-24 months"].count == 1
+    assert by_label["24-36 months"].count == 1
+    assert by_label["36-60 months"].count == 1
+    assert by_label["60-120 months"].count == 1
     assert by_label["120+ months"].count == 1
 
 
@@ -424,7 +424,7 @@ def test_occupancy_labels_each_code_faithfully() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase-2 categoricals: amortisation, property type, valuation type, employment
+# Categoricals: amortisation, property type, valuation type, employment
 # ---------------------------------------------------------------------------
 
 
@@ -588,7 +588,7 @@ def test_employment_type_labels_each_code_faithfully() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase-2 bucketed numeric: current interest rate
+# Bucketed numeric: current interest rate
 # ---------------------------------------------------------------------------
 
 
@@ -659,9 +659,9 @@ def test_current_interest_rate_weighted_average_matches_independent_computation(
     assert s.weighted_average == pytest.approx(4.1)
 
 
-def test_phase2_categoricals_have_null_weighted_average() -> None:
-    """WA is meaningful only for the bucketed numerics; the four new
-    Phase-2 categoricals (amortisation, property type, valuation type,
+def test_remaining_categoricals_have_null_weighted_average() -> None:
+    """WA is meaningful only for the bucketed numerics; the other four
+    categoricals (amortisation, property type, valuation type,
     employment) leave it at None."""
     df_amort = _frame(
         [{"amortisation_type": "FRXX", "current_principal_balance": 100.0}]
@@ -690,11 +690,11 @@ def test_phase2_categoricals_have_null_weighted_average() -> None:
 
 
 def test_missing_column_returns_error_in_one_strat_others_succeed() -> None:
-    """The brief specifies: if a stratification can't be computed
-    (e.g. column missing on this particular dataset), the corresponding
-    entry should carry `error: "..."` rather than blow up the whole
-    response. Build a frame with every column except `occupancy_type`
-    and assert that only the occupancy entry has `error` populated."""
+    """If a stratification can't be computed (e.g. column missing on
+    this particular dataset), the corresponding entry carries
+    `error: "..."` rather than blowing up the whole response. Build a
+    frame with every column except `occupancy_type` and assert that
+    only the occupancy entry has `error` populated."""
     df = _frame([{
         "interest_rate_type": "FLIF",
         "amortisation_type": "FRXX",
@@ -747,10 +747,7 @@ def _process_files() -> dict[str, tuple[str, bytes, str]]:
 
 def test_analysis_only_returns_full_shape_against_synthetic_fixture() -> None:
     """POST /api/process with `analysis_only=true` returns a JSON
-    AnalysisResponse with all 11 stratification keys populated (Phase
-    1's six plus the five added in Phase 2 Session 1: amortisation,
-    current interest rate, property type, property valuation type,
-    employment).
+    AnalysisResponse with all 11 stratification keys populated.
 
     Asserts only the shape + invariants derivable from the raw CSV
     (loan_count > 0, summary positive, all 11 keys present, per-row
@@ -873,9 +870,9 @@ def test_analysis_only_response_includes_execution_summary() -> None:
 
 
 def test_analysis_only_with_dry_run_is_400_mutually_exclusive() -> None:
-    """Per the agreed contract: analysis_only=true AND dry_run=true
-    is a user error (400 validation_error) since the two intents are
-    incompatible. The error names both fields so the client can fix it."""
+    """analysis_only=true AND dry_run=true is a user error (400
+    validation_error) since the two intents are incompatible. The error
+    names both fields so the client can fix it."""
     response = client.post(
         "/api/process",
         files=_process_files(),

@@ -1,4 +1,4 @@
-"""Tests for Stage-9 / B-5 compose_milan_pool.
+"""Tests for compose_milan_pool (Stage 9).
 
 Mirrors r_reference/R/milan_mapping.R::map_to_milan() at the assembly
 level. The byte-equality contract against the synthetic fixture is
@@ -14,7 +14,7 @@ pin invariants that survive across changing pipeline outputs:
   - Final null -> "ND" fill: a deliberately-null source cell that the
     field-level helpers don't otherwise substitute reaches the final
     fill and emits "ND".
-  - Column-order mismatch raises (R-repo issue #8 deviation).
+  - Column-order mismatch raises (deviation from R, which warns).
   - _ensure_source_columns warning text matches R verbatim.
 """
 
@@ -129,15 +129,14 @@ def test_compose_milan_pool_final_fill_replaces_remaining_nulls_with_nd() -> Non
 
 
 # ---------------------------------------------------------------------------
-# Column-order raise (R-repo issue #8 deviation)
+# Column-order raise (deviation from R, which warns and continues)
 # ---------------------------------------------------------------------------
 
 
 def test_column_order_validation_raises_with_actionable_message() -> None:
     """If the canonical column list ever drifts from the composer's
     output, ValueError is raised. Mirrors r_reference/R/milan_mapping.R:
-    1066-1080 except R warns and continues; we raise. See R-repo issue
-    tracker entry #8.
+    1076-1086 except R warns and continues; we raise.
 
     Test by monkey-patching MILAN_EXPECTED_OUTPUT_COLS with a deliberately
     wrong list; the raise should surface with a "position N: got X,
