@@ -9,8 +9,8 @@ Pinning strategy: branches exercised by the synthetic fixture are
 pinned against fixture-extracted values. Branches NOT exercised by
 the fixture are tested against the R source contract; those tests
 are explicitly marked "branch not exercised by synthetic fixture" so
-the coverage gap is visible. Layer-2 parity (real_anonymised CI
-nightly) is the broader-coverage backstop.
+the coverage gap is visible. The real-fixture Layer-1 parity test
+(real_anonymised) is the broader-coverage backstop.
 
 Fixture-pinned values:
   Social Programme Type: "6"   (only branch the fixture hits)

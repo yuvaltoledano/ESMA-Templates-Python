@@ -290,11 +290,12 @@ def test_months_in_arrears_null_emits_nd() -> None:
 # would require either re-installing R (forbidden by project
 # architecture) or trusting the helper's own implementation (circular).
 #
-# Edge-case coverage is delegated to Layer-2 parity testing against
-# the real_anonymised fixture (1,127 MILAN rows) in CI nightly. If
-# Layer-2 surfaces drift in _r_as_character_expr, that's a Stage-9
-# followup to widen this helper's coverage; the synthetic-fixture
-# parity flip in B-5 only proves byte-equality for the 5-value space.
+# Edge-case coverage is not covered by the synthetic fixture; the
+# real-fixture Layer-1 parity test (1,127 MILAN rows) is the broader
+# backstop. If it surfaces drift in _r_as_character_expr, that's a
+# Stage-9 followup to widen this helper's coverage; the
+# synthetic-fixture parity flip in B-5 only proves byte-equality for
+# the 5-value space.
 
 
 def _fixture_numeric_cells() -> list[str]:

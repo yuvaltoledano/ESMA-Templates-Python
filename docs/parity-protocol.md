@@ -19,32 +19,15 @@ implemented in `src/esma_milan/parity/diff.py`:
   comparison: each side relabels its groups by sorted-min `calc_loan_id`,
   starting at 1, and only the canonicalised labels are diffed.
 
-## Three layers
-
-### Layer 1 — Static fixture parity (default, no R required)
+## Layer 1 — Static fixture parity (no R required)
 
 The fixtures under `tests/fixtures/synthetic/` and
 `tests/fixtures/real_anonymised/` each include a pre-computed
 `expected_r_output.xlsx`. Layer 1 runs the Python pipeline on the inputs
 and asserts cell equality against this static file.
 
-This is the layer that runs in normal CI and on every developer machine.
+This is the parity contract. It runs in CI and on every developer machine.
 **No R installation required.** Driven by `tests/parity/test_parity_*.py`.
-
-### Layer 2 — Live R execution (CI nightly)
-
-Re-runs the R pipeline against the same inputs from a clean R install via
-`r-lib/actions/setup-r@v2`, then compares both outputs. Catches drift if
-the static `expected_r_output.xlsx` ever goes stale (e.g. submodule pointer
-bumped without fixture regen). Local devs can run this if they happen to
-have R installed, but it is **not required**: Layer 1 is the primary parity
-contract and Layer 2 is a drift-detector.
-
-### Layer 3 — Differential fuzzing (CI nightly + weekly)
-
-Hypothesis-generated random pools, run through both R and Python, diffed.
-Catches edge cases the curated fixtures miss. Requires a live R install
-(CI only). Same setup as Layer 2.
 
 ## Cell-by-cell diff protocol
 

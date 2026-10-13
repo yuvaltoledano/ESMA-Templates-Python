@@ -392,8 +392,9 @@ def test_effective_borrowers_iterates_squared_shares_in_descending_order() -> No
 
     The synthetic fixture's 6-borrower value range is too small to expose
     a single-ULP difference in ascending vs descending sum; this test pins
-    the contract via the docstring + the synthetic value, but Layer-2
-    parity (real_anonymised) is the gate that would actually surface drift.
+    the contract via the docstring + the synthetic value, but the
+    real-fixture Layer-1 parity test (real_anonymised) is the gate that
+    would actually surface drift.
     """
     bids, balances, total_cb = _synthetic_borrower_inputs()
     out = _effective_borrowers(bids, balances, total_cb)
