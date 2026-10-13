@@ -400,12 +400,8 @@ def compose_execution_summary(
     total_pari_passu = float(m_pari_passu.sum() or 0.0)
 
     # Counts. R uses dplyr::n_distinct on non-null non-ND values.
-    # "Number Of Complete Loans" is the number of distinct main-property
-    # identifiers in the MILAN pool, i.e. loan parts secured on the same
-    # main property count as one complete loan. That is the convention
-    # of the Dutch RMBS pools the R reference was built for (a loan is
-    # split into "leningdelen"); treat it as a known jurisdiction
-    # assumption rather than a general definition.
+    # "Number Of Complete Loans" is the number of distinct non-ND
+    # "Property Identifier" values in the MILAN pool (r_reference/R/pipeline.R:659).
     nr_unique_borrowers = (
         loans_enriched.filter(pl.col("calc_borrower_id").is_not_null())[
             "calc_borrower_id"

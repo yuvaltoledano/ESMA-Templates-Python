@@ -95,8 +95,8 @@ exactly as they appear in the workbook.
 | 400 | `invalid_content_type` | an upload's Content-Type is not in the allowlist |
 | 400 | `invalid_deal_name` | `deal_name` empty, over 100 chars, or has a disallowed character |
 | 400 | `invalid_csv` | the pipeline rejected the data (unparseable CSV, missing or duplicate columns, missing `pool_cutoff_date`, …); `details.reason` holds the first line of the pipeline error |
-| 400 | `validation_error` | `analysis_only` and `dry_run` both true, or an unknown `aggregation` value |
-| 422 | `validation_error` | a field is present but malformed (e.g. `min_coverage` out of range) |
+| 400 | `validation_error` | `analysis_only` and `dry_run` both true |
+| 422 | `validation_error` | a field is present but malformed (e.g. `min_coverage` out of range, or an unknown `aggregation` value) |
 | 413 | `file_too_large` | a single upload exceeds 50 MiB |
 | 413 | `size_limit_exceeded` | the loans CSV has more than ~30,000 data rows (counted by newlines before parsing) |
 | 429 | `rate_limit_exceeded` | per-IP rate limit tripped |

@@ -527,7 +527,7 @@ def apply_derived_fields(flattened: pl.DataFrame) -> pl.DataFrame:
                                         case the synthetic fixture
                                         doesn't exercise; pinned by a
                                         unit test)
-      - explicit zero denominator   -> denom-gate fails -> LTV = NaN
+      - explicit zero denominator   -> denom-gate fails -> LTV = null
                                         (different code path, same
                                         result; pinned separately)
 
