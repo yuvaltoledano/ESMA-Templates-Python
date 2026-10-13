@@ -41,7 +41,7 @@ def test_parses_yyyy_slash_mm_slash_dd_strings() -> None:
 def test_parses_excel_serials_from_user_sample() -> None:
     """Mirrors 'parse_iso_or_excel_date parses Excel serials from the user's sample'.
 
-    NOTE - R-test discrepancy flagged per project brief §10:
+    NOTE - R-test discrepancy (flagged for the R reference's owner):
     The R test's comment claims 42642 = 2016-10-01 and 43264 = 2018-06-15,
     but R's actual `as.Date(numeric, origin="1899-12-30")` math (which is
     `as.Date("1899-12-30") + n`, i.e. proleptic Gregorian addition)

@@ -1,5 +1,5 @@
 """Stage 6: detect_aggregation_method (by_loan vs by_group).
-Stage 7 (B-2): calculate_unique_property_values.
+Stage 7 helper: calculate_unique_property_values.
 
 Stage 6 mirrors r_reference/R/utils.R::detect_aggregation_method and
 auto-detects whether multi-loan groups in the input pool follow the
@@ -8,15 +8,15 @@ loan row) or the "by_group" convention (property value pre-split
 pro-rata across loans). Used by Stage 7 to know which aggregation rule
 to apply when collapsing properties into one row per loan.
 
-Stage 7 B-2 mirrors `calculate_unique_property_values()` in
+`calculate_unique_property_values` mirrors the function of the same name in
 r_reference/R/property_flattening_function.R:9-54 and reduces a
 properties frame to one row per (collateral_group_id, calc_property_id)
 with a single `property_value`, applying the chosen reduction rule.
 
 The Stage-1/Stage-2 valuation selection is shared between detection
 (amount-only) and flattening (full method/date/amount), and lives in
-this module too: `select_valuation_amount` (B-1 / Stage 6) and
-`select_valuation_fields` (B-1 / Stage 7).
+this module too: `select_valuation_amount` (Stage 6) and
+`select_valuation_fields` (Stage 7).
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ def run_stage6(
 
 
 # ---------------------------------------------------------------------------
-# Stage 7 B-2: calculate_unique_property_values
+# Stage 7 helper: calculate_unique_property_values
 # ---------------------------------------------------------------------------
 
 

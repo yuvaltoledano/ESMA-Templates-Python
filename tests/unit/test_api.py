@@ -3,12 +3,9 @@
 These exercise the response *contract* - the status codes, headers, and
 body shapes the API promises clients - through FastAPI's `TestClient`,
 so no server process is needed. Pipeline internals are covered by the
-stage and parity tests; here the focus is the HTTP seam.
-
-Commit 1 (baseline) locks the Day 1 surface: the health check, the
-workbook and dry-run success paths, and the known 4xx failure modes.
-Commit 2 (hardening) adds rate limiting, error-shape consistency, and
-input-validation tests on top.
+stage and parity tests; here the focus is the HTTP seam: the health
+check, the workbook and dry-run success paths, the known 4xx failure
+modes, rate limiting, error-shape consistency and input validation.
 """
 
 from __future__ import annotations
@@ -86,7 +83,7 @@ def _reset_rate_limiter() -> None:
     limiter.reset()
 
 
-# --- Day 1 regression lock (PR #16) --------------------------------------
+# --- Regression lock (PR #16) --------------------------------------------
 
 
 def test_dry_run_group_count_matches_stage4_n_groups() -> None:
@@ -141,7 +138,7 @@ def test_dry_run_group_count_matches_stage4_n_groups() -> None:
     assert body["group_count"] != stage4.collateral_groups.height
 
 
-# --- Commit 1: baseline - health + success paths -------------------------
+# --- Health + success paths ----------------------------------------------
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -201,7 +198,7 @@ def test_process_dry_run_returns_json() -> None:
     }
 
 
-# --- Commit 1: baseline - known 4xx failure modes ------------------------
+# --- Known 4xx failure modes ---------------------------------------------
 
 
 def test_process_missing_loans_field_returns_400() -> None:
@@ -285,7 +282,7 @@ def test_process_malformed_csv_returns_400_not_500() -> None:
     assert isinstance(body["message"], str) and body["message"]
 
 
-# --- Commit 1: baseline - optional-argument pass-through -----------------
+# --- Optional-argument pass-through --------------------------------------
 
 
 def test_process_filename_in_content_disposition_uses_cutoff_date() -> None:
@@ -358,7 +355,7 @@ def test_process_with_aggregation_override() -> None:
     assert response.json()["chosen_aggregation"] == "by_loan"
 
 
-# --- Commit 2: hardening - rate limiting ---------------------------------
+# --- Rate limiting -------------------------------------------------------
 
 
 def test_process_rate_limit_returns_429_on_11th_request() -> None:
@@ -384,7 +381,7 @@ def test_process_rate_limit_returns_429_on_11th_request() -> None:
     assert isinstance(body["message"], str) and body["message"]
 
 
-# --- Commit 2: hardening - error-response consistency --------------------
+# --- Error-response consistency ------------------------------------------
 
 
 def test_validation_error_returns_consistent_error_response() -> None:
@@ -438,7 +435,7 @@ def test_internal_error_does_not_leak_stack_trace(
         assert token not in response.text, f"leaked {token!r} to the client"
 
 
-# --- Commit 2: hardening - input validation ------------------------------
+# --- Input validation ----------------------------------------------------
 
 
 def test_process_file_too_large_returns_413() -> None:

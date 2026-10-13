@@ -71,12 +71,13 @@ class Stratification:
     weighted_average: float | None = None
     """Pool-level balance-weighted mean of the source column, computed
     on raw loan-level values (not bucket midpoints, which would
-    introduce approximation error). Populated only for bucketed
-    numeric stratifications (seasoning, current_ltv) where a single
-    pool-level WA has a meaningful interpretation. None for
-    categoricals (IR type, loan purpose, occupancy) and for the
+    introduce approximation error). Populated only for the bucketed
+    numeric stratifications (seasoning, current_ltv,
+    current_interest_rate) where a single pool-level WA has a
+    meaningful interpretation. None for every categorical and for the
     geographic stratification. Units match the source column: months
-    for seasoning, decimal for LTV (0.673 not 67.3)."""
+    for seasoning, decimal for LTV (0.673 not 67.3), percent units for
+    the interest rate (2.5 means 2.5%)."""
 
 
 @dataclass(frozen=True)

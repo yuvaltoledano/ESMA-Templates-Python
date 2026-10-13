@@ -1,13 +1,13 @@
-"""Stage 7 / B-5 integration test: end-to-end "Combined flattened pool" output.
+"""Stage 7 integration test: end-to-end "Combined flattened pool" output.
 
 Pins the Sheet 9 contract against the staged synthetic fixture:
 - 85-col output with byte-equal column order
 - LTV / seasoning values for ORIG_001 anchored against the R fixture
 - Group-level LTV consistency (all loans in a group share the same value)
 - final_valuation_method / final_valuation_date propagation through the
-  orchestrator (asymmetric Stage-1/Stage-2 flip case verified by B-4 unit
-  tests; this integration check confirms the synthetic pool's main
-  properties carry through correctly)
+  orchestrator (the asymmetric Stage-1/Stage-2 flip case is verified by
+  the unit tests in test_flatten.py; this integration check confirms the
+  synthetic pool's main properties carry through correctly)
 """
 
 from __future__ import annotations

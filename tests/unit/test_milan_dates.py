@@ -1,6 +1,6 @@
-"""Tests for Stage-9 / B-3 MILAN date derivations.
+"""Tests for the MILAN date derivations (Stage 9).
 
-Mirrors r_reference/R/milan_mapping.R:556-597 (date pre-compute) and
+Mirrors r_reference/R/milan_mapping.R:553-578 (date pre-compute) and
 :704-727 (Months Current + Months In Arrears case_when / if_else).
 
 Pinning strategy: all R-emitted output strings are taken from the
@@ -291,11 +291,10 @@ def test_months_in_arrears_null_emits_nd() -> None:
 # architecture) or trusting the helper's own implementation (circular).
 #
 # Edge-case coverage is not covered by the synthetic fixture; the
-# real-fixture Layer-1 parity test (1,127 MILAN rows) is the broader
-# backstop. If it surfaces drift in _r_as_character_expr, that's a
-# Stage-9 followup to widen this helper's coverage; the
-# synthetic-fixture parity flip in B-5 only proves byte-equality for
-# the 5-value space.
+# real-fixture Layer-1 parity test (1,126 MILAN rows) is the broader
+# backstop (see the per-column tolerance in test_parity_real.py for the
+# last-digit drift it did surface). The synthetic-fixture parity test
+# only proves byte-equality for the 5-value space.
 
 
 def _fixture_numeric_cells() -> list[str]:

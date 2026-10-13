@@ -1,10 +1,12 @@
 """Tests for esma_milan.pipeline.flatten.
 
-B-3 covers `select_main_property`: 5-key priority sort with the
-mandatory deliberate-tie fixtures (lex-smallest calc_property_id wins
-when keys 1-4 all tie) plus determinism anchors (reversed property_id
-order; shuffled row order) and NA-sort-key behaviour for each of the
-four primary keys.
+`select_main_property`: 5-key priority sort with the deliberate-tie
+fixtures (lex-smallest calc_property_id wins when keys 1-4 all tie)
+plus determinism anchors (reversed property_id order; shuffled row
+order) and NA-sort-key behaviour for each of the four primary keys.
+Then `flatten_loan_collateral` (structure types 1-5, equal-split
+fallback, pro-rata conservation, final_valuation_* propagation) and
+`apply_derived_fields` (LTVs, seasoning, calc_ rename, column order).
 """
 
 from __future__ import annotations
@@ -184,8 +186,9 @@ def test_lex_tie_break_invariant_to_reversed_property_id_input_order() -> None:
 
 
 def test_lex_tie_break_invariant_to_arbitrary_input_row_shuffle() -> None:
-    """Shuffle input rows in a non-trivial permutation. Mirrors B-2's
-    determinism anchor: the answer must be identical regardless of
+    """Shuffle input rows in a non-trivial permutation. Mirrors the
+    determinism anchor in test_valuation.py: the answer must be identical
+    regardless of
     input row order, since the sort is supposed to be a pure function
     of row content. Catches sort-stability or hidden-ordering leakage
     that the reversed-input test alone would miss."""
@@ -229,8 +232,8 @@ def test_null_property_value_sorts_after_non_null() -> None:
 
 
 def test_null_occupancy_type_sorts_after_fown_and_non_fown() -> None:
-    """Per user direction: occupancy_type == "FOWN" produces null when
-    the input is null, and Polars vs R may sort that null differently
+    """occupancy_type == "FOWN" produces null when the input is null,
+    and Polars vs R may sort that null differently
     under desc(). With nulls_last=True the null sorts AFTER both True
     (FOWN) and False (non-FOWN) values.
 
@@ -361,7 +364,7 @@ def test_output_schema() -> None:
 
 
 # ---------------------------------------------------------------------------
-# B-4: flatten_loan_collateral orchestrator
+# flatten_loan_collateral orchestrator
 # ---------------------------------------------------------------------------
 
 import math  # noqa: E402
@@ -552,7 +555,7 @@ def test_flatten_type2_by_group_aggregation_sum() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Equal-split fallback (and NaN trigger - per user direction)
+# Equal-split fallback (and NaN trigger)
 # ---------------------------------------------------------------------------
 
 
@@ -586,7 +589,7 @@ def test_flatten_equal_split_fires_when_group_total_balance_is_null() -> None:
 
 
 def test_flatten_equal_split_fires_when_group_total_balance_is_nan() -> None:
-    """User-direction test: Polars' is_null() does NOT catch NaN.
+    """NaN trigger: Polars' is_null() does NOT catch NaN.
     R's is.na() catches BOTH. If a CPB column ever contains NaN
     (e.g. produced by upstream division by zero), the equal-split
     trigger needs `is_null() | is_nan()` to fire. Without that, the
@@ -620,7 +623,7 @@ def test_flatten_equal_split_fires_when_group_total_balance_is_nan() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pro-rata conservation invariant (per user direction)
+# Pro-rata conservation invariant
 # ---------------------------------------------------------------------------
 
 
@@ -684,7 +687,7 @@ def test_flatten_pro_rata_conservation_per_group(
 
 
 # ---------------------------------------------------------------------------
-# final_valuation_method/date/amount propagation - the B-4 anchor test
+# final_valuation_method/date/amount propagation - the anchor test
 # ---------------------------------------------------------------------------
 
 
@@ -695,9 +698,10 @@ def test_flatten_propagates_final_valuation_method_date_amount_together_after_st
     amount driving aggregated_property_value - must come from the
     ORIGINAL source on the main-property record.
 
-    This test pins the orchestrator's propagation. B-1 already verified
-    select_valuation_fields' per-row output is coupled (the asymmetric
-    test); B-4 verifies flatten_loan_collateral carries that through to
+    This test pins the orchestrator's propagation. test_valuation.py
+    already verifies select_valuation_fields' per-row output is coupled
+    (the asymmetric test); this verifies flatten_loan_collateral carries
+    that through to
     the main_property_details join AND that the per-loan
     aggregated_property_value is computed from the FLIPPED original
     amount, not the bad current amount.
@@ -842,7 +846,7 @@ def test_flatten_output_carries_expected_columns() -> None:
 
 
 # ---------------------------------------------------------------------------
-# B-5 / Stage 8: apply_derived_fields - LTVs + seasoning + calc_ rename + reorder
+# Stage 8: apply_derived_fields - LTVs + seasoning + calc_ rename + reorder
 # ---------------------------------------------------------------------------
 
 
@@ -930,7 +934,7 @@ def test_apply_derived_fields_ltv_multi_loan_group_shared_denominator() -> None:
 
 
 def test_apply_derived_fields_ltv_nan_in_numerator_coalesces_to_zero() -> None:
-    """User-direction asymmetry test: NaN in current_principal_balance
+    """Asymmetry test: NaN in current_principal_balance
     (numerator term) coalesces to 0 inside the sum but does NOT
     collapse the LTV. Other rows in the group still contribute."""
     from esma_milan.pipeline.flatten import apply_derived_fields
@@ -972,7 +976,7 @@ def test_apply_derived_fields_ltv_one_nan_denominator_does_not_collapse() -> Non
 
 
 def test_apply_derived_fields_ltv_all_nan_denominator_collapses_to_null() -> None:
-    """User-direction third-addition boundary: ALL rows in the group
+    """Boundary: ALL rows in the group
     have NaN aggregated_property_value. After fill_nan(0).sum() the
     denominator is 0, the > 0 gate fails, LTV collapses to null.
     Different code path from explicit-zero-denom but same outcome.
@@ -1071,8 +1075,7 @@ def test_apply_derived_fields_seasoning_future_origination_is_negative() -> None
 
     Matches R behaviour - R doesn't warn on future-dated origination
     either. Treated as an analyst-input data quality issue rather than
-    a pipeline error; the issue is logged in the R-repo tracker for
-    upstream review, not blocking. The absence of a warning here is
+    a pipeline error. The absence of a warning here is
     INTENTIONAL, not an oversight - if a future contributor adds a
     validation here, this test should fail loudly to prompt them to
     re-read the parity contract before changing behaviour.

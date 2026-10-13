@@ -1,19 +1,17 @@
-"""MILAN template mapping: 175 fields, in canonical Master Mapping order.
+"""Stage 9: MILAN template mapping, 175 fields in canonical Master Mapping order.
 
-Mirrors r_reference/R/milan_mapping.R. Stage 9 lands the field mapping
-incrementally:
+Mirrors r_reference/R/milan_mapping.R::map_to_milan(). The module is laid
+out in the order the mapping runs:
 
-    B-1: helpers + code-map constants                    (this commit)
-    B-2: per-property ranking + cumulative-sum CB fields
-    B-3: date-based derivations (Months Current, ...)
-    B-4: INFER + remaining CALC fields
-    B-5: assembly + runner wire-in + parity flip
+    code-map constants and Polars-expression helpers
+    per-property ranking + cumulative-sum CB fields
+    date-based derivations (Months Current, Months In Arrears, ...)
+    INFER / CALC field helpers (Borrower Type, Total Income, ...)
+    `compose_milan_pool`: the 175-column assembly
 
-The Python port matches R behaviour except for two documented fail-loud
-divergences (R-repo issue tracker entries #6 and #8): silent failure
-modes that R hides behind tryCatch / warning are surfaced here as
-exceptions. Each divergence is annotated with a one-line comment at the
-relevant site referencing the tracker entry.
+The Python port matches R behaviour except for one documented fail-loud
+divergence: where R only warns on a column-layout mismatch and continues,
+`compose_milan_pool` raises. The divergence is annotated at the site.
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from collections.abc import Sequence
 
 import polars as pl
 
+from esma_milan.config import AVERAGE_DAYS_PER_MONTH
 from esma_milan.nd import is_nd_expr
 
 # Canonical 175-column output order. Copied verbatim from
@@ -144,7 +143,7 @@ assert len(MILAN_EXPECTED_OUTPUT_COLS) == 175, (
 # Code Maps - inline definitions from the Code Maps sheet
 # ---------------------------------------------------------------------------
 #
-# Verbatim copy of MILAN_CODE_MAPS in r_reference/R/milan_mapping.R:109-186.
+# Verbatim copy of MILAN_CODE_MAPS in r_reference/R/milan_mapping.R:110-185.
 # Each map turns an ESMA source code into a MILAN code; codes not in the
 # map fall through to "ND" via _code_map_lookup_expr.
 
@@ -264,7 +263,7 @@ def _safe_as_num_expr(col: pl.Expr) -> pl.Expr:
 def _divide_by_100_expr(col: pl.Expr) -> pl.Expr:
     """ND-passthrough divide-by-100, formatted as character.
 
-    Mirrors r_reference/R/milan_mapping.R:343-346 (`divide_by_100`):
+    Mirrors r_reference/R/milan_mapping.R:341-344 (`divide_by_100`):
 
         val <- safe_as_num(x)
         if_else(is.na(val), "ND", as.character(val / 100))
@@ -356,14 +355,14 @@ def _ensure_source_columns(df: pl.DataFrame, expected: Sequence[str]) -> pl.Data
 
 
 # ---------------------------------------------------------------------------
-# Stage 9 / B-2: per-property ranking + cumulative-sum CB fields
+# Per-property ranking + cumulative-sum CB fields
 # ---------------------------------------------------------------------------
 
 
 def _attach_ranking(df: pl.DataFrame) -> pl.DataFrame:
     """Add `_ppb_num` and `_milan_ranking` (dense_rank within property).
 
-    Mirrors r_reference/R/milan_mapping.R:478-494:
+    Mirrors r_reference/R/milan_mapping.R:472-493:
 
         .ppb_numeric = if_else(is_nd(prior_principal_balances), 0, as.numeric(...))
         .milan_ranking = dense_rank(.ppb_numeric)   # within calc_main_property_id
@@ -394,7 +393,7 @@ def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
     """Add `_cpb_num`, `_ppue_num`, `_cpb_sum_at_rank`, `_cpb_cumsum_below`,
     `_milan_ext_prior_ranks_cb`, `_milan_pari_passu_not_in_pool`.
 
-    Mirrors r_reference/R/milan_mapping.R:498-555. The R recipe:
+    Mirrors r_reference/R/milan_mapping.R:494-546. The R recipe:
 
       1. Coerce CPB and PPUE to numeric, ND -> 0.
       2. Per-(property, rank) sum of CPB (".cpb_sum_at_rank").
@@ -406,12 +405,12 @@ def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
          - .milan_ext_prior_ranks_cb = max(0, ppb - cumsum_below)
          - .milan_pari_passu_not_in_pool = max(0, ppue - sum_at_rank)
 
-    Asymmetric defaults documented as R-repo issue tracker entry #9
-    (probably-intentional Moody's MILAN spec quirk): External Prior
-    displays "ND" on ND ppb input while Pari Passu displays "0" on ND
-    ppue input. Both float values are 0 in those cases (since ND
-    collapses to 0 before subtraction); the asymmetry lives entirely in
-    the B-5 transmute, not here.
+    Asymmetric defaults (a probably-intentional Moody's MILAN spec quirk
+    preserved from R): External Prior displays "ND" on ND ppb input
+    while Pari Passu displays "0" on ND ppue input. Both float values
+    are 0 in those cases (since ND collapses to 0 before subtraction);
+    the asymmetry lives entirely in the final transmute in
+    `compose_milan_pool`, not here.
     """
     df = df.with_columns(
         _cpb_num=pl.when(is_nd_expr(pl.col("current_principal_balance")))
@@ -468,7 +467,7 @@ def _attach_external_prior_and_pari_passu(df: pl.DataFrame) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 9 / B-3: date derivations
+# Date derivations
 # ---------------------------------------------------------------------------
 
 
@@ -515,7 +514,7 @@ def _parse_date_safe_expr(col: pl.Expr) -> pl.Expr:
 def _attach_date_derivations(df: pl.DataFrame) -> pl.DataFrame:
     """Add the staging columns the date-flavoured MILAN fields depend on.
 
-    Mirrors r_reference/R/milan_mapping.R:556-597. Computes:
+    Mirrors r_reference/R/milan_mapping.R:553-578. Computes:
 
       _pool_cutoff_safe          - Date (parsed pool_cutoff_date)
       _date_last_in_arrears_safe - Date (parsed date_last_in_arrears)
@@ -552,7 +551,7 @@ def _attach_date_derivations(df: pl.DataFrame) -> pl.DataFrame:
     months_since_float = (
         (pl.col("_pool_cutoff_safe") - pl.col("_date_last_in_arrears_safe"))
         .dt.total_days()
-        / 30.4375
+        / AVERAGE_DAYS_PER_MONTH
     )
 
     return df.with_columns(
@@ -609,12 +608,12 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
     return (
         pl.when(days_in_arrears_num.is_null())
         .then(pl.lit("ND"))
-        .otherwise(_r_as_character_expr(days_in_arrears_num / 30.4375))
+        .otherwise(_r_as_character_expr(days_in_arrears_num / AVERAGE_DAYS_PER_MONTH))
     )
 
 
 # ---------------------------------------------------------------------------
-# Stage 9 / B-4: INFER + remaining CALC field helpers
+# INFER + remaining CALC field helpers
 # ---------------------------------------------------------------------------
 #
 # Pinning strategy: for each helper, branches exercised by the synthetic
@@ -622,10 +621,10 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
 # exercised by the fixture are tested against the R source contract
 # (regex / case_when / equality) with an explicit "branch not exercised
 # by synthetic fixture" comment in the test. Real-fixture Layer-1
-# parity in CI will catch any branch-level drift.
+# parity in CI catches any branch-level drift.
 #
-# Audit note (R-repo issue tracker entry #10, Stage 9.5): every helper
-# below calls `col.cast(pl.Utf8, strict=False)` defensively at entry,
+# Audit note: every helper below calls `col.cast(pl.Utf8, strict=False)`
+# defensively at entry,
 # under the assumption that callers feed already-categorical inputs
 # (post `_r_char_coerce_all`). If a future stage feeds a Float column,
 # the cast emits 17-sig-digit strings (e.g. "1.0" for what R would
@@ -806,12 +805,12 @@ def _milan_flexible_loan_amount_expr(
 
 
 # ---------------------------------------------------------------------------
-# Stage 9 / B-5: composer (assembly of the 175-column MILAN frame)
+# Composer (assembly of the 175-column MILAN frame)
 # ---------------------------------------------------------------------------
 
 
 # Source columns expected by the MILAN mapping. Verbatim port of
-# r_reference/R/milan_mapping.R:401-457. Ordered to match R for log-grep
+# r_reference/R/milan_mapping.R:402-458. Ordered to match R for log-grep
 # parity on _ensure_source_columns warning text.
 EXPECTED_SOURCE_COLS: tuple[str, ...] = (
     "originator_name",
@@ -874,7 +873,7 @@ EXPECTED_SOURCE_COLS: tuple[str, ...] = (
 def _r_char_coerce_all(df: pl.DataFrame) -> pl.DataFrame:
     """Coerce every column to Utf8 with R-equivalent formatting.
 
-    Mirrors r_reference/R/milan_mapping.R:472:
+    Mirrors r_reference/R/milan_mapping.R:470:
         df |> mutate(across(everything(), as.character))
 
     Polars' default casts diverge from R's as.character() in two ways:
@@ -885,8 +884,8 @@ def _r_char_coerce_all(df: pl.DataFrame) -> pl.DataFrame:
     Both are normalised here. Date / Int / other types use the default
     cast, which matches R for those types.
 
-    Audit note (R-repo issue tracker entry #10, Stage 9.5): the
-    fallback `else` branch handles Int (default cast emits "1", "123"
+    Audit note: the fallback `else` branch handles Int (default cast
+    emits "1", "123"
     - matches R's as.character(<integer>)) and Date (default cast
     emits "yyyy-mm-dd" - matches R's as.character(<Date>)). It would
     NOT match R for Datetime/POSIXct columns (Polars emits
@@ -925,11 +924,11 @@ def compose_milan_pool(df: pl.DataFrame) -> pl.DataFrame:
     Pipeline:
       1. _ensure_source_columns (warn-and-fill missing as "ND").
       2. _r_char_coerce_all (Float -> %.15g; Date -> "yyyy-mm-dd"; etc.).
-      3. _attach_ranking + _attach_external_prior_and_pari_passu (B-2).
-      4. _attach_date_derivations (B-3).
+      3. _attach_ranking + _attach_external_prior_and_pari_passu.
+      4. _attach_date_derivations.
       5. 175-column transmute via select(...).
-      6. Column-order validation: raises on mismatch (R-repo issue #8
-         deviation - R warns and continues).
+      6. Column-order validation: raises on mismatch (deviation from R,
+         which warns and continues).
       7. Final null -> "ND" fill across every column.
 
     Output is an all-Utf8 frame with exactly 175 columns in the order
@@ -973,7 +972,7 @@ def compose_milan_pool(df: pl.DataFrame) -> pl.DataFrame:
         ).alias("Interest Payment Frequency"),
         _code_map_lookup_expr(pl.col("amortisation_type"), cm["principal_payment_type"]).alias("Principal Payment Type"),
         pl.col("payment_due").alias("Periodic Payment"),
-        # --- 17-21: ranking + prior-rank fields (B-2) ---
+        # --- 17-21: ranking + prior-rank fields ---
         pl.col("_milan_ranking").cast(pl.Utf8).alias("Ranking"),
         pl.col("prior_principal_balances").alias("Total Prior Ranks CB"),
         pl.lit("ND").alias("Total Prior Ranks OB"),
@@ -985,7 +984,7 @@ def compose_milan_pool(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit("ND"))
         .otherwise(_r_as_character_expr(pl.col("_milan_ext_prior_ranks_cb")))
         .alias("External Prior Ranks CB"),
-        # Pari Passu (Not In Pool): R-repo entry #9 - asymmetric default
+        # Pari Passu (Not In Pool): asymmetric default preserved from R
         # ("0" string when input is ND vs "ND" for External Prior). Float
         # value is 0 in both cases; the asymmetry lives entirely here.
         pl.when(is_nd_expr(pl.col("pari_passu_underlying_exposures")))
@@ -1172,9 +1171,9 @@ def compose_milan_pool(df: pl.DataFrame) -> pl.DataFrame:
         )],
     )
 
-    # Column-order validation. Deviates from R: r_reference/R/milan_mapping.R:1066-1080
-    # warns and continues on column-layout mismatch. We raise — see R-repo
-    # issue tracker entry #8.
+    # Column-order validation. Deviates from R: r_reference/R/milan_mapping.R:1076-1086
+    # warns and continues on a column-layout mismatch; we raise, since a
+    # mis-shaped MILAN sheet is never a usable output.
     if list(milan.columns) != list(MILAN_EXPECTED_OUTPUT_COLS):
         actual = list(milan.columns)
         expected = list(MILAN_EXPECTED_OUTPUT_COLS)

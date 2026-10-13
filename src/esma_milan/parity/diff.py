@@ -1,7 +1,7 @@
 """Cell-by-cell workbook diff.
 
 Compares two .xlsx files produced by the ESMA -> MILAN pipeline. Tolerances
-mirror §6.2 of the project brief:
+(see docs/parity-protocol.md):
   * Numeric: 1e-9 absolute, 1e-12 relative.
   * String: byte-equal (no normalisation other than openpyxl's own).
   * Date: ISO-string-equal in MILAN sheet, Excel-serial-equal elsewhere.
@@ -18,8 +18,8 @@ Group-id canonicalisation has two layers:
      VALUES on cell comparison so R and Python's different integer
      labels for the same partition compare equal.
 
-  2. Cross-sheet WorkbookContext (this stage's addition): for sheets
-     whose own rows do not carry a row-unique identifier (notably
+  2. Cross-sheet WorkbookContext: for sheets whose own rows do not
+     carry a row-unique identifier (notably
      "Group classifications", which is one row per group with no
      loan/property column), the diff builds a context from the
      "Cleaned ESMA loans" sheet's (calc_loan_id, collateral_group_id)
@@ -30,13 +30,11 @@ Group-id canonicalisation has two layers:
            order regardless of which integer labels each side picked.
 
   The cross-sheet alignment only fires when BOTH workbooks' contexts
-  are populated. If either side has an empty Cleaned ESMA loans sheet
-  (e.g. a partial pipeline output where Stage 5 has landed but the
-  Cleaned ESMA loans writer hasn't), the alignment is a no-op and the
-  diff falls back to positional row matching. This keeps behaviour
-  predictable while later stages stack up; the unit tests in
-  tests/unit/test_diff.py exercise both branches with constructed
-  fixtures.
+  are populated. If either side has an empty or missing Cleaned ESMA
+  loans sheet (a hand-built or partial workbook), the alignment is a
+  no-op and the diff falls back to positional row matching. The unit
+  tests in tests/unit/test_diff.py exercise both branches with
+  constructed fixtures.
 """
 
 from __future__ import annotations
@@ -93,10 +91,10 @@ SHEETS_NEEDING_CROSS_SHEET_ALIGNMENT: frozenset[str] = frozenset({
     "Group classifications",
 })
 
-# The sheet WorkbookContext is derived from. Single-source for now;
-# extending this to a priority list (e.g. fall back to "Combined
-# flattened pool" if Cleaned ESMA loans is empty) is straightforward
-# but unneeded until the writer for those sheets ships.
+# The sheet WorkbookContext is derived from. Single-source; extending
+# this to a priority list (e.g. fall back to "Combined flattened pool"
+# if Cleaned ESMA loans is empty) is straightforward but has not been
+# needed.
 LOANS_CONTEXT_SHEET: str = "Cleaned ESMA loans"
 LOANS_CONTEXT_LOAN_ID_COLUMN: str = "calc_loan_id"
 LOANS_CONTEXT_GID_COLUMN: str = "collateral_group_id"
@@ -322,8 +320,8 @@ def _diff_sheet(
     # Cross-sheet alignment for sheets whose rows lack a row-unique row
     # identifier of their own (e.g. Group classifications). Fires only
     # when BOTH sides have a populated WorkbookContext - falls back to
-    # positional row matching otherwise so partial pipeline outputs
-    # (Sheet 8 written but Sheet 6 not yet) keep working.
+    # positional row matching otherwise (hand-built or partial workbooks
+    # without a populated Cleaned ESMA loans sheet).
     if (
         sheet_name in SHEETS_NEEDING_CROSS_SHEET_ALIGNMENT
         and actual_ctx.is_populated

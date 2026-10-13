@@ -216,7 +216,7 @@ def test_empty_and_none_treated_as_equal(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sheet-8 cross-sheet alignment via WorkbookContext (Stage 5 addition)
+# Sheet-8 cross-sheet alignment via WorkbookContext
 # ---------------------------------------------------------------------------
 
 
@@ -351,8 +351,8 @@ def test_sheet_8_alignment_does_not_mask_partition_differences(tmp_path: Path) -
 
 def test_sheet_8_alignment_skipped_when_actual_loans_sheet_empty(tmp_path: Path) -> None:
     """If one side has no loans-sheet context, alignment is a no-op and
-    the diff falls back to positional row matching. Pinned so partial
-    pipeline outputs (Sheet 8 written but Sheet 6 not yet) keep working."""
+    the diff falls back to positional row matching. Pinned so hand-built
+    or partial workbooks without a Cleaned ESMA loans sheet still diff."""
     a = tmp_path / "a.xlsx"
     e = tmp_path / "e.xlsx"
     _aligned_workbook(

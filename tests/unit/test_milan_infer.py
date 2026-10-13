@@ -1,4 +1,4 @@
-"""Tests for Stage-9 / B-4 INFER + remaining CALC field helpers.
+"""Tests for the MILAN INFER + CALC field helpers (Stage 9).
 
 Mirrors r_reference/R/milan_mapping.R:670-675 (Flexible Loan Amount),
 :732-739 (Social Programme Type), :751-756 (Borrower Type), :759-763

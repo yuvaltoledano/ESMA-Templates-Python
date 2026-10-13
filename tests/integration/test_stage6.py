@@ -2,7 +2,7 @@
 
 Anchors the expected detected_method ("by_loan") against the source-
 of-truth value in the staged R reference workbook's Execution Summary.
-That cell is written by R's pipeline.R:858 from the same
+That cell is written by R's pipeline.R:859 from the same
 detect_aggregation_method() output we're porting, so reading it here
 makes the assertion's provenance explicit and it'll pick up any future
 fixture regeneration automatically.
@@ -118,7 +118,7 @@ def test_stage6_anchored_against_r_fixture_execution_summary() -> None:
 def test_stage6_explicit_argument_overrides_detection(
     tmp_path: Path,
 ) -> None:
-    """When the user passes `aggregation_method=...` explicitly, the
+    """When the caller passes `aggregation_method=...` explicitly, the
     chosen method follows the argument even if Stage 6's detector would
     have picked a different one. Stage 6 still runs as a sanity check."""
     result = run_pipeline(

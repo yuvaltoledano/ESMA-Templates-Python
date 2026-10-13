@@ -1,18 +1,14 @@
 """Layer-1 parity test: Python output vs staged R reference, synthetic pool.
 
-Runs the pipeline once per session and diffs the resulting workbook against
-tests/fixtures/synthetic/expected_r_output.xlsx, sheet by sheet.
-
-While stages are still being ported, every sheet that has not yet been
-implemented is xfailed via the SHEET_STATUS table below. As stages land we
-flip entries from "pending" to "passing"; CI-level parity is the union of
-all sheets being "passing".
+Runs the pipeline once per module and diffs the resulting workbook against
+tests/fixtures/synthetic/expected_r_output.xlsx, sheet by sheet. Every one
+of the ten sheets must match cell-for-cell (see docs/parity-protocol.md
+for the tolerance and group-id canonicalisation rules).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
@@ -21,24 +17,6 @@ from esma_milan.parity import diff_workbooks, format_report
 from esma_milan.runner import run_pipeline
 
 from .conftest import ParityFixture
-
-SheetStatus = Literal["pending", "passing"]
-
-# As stages port over, flip a sheet's status from "pending" -> "passing".
-# A "pending" sheet is xfailed (we expect a diff against the no-op stub);
-# a "passing" sheet must match cell-for-cell or the test fails.
-SHEET_STATUS: dict[str, SheetStatus] = {
-    "Execution Summary": "passing",  # Stage 10 / C-2
-    "Loans to properties": "passing",  # Stage 8.5
-    "Properties to loans": "passing",  # Stage 8.5
-    "Borrowers to loans": "passing",  # Stage 8.5
-    "Borrowers to properties": "passing",  # Stage 8.5
-    "Cleaned ESMA loans": "passing",  # Stage 6.5
-    "Cleaned ESMA properties": "passing",  # Stage 6.5
-    "Group classifications": "passing",  # Stage 5
-    "Combined flattened pool": "passing",  # Stage 7 / B-5
-    "MILAN template pool": "passing",  # Stage 9 / B-5
-}
 
 
 @pytest.fixture(scope="module")
@@ -67,16 +45,6 @@ def test_synthetic_sheet_parity(
     report = diff_workbooks(synthetic_run_output, synthetic_fixture.expected_output)
     sheet_diff = next((s for s in report.sheet_diffs if s.sheet == sheet_name), None)
     assert sheet_diff is not None, f"sheet {sheet_name!r} not present in diff report"
-
-    if SHEET_STATUS[sheet_name] == "pending":
-        if sheet_diff.passed:
-            pytest.fail(
-                f"Sheet {sheet_name!r} is marked 'pending' but parity passes! "
-                "Flip SHEET_STATUS to 'passing' in this file."
-            )
-        pytest.xfail(f"sheet {sheet_name!r} not yet implemented (status=pending)")
-
-    # status == "passing": must match exactly.
     assert sheet_diff.passed, f"\n{format_report(report)}\n"
 
 

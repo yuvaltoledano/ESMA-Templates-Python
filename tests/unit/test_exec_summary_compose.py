@@ -1,4 +1,4 @@
-"""Tests for Stage-10 / C-2 compose_execution_summary.
+"""Tests for compose_execution_summary (Stage 10).
 
 Mirrors r_reference/R/pipeline.R:625-895 at the assembly level.
 Synthetic byte-equal parity is the contract; the tests below pin
@@ -66,7 +66,7 @@ def synthetic_summary_df(tmp_path_factory: pytest.TempPathFactory) -> pl.DataFra
 
 
 # ---------------------------------------------------------------------------
-# Defensive row-count check (pin #5 from the plan)
+# Defensive row-count check
 # ---------------------------------------------------------------------------
 
 
@@ -180,7 +180,7 @@ def test_synthetic_summary_value_pinned(
       - DIRECT (Deal Name, Pool Cut-off Date, Aggregation Method)
       - SUM (External Prior Ranks - tests _milan_as_num ND-handling)
       - SUM (External Equal Ranks - tests _milan_as_num "0"-handling
-            via the asymmetric default; #9 anchor)
+            via the asymmetric MILAN default)
       - COUNT (Number Of Borrowers, Number Of Complete Loans, etc.)
       - top-20 / effective borrowers
       - WA Interest Rate (weighted_mean)

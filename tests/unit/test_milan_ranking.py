@@ -1,9 +1,9 @@
-"""Tests for Stage-9 / B-2 MILAN ranking + cumulative-sum CB fields.
+"""Tests for the MILAN ranking + cumulative-sum CB fields (Stage 9).
 
-Mirrors r_reference/R/milan_mapping.R:478-555. The B-2 helpers compute
+Mirrors r_reference/R/milan_mapping.R:472-546. These helpers compute
 the numeric staging columns; the string-formatted MILAN fields
 (`Ranking`, `External Prior Ranks CB`, `Pari Passu Ranking Loans (Not
-In Pool)`) land in B-5's transmute.
+In Pool)`) are produced by `compose_milan_pool`'s transmute.
 
 Coverage:
   - Three dense_rank tie cases (all-distinct, partial-tie, all-tied).
@@ -30,7 +30,7 @@ from esma_milan.pipeline.milan_map import (
 
 
 def _frame(rows: Sequence[Mapping[str, object]]) -> pl.DataFrame:
-    """Build a Polars frame with the columns B-2 expects, keyed by row dicts."""
+    """Build a Polars frame with the columns the ranking helpers expect."""
     return pl.DataFrame(
         rows,
         schema={
@@ -222,7 +222,7 @@ def test_pari_passu_basic_calc() -> None:
 
 
 def test_pari_passu_nd_input_collapses_to_zero_float() -> None:
-    """ND ppue -> 0 float (asymmetric vs External Prior; B-5 transmutes to "0" string)."""
+    """ND ppue -> 0 float (asymmetric vs External Prior; the transmute emits "0")."""
     out = _full_pipeline([
         {"calc_loan_id": "L1", "calc_main_property_id": "P1",
          "prior_principal_balances": "100", "current_principal_balance": "30",
@@ -265,7 +265,7 @@ def test_single_property_single_loan() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cross-property bleed (the §Risks anchor)
+# Cross-property bleed
 # ---------------------------------------------------------------------------
 
 
