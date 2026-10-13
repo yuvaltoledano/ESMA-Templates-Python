@@ -5,7 +5,7 @@ description = "ESMA -> MILAN pipeline (Python). Bit-for-bit parity with the R re
 requires-python = "==3.12.*"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "ESMA-Templates-Python contributors" }]
+authors = [{ name = "Yuval Toledano" }]
 dependencies = [
   "polars>=1.10,<2.0",
   "openpyxl>=3.1,<4.0",

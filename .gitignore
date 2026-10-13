@@ -225,5 +225,11 @@ __marimo__/
 frontend/node_modules/
 frontend/dist/
 
-# Local-only launcher scripts
-scripts/
+# Local-only launcher scripts. Tracked scripts (scripts/run_parity_check.py
+# and any future script) must stay visible, so only these name patterns are
+# ignored; put personal launchers under one of them.
+scripts/local_*
+scripts/*.local.*
+
+# CLI default output root (`esma-milan run --output` defaults to data/clean)
+data/

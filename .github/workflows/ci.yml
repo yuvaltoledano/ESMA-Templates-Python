@@ -24,8 +24,8 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Install project (with dev extras)
-        run: uv sync --extra dev
+      - name: Install project (with dev extras, locked)
+        run: uv sync --frozen --extra dev
 
       - name: Lint (ruff)
         run: uv run ruff check src tests scripts
@@ -38,3 +38,29 @@ jobs:
 
       - name: Parity tests (Layer 1, synthetic + real)
         run: uv run pytest tests/parity -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Build (vite)
+        run: npm run build
