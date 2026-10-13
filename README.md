@@ -60,12 +60,10 @@ tests/
 
 ## Parity protocol
 
-See [docs/parity-protocol.md](docs/parity-protocol.md). Three layers:
+See [docs/parity-protocol.md](docs/parity-protocol.md).
 
-- **Layer 1** (default, no R required): Python output vs staged R
-  expected output. Runs in normal CI and on every dev machine.
-- **Layer 2** (CI nightly): Live R re-execution as drift detector.
-- **Layer 3** (CI nightly + weekly): Hypothesis differential fuzzing.
+- **Layer 1** (no R required): Python output vs staged R expected
+  output. This is the parity contract; it runs in CI and locally.
 
 The R reference is the contract. **Never modify `r_reference/`** — if
 something there looks wrong, flag it in writing per §10 of the brief and

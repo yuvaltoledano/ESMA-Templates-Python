@@ -621,8 +621,8 @@ def _compute_months_in_arrears_expr(days_in_arrears_num: pl.Expr) -> pl.Expr:
 # fixture are pinned against fixture-extracted values; branches not
 # exercised by the fixture are tested against the R source contract
 # (regex / case_when / equality) with an explicit "branch not exercised
-# by synthetic fixture" comment in the test. Real-fixture parity in
-# CI nightly will catch any branch-level drift.
+# by synthetic fixture" comment in the test. Real-fixture Layer-1
+# parity in CI will catch any branch-level drift.
 #
 # Audit note (R-repo issue tracker entry #10, Stage 9.5): every helper
 # below calls `col.cast(pl.Utf8, strict=False)` defensively at entry,
