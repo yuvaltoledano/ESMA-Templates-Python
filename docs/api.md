@@ -1,0 +1,120 @@
+# HTTP API
+
+The FastAPI service in `src/esma_milan/api/` is a thin wrapper around
+`runner.run_pipeline`. Start it with `uv run esma-milan-server`
+(uvicorn on `0.0.0.0:8000`, 4 worker processes; host, port and worker
+count are hard-coded). There is no authentication; it is meant to run
+locally behind the Vite dev proxy or a reverse proxy you control.
+
+## Endpoints
+
+### `GET /api/health`
+
+Liveness check. Returns `200 {"status": "ok"}`.
+
+### `POST /api/process`
+
+Multipart form upload. Runs the pipeline on the uploaded files and
+returns one of three bodies depending on the flags.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `loans` | file | yes | ESMA loans CSV. Content-Type `text/csv` or `application/csv`. |
+| `collaterals` | file | yes | ESMA collaterals CSV. Same content types. |
+| `taxonomy` | file | no | Taxonomy XLSX (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`). Defaults to `r_reference/inputs/ESMA template taxonomy.xlsx` relative to the server's working directory; a 500 is returned if that file is absent and none was uploaded. |
+| `deal_name` | string | yes | 1 to 100 characters from `[A-Za-z0-9 ._-]`. Flows into the output filename and the `Content-Disposition` header. |
+| `aggregation` | `auto` \| `by_loan` \| `by_group` | no | Default `auto`. |
+| `min_coverage` | float in [0, 1] | no | Default `0.85` (`config.DEFAULT_MIN_LOAN_ID_COVERAGE`). |
+| `dry_run` | bool | no | Default `false`. Run the pipeline, write no workbook, return counts. |
+| `analysis_only` | bool | no | Default `false`. Run the pipeline, return stratifications + Execution Summary as JSON. Mutually exclusive with `dry_run`. |
+
+## Response shapes
+
+**Workbook download** (default). `200` with the `.xlsx` bytes,
+`Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+and `Content-Disposition: attachment; filename="<cutoff> <deal> Flattened loans and collaterals.xlsx"`.
+The workbook never touches disk on the server.
+
+**Dry run** (`dry_run=true`). `200` JSON:
+
+```json
+{
+  "deal_name": "SYNTHETIC_FIXTURE",
+  "chosen_aggregation": "by_loan",
+  "loan_count": 8,
+  "property_count": 12,
+  "group_count": 5,
+  "warnings": []
+}
+```
+
+`loan_count` is the row count of the combined flattened pool,
+`property_count` the properties surviving Stage 3, `group_count` the
+number of collateral groups. `warnings` carries a note when `auto`
+aggregation detection was ambiguous and fell back to `by_loan`.
+
+**Analysis** (`analysis_only=true`). `200` JSON:
+
+```json
+{
+  "deal_name": "...",
+  "summary": {
+    "loan_count": 8, "property_count": 12, "group_count": 5,
+    "total_current_balance": 1550000.0,
+    "chosen_aggregation": "by_loan", "warnings": []
+  },
+  "stratifications": {
+    "<key>": {
+      "title": "Interest Rate Type",
+      "type": "categorical | bucketed",
+      "chart_type": "pie | bar",
+      "rows": [{"label": "...", "count": 3, "count_pct": 0.375,
+                "balance": 350000.0, "balance_pct": 0.2258}],
+      "total": {"count": 8, "balance": 1550000.0},
+      "error": null, "note": null, "weighted_average": null
+    }
+  },
+  "execution_summary": [{"label": "Deal Name", "value": "..."}]
+}
+```
+
+The eleven stratification keys and their semantics are in
+[analysis.md](analysis.md). `execution_summary` is the Execution Summary
+sheet (38 base rows plus one per structure type), values pre-formatted
+exactly as they appear in the workbook.
+
+**Errors.** Every non-2xx response has the same body:
+
+```json
+{"error": "<code>", "message": "<client-safe summary>", "details": {...} | null}
+```
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `missing_field` | a required upload or form field is absent |
+| 400 | `invalid_content_type` | an upload's Content-Type is not in the allowlist |
+| 400 | `invalid_deal_name` | `deal_name` empty, over 100 chars, or has a disallowed character |
+| 400 | `invalid_csv` | the pipeline rejected the data (unparseable CSV, missing or duplicate columns, missing `pool_cutoff_date`, …); `details.reason` holds the first line of the pipeline error |
+| 400 | `validation_error` | `analysis_only` and `dry_run` both true, or an unknown `aggregation` value |
+| 422 | `validation_error` | a field is present but malformed (e.g. `min_coverage` out of range) |
+| 413 | `file_too_large` | a single upload exceeds 50 MiB |
+| 413 | `size_limit_exceeded` | the loans CSV has more than ~30,000 data rows (counted by newlines before parsing) |
+| 429 | `rate_limit_exceeded` | per-IP rate limit tripped |
+| 500 | `internal_error` | anything unexpected; details stay in the server log |
+
+## Limits
+
+- Per-file upload cap: 50 MiB, checked before the bytes are read.
+- Pool-size guardrail: ~30,000 loan rows for the synchronous endpoint;
+  there is no asynchronous alternative.
+- Rate limits (slowapi, per client IP, in-memory counters per worker
+  process, so the effective ceiling is the configured value times the
+  number of workers): `10/minute` for `/api/process`, `60/minute` for
+  `/api/health`. Override with the environment variables
+  `ESMA_MILAN_RATE_LIMIT_PROCESS` and `ESMA_MILAN_RATE_LIMIT_HEALTH`
+  (slowapi syntax).
+- No `X-Forwarded-For` handling: behind a proxy, the proxy's IP is the
+  rate-limit key.
+
+Uploads are written to a per-request temporary directory that is removed
+before the response is sent; the pipeline's input interface is path-based.
