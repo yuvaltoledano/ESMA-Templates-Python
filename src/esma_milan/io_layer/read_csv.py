@@ -15,8 +15,8 @@ Mirrors `read_and_clean()` in r_reference/R/utils.R:57-126:
   6. Hard-error on an empty file (matches utils.R:115).
   7. Log a structured "successfully read" event (matches utils.R:120).
 
-One mechanism here has no readr equivalent and is a deliberate
-deviation from the R reference:
+Two mechanisms here have no readr equivalent and are deliberate
+deviations from the R reference:
 
 Taxonomy-typed numeric fields
   Polars infers each column's type over the whole file
@@ -32,10 +32,26 @@ Taxonomy-typed numeric fields
   is read correctly, where readr guesses `logical` and nulls every later
   value; (2) a non-numeric value in a numeric field halts the run, where
   readr nulls it with a warning.
+
+Non-UTF-8 input
+  Polars requires valid UTF-8; readr reads any bytes and R repairs text
+  at write time via `sanitize_utf8()` (utils.R:743-790, called from
+  `safe_for_excel()`). Here the file's bytes are checked once: valid
+  UTF-8 goes straight to Polars, unchanged from before. Otherwise the
+  CSV is parsed with the standard-library `csv` module on a lossless
+  Latin-1 decode, every field (header included) is restored to its
+  original bytes and run through `sanitize_utf8.sanitize_utf8_value`
+  - the same per-value cascade R applies - and the repaired rows are
+  re-serialised to an in-memory UTF-8 CSV that Polars reads with the
+  same arguments. Repairing at read time rather than write time gives
+  the same output because every intermediate string operation in the
+  pipeline compares ASCII codes only.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
@@ -44,6 +60,7 @@ import structlog
 
 from esma_milan.config import CSV_NA_TOKENS
 from esma_milan.io_layer.clean_names import clean_name
+from esma_milan.io_layer.sanitize_utf8 import sanitize_utf8_value
 
 log = structlog.get_logger(__name__)
 
@@ -98,7 +115,7 @@ def read_and_clean(
         schema_overrides = {col: pl.String() for col in character_cols}
 
     df = pl.read_csv(
-        file_path,
+        _utf8_source(file_path),
         null_values=list(CSV_NA_TOKENS),
         schema_overrides=schema_overrides,
         infer_schema_length=None,  # whole file; readr samples guess_max=10000
@@ -202,3 +219,56 @@ def _cast_numeric_columns(
         )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Non-UTF-8 input
+# ---------------------------------------------------------------------------
+
+
+def _utf8_source(file_path: Path) -> Path | io.BytesIO:
+    """Return `file_path` unchanged when its bytes are valid UTF-8;
+    otherwise an in-memory UTF-8 CSV with every field repaired."""
+    raw = file_path.read_bytes()
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        return file_path
+    repaired, n_fields = _repair_csv_encoding(raw)
+    log.warning(
+        "csv_encoding_repaired",
+        file=file_path.name,
+        n_fields_repaired=n_fields,
+    )
+    return io.BytesIO(repaired)
+
+
+def _repair_csv_encoding(raw: bytes) -> tuple[bytes, int]:
+    """Re-encode a non-UTF-8 CSV to UTF-8, repairing each field through
+    `sanitize_utf8_value`'s UTF-8 -> Windows-1252 -> Latin-1 -> strip
+    cascade (the per-value behaviour of R's `sanitize_utf8()`).
+
+    Latin-1 maps every byte to one code point, so decoding with it and
+    re-encoding each parsed field recovers the field's original bytes
+    exactly; the CSV structure (',' '"' and line breaks) is ASCII and
+    unaffected. Returns the UTF-8 bytes and the number of fields that
+    needed repair (fields that were already valid UTF-8 pass through).
+    """
+    text = raw.decode("latin-1")
+    out = io.StringIO(newline="")
+    writer = csv.writer(out, lineterminator="\n")
+    n_repaired = 0
+    for row in csv.reader(io.StringIO(text, newline="")):
+        fixed: list[str] = []
+        for field in row:
+            field_bytes = field.encode("latin-1")
+            try:
+                fixed.append(field_bytes.decode("utf-8"))
+            except UnicodeDecodeError:
+                n_repaired += 1
+                repaired = sanitize_utf8_value(field_bytes)
+                fixed.append(repaired if repaired is not None else "")
+        writer.writerow(fixed)
+    return out.getvalue().encode("utf-8"), n_repaired
