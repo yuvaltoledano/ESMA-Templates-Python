@@ -23,8 +23,6 @@ Known gaps (one line each):
   (see `tests/fixtures/README.md`).
 - The deal name is validated only at the API layer; the CLI passes it
   straight into the output path.
-- `io_layer/sanitize_utf8.py` is a tested port of R's UTF-8 sanitiser
-  that is not yet wired into CSV reading.
 
 ## Quickstart
 
@@ -97,7 +95,7 @@ src/esma_milan/
 │   ├── read_csv.py        # CSV read, taxonomy rename, snake_case headers
 │   ├── clean_names.py     # janitor::clean_names port
 │   ├── date_parsing.py    # ISO / Excel-serial date parsing
-│   ├── sanitize_utf8.py   # UTF-8 sanitiser port (not wired in)
+│   ├── sanitize_utf8.py   # UTF-8 sanitiser port (repairs non-UTF-8 CSVs)
 │   └── write_workbook.py  # 10-sheet openpyxl writer (values only)
 ├── pipeline/
 │   ├── stage1.py          # read + clean + date normalisation
