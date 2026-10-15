@@ -138,3 +138,52 @@ def test_run_pipeline_dry_run_skips_workbook_write(tmp_path: Path) -> None:
     assert result.output_path is None
     assert result.stage1 is not None
     assert result.stage1.loans.height == 8
+
+
+# ---------------------------------------------------------------------------
+# Taxonomy-typed numeric fields: the contract that replaces type inference
+# ---------------------------------------------------------------------------
+
+REAL = REPO_ROOT / "tests" / "fixtures" / "real_anonymised"
+
+
+def _numeric_cols(taxonomy_path: Path) -> frozenset[str]:
+    from esma_milan.io_layer.read_taxonomy import (
+        load_taxonomy,
+        load_taxonomy_formats,
+        numeric_field_names,
+    )
+
+    return numeric_field_names(load_taxonomy(taxonomy_path), load_taxonomy_formats(taxonomy_path))
+
+
+@pytest.mark.parametrize(
+    "fixture_dir",
+    [
+        pytest.param(SYNTHETIC, id="synthetic"),
+        pytest.param(
+            REAL,
+            id="real_anonymised",
+            marks=pytest.mark.skipif(
+                not (REAL / "loans.csv").exists(),
+                reason="Real-anonymised fixture not present in this checkout",
+            ),
+        ),
+    ],
+)
+def test_stage1_taxonomy_numeric_columns_are_float64(fixture_dir: Path) -> None:
+    """Every present {MONETARY} / {PERCENTAGE} / {INTEGER-n} column is
+    Float64 after Stage 1 on both fixtures, whatever Polars would have
+    inferred from the data (Int64, Float64, all-null String). This pins
+    the type contract that replaces sample-based inference."""
+    out = run_stage1(
+        loans_path=fixture_dir / "loans.csv",
+        collaterals_path=fixture_dir / "collaterals.csv",
+        taxonomy_path=fixture_dir / "taxonomy.xlsx",
+    )
+    numeric = _numeric_cols(fixture_dir / "taxonomy.xlsx")
+    for df, label in ((out.loans, "loans"), (out.properties, "properties")):
+        present = [c for c in df.columns if c in numeric]
+        assert present, f"{label}: no taxonomy-numeric columns present"
+        wrong = {c: str(df.schema[c]) for c in present if df.schema[c] != pl.Float64}
+        assert not wrong, f"{label}: taxonomy-numeric columns not Float64: {wrong}"

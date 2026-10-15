@@ -113,6 +113,28 @@ LOANS_CHARACTER_COLS: tuple[str, ...] = ("RREL2", "RREL3", "RREL4", "RREL5")
 # r_reference/R/pipeline.R:165
 COLLATERALS_CHARACTER_COLS: tuple[str, ...] = ("RREC2", "RREC3", "RREC4")
 
+# Taxonomy FORMAT values whose fields are read as Float64 (R reads them
+# as double). Everything else keeps whole-file type inference.
+#
+# The ESMA taxonomy's FORMAT column is a per-field schema: {MONETARY},
+# {PERCENTAGE} and {INTEGER-n} fields are numeric by definition, so
+# read_csv.read_and_clean casts every present column with one of these
+# formats to Float64 instead of trusting Polars' type inference. Integer
+# formats are matched by prefix (INTEGER_TAXONOMY_FORMAT_PREFIX) so a
+# future taxonomy with a different bound still matches; they are read as
+# Float64 too, which is R's double, and the MILAN mapping's `%.15g`
+# formatting prints integer-valued floats without a decimal point.
+#
+# Two deliberate deviations from the R reference (readr, guess_max=10000):
+#   1. A numeric field that is ND for its first 10,000 rows is read
+#      correctly; readr guesses `logical` from the sample and nulls every
+#      later value silently.
+#   2. A non-numeric value in a numeric field is a hard error; readr nulls
+#      it with a parsing warning. A silently missing balance or valuation
+#      changes the pool, so the Python port halts instead.
+NUMERIC_TAXONOMY_FORMATS: frozenset[str] = frozenset({"{MONETARY}", "{PERCENTAGE}"})
+INTEGER_TAXONOMY_FORMAT_PREFIX: str = "{INTEGER-"
+
 # Date columns to normalise via parse_iso_or_excel_date on the loans table.
 #
 # Deliberate divergence from r_reference/R/pipeline.R:184-189: R's list is

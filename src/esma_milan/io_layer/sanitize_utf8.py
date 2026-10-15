@@ -18,12 +18,13 @@ Python `str` (already-decoded text) and on raw `bytes` produced by
 upstream readers. For Polars Series, sanitisation runs at the row level
 on the values backing each Utf8 column.
 
-Status: this module is NOT wired into the pipeline. `read_csv.read_and_clean`
-reads CSVs as strict UTF-8 via Polars, so a file with Windows-1252 bytes
-fails at read time rather than reaching the writer. Wiring this helper
-in, together with lossy-UTF-8 CSV reading, is a separate planned task;
-until then the module and its unit tests exist as a tested port of the R
-helper, called from nowhere.
+Where it runs: `read_csv.read_and_clean` applies `sanitize_utf8_value`
+to every field (header included) of a CSV whose bytes are not valid
+UTF-8, before the file reaches Polars. R applies the same cascade at
+write time in `safe_for_excel()`; repairing on input gives the same
+output because the pipeline's intermediate string operations compare
+ASCII codes only. Files that are already valid UTF-8 never touch this
+module.
 """
 
 from __future__ import annotations

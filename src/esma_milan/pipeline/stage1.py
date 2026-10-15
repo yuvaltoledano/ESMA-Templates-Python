@@ -3,9 +3,11 @@
 Composes the I/O-layer helpers into the orchestration described in
 r_reference/R/pipeline.R:130-200:
 
-  1. Load taxonomy.
+  1. Load taxonomy (field names and, for the numeric-field typing that
+     replaces readr's sample inference, field FORMATs).
   2. Read loans + collaterals CSVs with the appropriate character_cols
-     overrides; apply taxonomy rename + clean_names; convert NA tokens.
+     overrides and the taxonomy's numeric fields as Float64; apply
+     taxonomy rename + clean_names; convert NA tokens.
   3. Drop the metadata columns sec_id, unique_identifier, data_cut_off_date.
   4. Drop the loan-side and collateral-side currency-companion columns.
   5. Pre-collapse date_of_restructuring (multi-date cells -> max ISO).
@@ -41,7 +43,11 @@ from esma_milan.io_layer.date_parsing import (
     parse_iso_or_excel_date,
 )
 from esma_milan.io_layer.read_csv import read_and_clean
-from esma_milan.io_layer.read_taxonomy import load_taxonomy
+from esma_milan.io_layer.read_taxonomy import (
+    load_taxonomy,
+    load_taxonomy_formats,
+    numeric_field_names,
+)
 from esma_milan.pipeline.validate import validate_required_columns
 
 log = structlog.get_logger(__name__)
@@ -71,11 +77,20 @@ def run_stage1(
     )
 
     taxonomy = load_taxonomy(taxonomy_path)
+    numeric_cols = numeric_field_names(taxonomy, load_taxonomy_formats(taxonomy_path))
 
     # --- Read both CSVs ---------------------------------------------------
-    loans = read_and_clean(loans_path, taxonomy, character_cols=LOANS_CHARACTER_COLS)
+    loans = read_and_clean(
+        loans_path,
+        taxonomy,
+        character_cols=LOANS_CHARACTER_COLS,
+        numeric_cols=numeric_cols,
+    )
     properties = read_and_clean(
-        collaterals_path, taxonomy, character_cols=COLLATERALS_CHARACTER_COLS
+        collaterals_path,
+        taxonomy,
+        character_cols=COLLATERALS_CHARACTER_COLS,
+        numeric_cols=numeric_cols,
     )
 
     # --- Drop metadata + currency-companion columns -----------------------

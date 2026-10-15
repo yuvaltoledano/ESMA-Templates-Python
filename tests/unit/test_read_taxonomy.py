@@ -10,6 +10,8 @@ Covers:
 - Whitespace-only cells treated as missing.
 - Spot-check of expected mappings (RREL2, RREC9 etc) against the
   staged taxonomy.
+- load_taxonomy_formats() / numeric_field_names(): the FORMAT column
+  read and the derived set of Float64-typed field names.
 """
 
 from __future__ import annotations
@@ -19,7 +21,11 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from esma_milan.io_layer.read_taxonomy import load_taxonomy
+from esma_milan.io_layer.read_taxonomy import (
+    load_taxonomy,
+    load_taxonomy_formats,
+    numeric_field_names,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNTHETIC_TAXONOMY = REPO_ROOT / "tests" / "fixtures" / "synthetic" / "taxonomy.xlsx"
@@ -151,3 +157,78 @@ def test_duplicate_codes_last_one_wins(tmp_path: Path) -> None:
         ],
     )
     assert load_taxonomy(p) == {"RREL1": "Second"}
+
+
+# ---------------------------------------------------------------------------
+# load_taxonomy_formats / numeric_field_names
+# ---------------------------------------------------------------------------
+
+
+def test_loads_synthetic_taxonomy_formats() -> None:
+    formats = load_taxonomy_formats(SYNTHETIC_TAXONOMY)
+    # One of each numeric format, one date, one list - the FORMAT column
+    # is the taxonomy's per-field schema that read_csv types numeric
+    # fields from.
+    assert formats["RREL30"] == "{MONETARY}"
+    assert formats["RREL43"] == "{PERCENTAGE}"
+    assert formats["RREL68"] == "{INTEGER-9999}"
+    assert formats["RREL7"] == "{DATEFORMAT}"
+    assert formats["RREL69"] == "{LIST}"
+    assert set(formats) == set(load_taxonomy(SYNTHETIC_TAXONOMY))
+
+
+def test_missing_format_column_raises(tmp_path: Path) -> None:
+    """A taxonomy without FORMAT cannot type the numeric fields; silently
+    falling back to type inference would reintroduce the sample-inference
+    crash, so this is a hard error naming the column."""
+    p = tmp_path / "tax.xlsx"
+    _make_taxonomy(
+        p,
+        header=["FIELD CODE", "FIELD NAME"],
+        rows=[["RREL30", "Current Principal Balance"]],
+    )
+    assert load_taxonomy(p) == {"RREL30": "Current Principal Balance"}  # still fine
+    with pytest.raises(ValueError, match="FORMAT"):
+        load_taxonomy_formats(p)
+
+
+def test_rows_with_na_format_are_filtered(tmp_path: Path) -> None:
+    p = tmp_path / "tax.xlsx"
+    _make_taxonomy(
+        p,
+        header=["FIELD CODE", "FIELD NAME", "FORMAT"],
+        rows=[
+            ["RREL30", "Current Principal Balance", "{MONETARY}"],
+            ["RREL69", "Account Status", None],  # NA format -> drop
+            [None, "Section header", "{LIST}"],  # NA code -> drop
+        ],
+    )
+    assert load_taxonomy_formats(p) == {"RREL30": "{MONETARY}"}
+
+
+def test_numeric_field_names_selects_monetary_percentage_and_integer() -> None:
+    taxonomy = {
+        "RREL30": "Current Principal Balance",
+        "RREL43": "Current Interest Rate",
+        "RREL68": "Number Of Days In Arrears",
+        "RREL69": "Account Status",
+        "RREL7": "Origination Date",
+        "RREL79": "Original Lender Name",
+        "RREC8": "Lien",
+    }
+    formats = {
+        "RREL30": "{MONETARY}",
+        "RREL43": "{PERCENTAGE}",
+        "RREL68": "{INTEGER-9999}",
+        "RREL69": "{LIST}",
+        "RREL7": "{DATEFORMAT}",
+        "RREL79": "{ALPHANUM-100}",
+        "RREC8": "{INTEGER-99}",  # a different bound still matches by prefix
+        "RREX1": "{MONETARY}",  # format without a name -> no target column
+    }
+    assert numeric_field_names(taxonomy, formats) == frozenset({
+        "current_principal_balance",
+        "current_interest_rate",
+        "number_of_days_in_arrears",
+        "lien",
+    })
