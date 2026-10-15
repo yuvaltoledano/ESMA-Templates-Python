@@ -11,16 +11,29 @@ inside r_reference/R/utils.R:86-89:
 Reads sheet 1 only. Filters rows where either FIELD CODE or FIELD NAME is
 empty/None. Returns a {field_code -> field_name} dict that
 read_csv.read_and_clean() consumes when renaming source columns.
+
+`load_taxonomy_formats()` is a sibling that reads the same sheet and
+returns {field_code -> FORMAT} (e.g. "RREL30" -> "{MONETARY}"). The
+FORMAT column is the taxonomy's per-field schema; `numeric_field_names()`
+derives from it the set of snake_case column names that
+read_csv.read_and_clean() reads as Float64 (see
+config.NUMERIC_TAXONOMY_FORMATS). R has no equivalent: readr guesses
+types from a 10,000-row sample, which is the mechanism this replaces.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import openpyxl
 
+from esma_milan.config import INTEGER_TAXONOMY_FORMAT_PREFIX, NUMERIC_TAXONOMY_FORMATS
+from esma_milan.io_layer.clean_names import clean_name
+
 FIELD_CODE_COLUMN: str = "FIELD CODE"
 FIELD_NAME_COLUMN: str = "FIELD NAME"
+FORMAT_COLUMN: str = "FORMAT"
 
 
 def load_taxonomy(path: Path) -> dict[str, str]:
@@ -30,6 +43,53 @@ def load_taxonomy(path: Path) -> dict[str, str]:
         FileNotFoundError: if `path` does not exist.
         ValueError: if either FIELD CODE or FIELD NAME is missing from sheet 1.
     """
+    return _load_keyed_column(path, FIELD_NAME_COLUMN)
+
+
+def load_taxonomy_formats(path: Path) -> dict[str, str]:
+    """Read an ESMA taxonomy XLSX and return a {field_code: FORMAT} dict.
+
+    Same sheet, filtering and last-one-wins semantics as `load_taxonomy`;
+    rows whose FIELD CODE or FORMAT cell is empty are skipped.
+
+    Raises:
+        FileNotFoundError: if `path` does not exist.
+        ValueError: if either FIELD CODE or FORMAT is missing from sheet 1.
+                    A taxonomy without FORMAT cannot type the numeric
+                    fields, and silently falling back to type inference
+                    would reintroduce the sample-inference failure this
+                    column exists to prevent.
+    """
+    return _load_keyed_column(path, FORMAT_COLUMN)
+
+
+def is_numeric_taxonomy_format(fmt: str) -> bool:
+    """True for FORMAT values read as Float64: {MONETARY}, {PERCENTAGE}, {INTEGER-n}."""
+    return fmt in NUMERIC_TAXONOMY_FORMATS or fmt.startswith(INTEGER_TAXONOMY_FORMAT_PREFIX)
+
+
+def numeric_field_names(
+    taxonomy: Mapping[str, str],
+    formats: Mapping[str, str],
+) -> frozenset[str]:
+    """Snake_case names of every taxonomy field whose FORMAT is numeric.
+
+    Keyed on the post-rename name (`clean_name(FIELD NAME)`), the same
+    transform `read_csv.read_and_clean` applies, so the set matches both
+    ESMA-coded headers (renamed via `taxonomy`) and already-snake_case
+    headers (which the rename leaves untouched). Codes present in
+    `formats` but absent from `taxonomy` have no target name and are
+    skipped.
+    """
+    return frozenset(
+        clean_name(taxonomy[code])
+        for code, fmt in formats.items()
+        if code in taxonomy and is_numeric_taxonomy_format(fmt)
+    )
+
+
+def _load_keyed_column(path: Path, value_column: str) -> dict[str, str]:
+    """Return {FIELD CODE: <value_column>} from sheet 1 of the taxonomy."""
     if not path.exists():
         raise FileNotFoundError(f"Taxonomy file does not exist: {path}")
 
@@ -44,34 +104,32 @@ def load_taxonomy(path: Path) -> dict[str, str]:
             raise ValueError(f"Taxonomy sheet 1 in {path} is empty")
 
         header_strs = [_norm(h) for h in header]
-        try:
-            code_idx = header_strs.index(FIELD_CODE_COLUMN)
-        except ValueError:
-            raise ValueError(
-                f"Taxonomy must contain {FIELD_CODE_COLUMN!r} column. "
-                f"Found columns: {[h for h in header_strs if h]}"
-            ) from None
-        try:
-            name_idx = header_strs.index(FIELD_NAME_COLUMN)
-        except ValueError:
-            raise ValueError(
-                f"Taxonomy must contain {FIELD_NAME_COLUMN!r} column. "
-                f"Found columns: {[h for h in header_strs if h]}"
-            ) from None
+        code_idx = _column_index(header_strs, FIELD_CODE_COLUMN)
+        value_idx = _column_index(header_strs, value_column)
 
         mapping: dict[str, str] = {}
         for row in rows_iter:
             code = _cell(row, code_idx)
-            name = _cell(row, name_idx)
-            if code is None or name is None:
+            value = _cell(row, value_idx)
+            if code is None or value is None:
                 continue
             # Mirror R's deframe(): later entries overwrite earlier ones with
             # the same key. The synthetic taxonomy doesn't exercise this; the
             # behaviour is documented to match R exactly should it ever arise.
-            mapping[code] = name
+            mapping[code] = value
         return mapping
     finally:
         wb.close()
+
+
+def _column_index(header_strs: list[str], column: str) -> int:
+    try:
+        return header_strs.index(column)
+    except ValueError:
+        raise ValueError(
+            f"Taxonomy must contain {column!r} column. "
+            f"Found columns: {[h for h in header_strs if h]}"
+        ) from None
 
 
 def _norm(value: object) -> str:
