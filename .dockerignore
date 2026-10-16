@@ -1,0 +1,26 @@
+# Keep the build context to what the images need (see Dockerfile).
+.git
+.gitmodules
+.github
+.venv
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+data
+docs
+scripts
+tests
+frontend/node_modules
+frontend/dist
+frontend/.vite
+REPO_ASSESSMENT.md
+# The R reference is only needed at run time for the ESMA taxonomy.
+r_reference/**
+!r_reference/inputs/ESMA template taxonomy.xlsx

@@ -84,6 +84,11 @@ Endpoints, form fields and response shapes are documented in
 [docs/analysis.md](docs/analysis.md); the frontend in
 [frontend/README.md](frontend/README.md).
 
+To run the service and frontend on a server, over HTTPS and behind a
+password, follow [docs/deploy.md](docs/deploy.md) (Docker Compose +
+Caddy; the `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` and
+`.env.example` at the repo root are what it uses).
+
 ## Architecture
 
 ```
