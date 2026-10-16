@@ -39,9 +39,10 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # The application, plus the one file from the R reference it needs at
-# run time, at the same relative path as in the repository.
+# run time, at the same relative path as in the repository. JSON form:
+# the path contains a space, and COPY's shell form splits on whitespace.
 COPY src/ ./src/
-COPY "r_reference/inputs/ESMA template taxonomy.xlsx" "./r_reference/inputs/ESMA template taxonomy.xlsx"
+COPY ["r_reference/inputs/ESMA template taxonomy.xlsx", "./r_reference/inputs/ESMA template taxonomy.xlsx"]
 RUN uv sync --frozen --no-dev
 
 # Run as an unprivileged user.
