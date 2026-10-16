@@ -1,16 +1,21 @@
 // ESMA-MILAN GUI: a single-page client for the pipeline API.
 //
 // Two modes share one upload form (loans CSV, collaterals CSV, optional
-// taxonomy XLSX, deal name):
-//   - download: POST /api/process -> .xlsx workbook, saved via a blob
-//     download; the filename comes from Content-Disposition.
-//   - analysis: POST /api/process with analysis_only=true -> JSON
-//     AnalysisResponse ({deal_name, summary, stratifications,
-//     execution_summary}) rendered inline as the Analyze Pool view.
+// taxonomy XLSX, deal name). Both submit a background job:
+//   POST /api/jobs            -> 202 {job_id, status_url, result_url}
+//   GET  /api/jobs/{id}       -> polled every 2 s: queued | running (with a
+//                                stage label) | done | failed
+//   GET  /api/jobs/{id}/result-> download mode: a plain link the browser
+//                                follows (stored credentials apply);
+//                                analysis mode: AnalysisResponse JSON
+//                                rendered inline as the Analyze Pool view
+//   DELETE /api/jobs/{id}     -> "Delete from server" once done or failed
+// The current job id is kept in sessionStorage so a reload resumes polling.
 // Every non-2xx response is the API's ErrorResponse ({error, message,
 // details}); a non-JSON failure is treated as "API unreachable". The
-// footer polls GET /api/health. All requests use relative /api URLs,
-// proxied to localhost:8000 by the Vite dev server (vite.config.js).
+// footer polls GET /api/health, which also reports the per-file upload
+// cap the page warns about. All requests use relative /api URLs, proxied
+// to localhost:8000 by the Vite dev server (vite.config.js).
 // See docs/api.md and docs/analysis.md for the contract.
 import { useCallback, useEffect, useState } from 'react'
 import {
@@ -30,12 +35,57 @@ import {
 // The server stays the source of truth - this is just fast-fail UX.
 const DEAL_NAME_PATTERN = /^[A-Za-z0-9 ._-]{1,100}$/
 
-// Matches the API's per-file transport cap (handlers.py::MAX_UPLOAD_FILE_SIZE).
-// Client-side this only warns - the server enforces it.
-const MAX_FILE_SIZE = 50 * 1024 * 1024
-
 const NETWORK_ERROR_MESSAGE =
   'Cannot reach API at localhost:8000. Is `uv run esma-milan-server` running?'
+
+// Background-job polling. The server's status rate limit (120/minute by
+// default) comfortably covers one poll every 2 s; a short run of failed
+// polls (a proxy hiccup, a redeploy) is tolerated before giving up.
+const JOB_STORAGE_KEY = 'esma-milan-job'
+const POLL_INTERVAL_MS = 2000
+const MAX_POLL_FAILURES = 5
+
+// sessionStorage is per tab and may be unavailable (private mode); every
+// access is guarded so the page works without it.
+function readStoredJob() {
+  try {
+    const raw = sessionStorage.getItem(JOB_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed.id === 'string' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function storeJob(job) {
+  try {
+    if (job) sessionStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(job))
+    else sessionStorage.removeItem(JOB_STORAGE_KEY)
+  } catch {
+    // Storage unavailable: a reload will not resume, nothing else changes.
+  }
+}
+
+function errorFromBody(body) {
+  return {
+    type: 'api',
+    code: body.error,
+    message: body.message || 'The request failed.',
+    details: body.details ?? null,
+  }
+}
+
+function networkError() {
+  return { type: 'network', message: NETWORK_ERROR_MESSAGE }
+}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes} min ${seconds} s` : `${seconds} s`
+}
 
 // Categorical pie-chart palette. Indexed by spec-row position, so the
 // biggest categoricals (interest rate type and loan purpose, 13 ESMA
@@ -48,26 +98,6 @@ const CHART_COLORS = [
   '#475569', '#a16207', '#9f1239', '#4d7c0f',
   '#6d28d9', '#0e7490', '#b91c1c',
 ]
-
-// Pull the download filename out of a Content-Disposition header. The API
-// produces a simple `attachment; filename="<name>"`, so a basic extraction
-// covers it; fall back to a generic name if the header is absent.
-function parseFilename(contentDisposition, fallback) {
-  if (!contentDisposition) return fallback
-  const match = /filename="?([^";]+)"?/.exec(contentDisposition)
-  return match ? match[1] : fallback
-}
-
-function triggerDownload(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
-}
 
 // EUR formatter without decimals - pool balances are large enough that
 // cent-level precision in a stratification table is noise.
@@ -132,17 +162,24 @@ function App() {
   const [taxonomyFile, setTaxonomyFile] = useState(null)
   const [dealName, setDealName] = useState('')
 
-  // 'idle' | 'processing' | 'success' | 'error'
-  const [phase, setPhase] = useState('idle')
-  // The download mode produces { filename }; analysis mode produces the
-  // full AnalysisResponse JSON. One state holder, distinguished by
-  // `mode`, keeps the success-banner / results-section render paths
-  // mutually exclusive without a second state machine.
-  const [result, setResult] = useState(null) // { mode: 'download'|'analysis', ... }
+  // A job started in this tab (or restored from sessionStorage after a
+  // reload): { id, mode: 'download'|'analysis', statusUrl, resultUrl }.
+  const [job, setJob] = useState(() => readStoredJob())
+  // 'idle' | 'uploading' | 'polling' | 'stopped' | 'success' | 'error' | 'deleted'
+  const [phase, setPhase] = useState(() => (readStoredJob() ? 'polling' : 'idle'))
+  // Last GET /api/jobs/{id} body, for the progress panel.
+  const [jobStatus, setJobStatus] = useState(null)
+  const [now, setNow] = useState(() => Date.now())
+  // The download mode produces { filename, url }; analysis mode the full
+  // AnalysisResponse JSON. One state holder, distinguished by `mode`.
+  const [result, setResult] = useState(null)
   const [error, setError] = useState(null) // { type, message, code?, details? }
   const [formError, setFormError] = useState(null) // client-side validation
 
   const [health, setHealth] = useState('unknown')
+  // From GET /api/health: { maxUploadMb, retentionHours }. Null until the
+  // first health response; the page cannot read the server's env itself.
+  const [serverLimits, setServerLimits] = useState(null)
 
   // Poll /api/health on load and every 30s so a server that died
   // unexpectedly is visible without a manual refresh.
@@ -159,6 +196,12 @@ function App() {
         const body = await res.json()
         if (!cancelled) {
           setHealth(body && body.status === 'ok' ? 'healthy' : 'down')
+          if (body && typeof body.max_upload_mb === 'number') {
+            setServerLimits({
+              maxUploadMb: body.max_upload_mb,
+              retentionHours: body.job_retention_hours,
+            })
+          }
         }
       } catch {
         if (!cancelled) setHealth('unknown')
@@ -172,11 +215,92 @@ function App() {
     }
   }, [])
 
+  // Poll the job while the page is watching it. Ends on done/failed, on
+  // "Stop watching", or when the job disappears (404 after expiry/delete).
+  useEffect(() => {
+    if (phase !== 'polling' || !job) return undefined
+    let cancelled = false
+    let failures = 0
+
+    async function finishAnalysis() {
+      const res = await fetch(job.resultUrl)
+      const data = await res.json().catch(() => null)
+      if (cancelled) return
+      if (!res.ok || !data) {
+        setError(data && typeof data.error === 'string' ? errorFromBody(data) : networkError())
+        setPhase('error')
+        return
+      }
+      setResult({ mode: 'analysis', data })
+      setPhase('success')
+    }
+
+    async function tick() {
+      let res
+      try {
+        res = await fetch(job.statusUrl)
+      } catch {
+        failures += 1
+        if (failures >= MAX_POLL_FAILURES && !cancelled) {
+          setError(networkError())
+          setPhase('error')
+        }
+        return
+      }
+      if (cancelled) return
+      failures = 0
+      if (res.status === 429) return // rate limited: skip this tick, keep polling
+      const body = await res.json().catch(() => null)
+      if (cancelled) return
+      if (!res.ok || !body) {
+        if (res.status === 404) storeJob(null)
+        setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
+        setPhase('error')
+        return
+      }
+      setJobStatus(body)
+      setNow(Date.now())
+      if (body.state === 'done') {
+        if (job.mode === 'analysis') {
+          try {
+            await finishAnalysis()
+          } catch {
+            if (!cancelled) {
+              setError(networkError())
+              setPhase('error')
+            }
+          }
+        } else {
+          setResult({
+            mode: 'download',
+            filename: body.result?.filename ?? 'pool.xlsx',
+            url: job.resultUrl,
+          })
+          setPhase('success')
+        }
+      } else if (body.state === 'failed') {
+        setError(
+          body.error && typeof body.error.error === 'string'
+            ? errorFromBody(body.error)
+            : { type: 'api', code: 'internal_error', message: 'The job failed.' },
+        )
+        setPhase('error')
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, POLL_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [phase, job])
+
   // Any change to the form is a fresh attempt - drop stale results/errors.
   const resetStatus = useCallback(() => {
     setFormError(null)
     setError(null)
-    setPhase((p) => (p === 'success' || p === 'error' ? 'idle' : p))
+    setPhase((p) => (['success', 'error', 'stopped', 'deleted'].includes(p) ? 'idle' : p))
     setResult(null)
   }, [])
 
@@ -190,13 +314,16 @@ function App() {
     resetStatus()
   }
 
+  // Warn (the server enforces) when a file exceeds the per-file cap the
+  // server reported; silent until /api/health has answered.
+  const maxUploadBytes = serverLimits ? serverLimits.maxUploadMb * 1024 * 1024 : null
   const oversizedFiles = [
     ['loans', loansFile],
     ['collaterals', collateralsFile],
     ['taxonomy', taxonomyFile],
-  ].filter(([, file]) => file && file.size > MAX_FILE_SIZE)
+  ].filter(([, file]) => file && maxUploadBytes !== null && file.size > maxUploadBytes)
 
-  // Both buttons share validation + the POST; only the response handling
+  // Both buttons share validation + the POST; only the result handling
   // diverges. The intent is signalled by the `mode` argument, which maps
   // directly onto the API's `analysis_only` form field.
   async function submit(mode) {
@@ -219,7 +346,8 @@ function App() {
     setFormError(null)
     setError(null)
     setResult(null)
-    setPhase('processing')
+    setJobStatus(null)
+    setPhase('uploading')
 
     const formData = new FormData()
     formData.append('loans', loansFile)
@@ -229,55 +357,89 @@ function App() {
     if (mode === 'analysis') formData.append('analysis_only', 'true')
 
     try {
-      const response = await fetch('/api/process', {
+      const response = await fetch('/api/jobs', {
         method: 'POST',
         body: formData,
       })
 
+      // Every API failure path returns the ErrorResponse JSON shape. A
+      // non-JSON body means the request never reached the API (e.g. the
+      // dev proxy could not connect) - treat that as a network error.
+      let body = null
+      try {
+        body = await response.json()
+      } catch {
+        body = null
+      }
       if (!response.ok) {
-        // Every API failure path returns the ErrorResponse JSON shape. A
-        // non-JSON body means the request never reached the API (e.g. the
-        // dev proxy could not connect) - treat that as a network error.
-        let body = null
-        try {
-          body = await response.json()
-        } catch {
-          body = null
-        }
-        if (body && typeof body.error === 'string') {
-          setError({
-            type: 'api',
-            code: body.error,
-            message: body.message || 'The request failed.',
-            details: body.details ?? null,
-          })
-        } else {
-          setError({ type: 'network', message: NETWORK_ERROR_MESSAGE })
-        }
+        setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
         setPhase('error')
         return
       }
-
-      if (mode === 'analysis') {
-        const body = await response.json()
-        setResult({ mode: 'analysis', data: body })
-      } else {
-        const blob = await response.blob()
-        const filename = parseFilename(
-          response.headers.get('Content-Disposition'),
-          'pool.xlsx',
-        )
-        triggerDownload(blob, filename)
-        setResult({ mode: 'download', filename })
+      if (!body || typeof body.job_id !== 'string') {
+        setError(networkError())
+        setPhase('error')
+        return
       }
-      setPhase('success')
+      const newJob = {
+        id: body.job_id,
+        mode,
+        statusUrl: body.status_url,
+        resultUrl: body.result_url,
+      }
+      storeJob(newJob)
+      setJob(newJob)
+      setNow(Date.now())
+      setPhase('polling')
     } catch {
-      setError({ type: 'network', message: NETWORK_ERROR_MESSAGE })
+      setError(networkError())
       setPhase('error')
     }
   }
 
-  const busy = phase === 'processing'
+  function stopWatching() {
+    // The job keeps running on the server; the stored id lets a reload
+    // pick it up again.
+    setPhase('stopped')
+  }
+
+  async function deleteFromServer() {
+    if (!job) return
+    try {
+      const response = await fetch(job.statusUrl, { method: 'DELETE' })
+      if (response.status === 204 || response.status === 404) {
+        storeJob(null)
+        setJob(null)
+        setJobStatus(null)
+        setResult(null)
+        setPhase('deleted')
+        return
+      }
+      let body = null
+      try {
+        body = await response.json()
+      } catch {
+        body = null
+      }
+      setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
+      setPhase('error')
+    } catch {
+      setError(networkError())
+      setPhase('error')
+    }
+  }
+
+  const busy = phase === 'uploading' || phase === 'polling'
+  const stage = jobStatus?.stage ?? null
+  const progressPct =
+    stage && stage.total > 0 ? Math.round((stage.index / stage.total) * 100) : 0
+  const startedMs = jobStatus
+    ? Date.parse(jobStatus.started_at ?? jobStatus.created_at)
+    : null
+  const elapsed = startedMs ? formatElapsed(now - startedMs) : null
+  const retentionText = serverLimits
+    ? `Kept on the server for ${serverLimits.retentionHours} hours, then deleted automatically.`
+    : 'Kept on the server for a limited time, then deleted automatically.'
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-700">
@@ -343,7 +505,8 @@ function App() {
           {oversizedFiles.length > 0 && (
             <p className="text-sm text-amber-700">
               Notice: {oversizedFiles.map(([name]) => name).join(', ')} exceed
-              50 MB. The server may reject files this large.
+              the server&apos;s upload limit of {serverLimits.maxUploadMb} MB
+              per file and will be rejected.
             </p>
           )}
 
@@ -366,23 +529,64 @@ function App() {
           </div>
         </form>
 
-        <div className="mt-5">
+        <div className="mt-5 space-y-3">
           {formError && (
             <p className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               {formError}
             </p>
           )}
 
-          {busy && (
+          {phase === 'uploading' && (
             <div className="flex items-center gap-3 rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
-              Running... please wait.
+              Uploading files... large pools can take a few minutes to upload.
             </div>
           )}
 
+          {phase === 'polling' && job && (
+            <JobProgress
+              job={job}
+              status={jobStatus}
+              progressPct={progressPct}
+              elapsed={elapsed}
+              onStop={stopWatching}
+            />
+          )}
+
+          {phase === 'stopped' && job && (
+            <p className="rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              Stopped watching job <code className="text-xs">{job.id}</code>. It keeps
+              running on the server; reload this page to pick it up again, or
+              submit a new pool.
+            </p>
+          )}
+
           {phase === 'success' && result?.mode === 'download' && (
-            <p className="rounded border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800">
-              Downloaded: {result.filename}
+            <div className="rounded border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800">
+              <p className="font-medium">Workbook ready: {result.filename}</p>
+              <p className="mt-1 text-xs text-green-700">{retentionText}</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <a
+                  href={result.url}
+                  download={result.filename}
+                  className="rounded bg-green-700 px-4 py-2 text-center text-sm font-medium text-white hover:bg-green-600"
+                >
+                  Download workbook
+                </a>
+                <button
+                  type="button"
+                  onClick={deleteFromServer}
+                  className="rounded border border-green-700 bg-white px-4 py-2 text-sm font-medium text-green-800 hover:bg-green-100"
+                >
+                  Delete from server
+                </button>
+              </div>
+            </div>
+          )}
+
+          {phase === 'deleted' && (
+            <p className="rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              Deleted from the server.
             </p>
           )}
 
@@ -400,18 +604,78 @@ function App() {
                   </pre>
                 </details>
               )}
+              {job && jobStatus && ['done', 'failed'].includes(jobStatus.state) && (
+                <button
+                  type="button"
+                  onClick={deleteFromServer}
+                  className="mt-3 rounded border border-red-400 bg-white px-3 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100"
+                >
+                  Delete from server
+                </button>
+              )}
             </div>
           )}
         </div>
 
         {phase === 'success' && result?.mode === 'analysis' && (
-          <AnalysisResults analysis={result.data} />
+          <>
+            <AnalysisResults analysis={result.data} />
+            <div className="mt-4 flex items-center gap-3 text-xs text-slate-500">
+              <span>{retentionText}</span>
+              <button
+                type="button"
+                onClick={deleteFromServer}
+                className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Delete from server
+              </button>
+            </div>
+          </>
         )}
       </main>
 
       <footer className="border-t border-slate-200 bg-white px-6 py-3">
         <HealthIndicator status={health} />
       </footer>
+    </div>
+  )
+}
+
+function JobProgress({ job, status, progressPct, elapsed, onStop }) {
+  const state = status?.state ?? 'queued'
+  const stage = status?.stage ?? null
+  let headline
+  if (!status) headline = 'Checking job status...'
+  else if (state === 'queued') headline = 'Queued, waiting for the worker to start...'
+  else if (stage) headline = `Stage ${stage.index} of ${stage.total}: ${stage.label.replace(/^Stage \d+: /, '')}`
+  else headline = 'Running...'
+  return (
+    <div className="rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
+          <span>{headline}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onStop}
+          className="rounded border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          Stop watching
+        </button>
+      </div>
+      <div className="mt-3 h-2 w-full overflow-hidden rounded bg-slate-200">
+        <div
+          className="h-2 rounded bg-slate-700 transition-all"
+          style={{ width: `${state === 'queued' ? 0 : Math.max(progressPct, 3)}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-slate-500">
+        {job.mode === 'analysis' ? 'Analysis' : 'Workbook'} job{' '}
+        <code>{job.id}</code>
+        {elapsed ? ` - ${elapsed} elapsed` : ''}. The job keeps running on the
+        server if you stop watching or close this tab.
+      </p>
     </div>
   )
 }
