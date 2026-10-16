@@ -11,6 +11,7 @@ modes, rate limiting, error-shape consistency and input validation.
 from __future__ import annotations
 
 import io
+import sys
 from pathlib import Path
 
 import openpyxl
@@ -543,3 +544,138 @@ def test_process_taxonomy_without_format_column_returns_400_naming_column() -> N
     body = response.json()
     assert body["error"] == "invalid_csv"
     assert "FORMAT" in body["details"]["reason"]
+
+
+# --- Deployment configuration: run() env vars, proxy-aware rate-limit key, log colours
+
+
+def test_run_passes_env_host_port_workers_to_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    from esma_milan.api import server as server_module
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app_ref: str, **kwargs: object) -> None:
+        captured["app"] = app_ref
+        captured.update(kwargs)
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setenv("ESMA_MILAN_HOST", "127.0.0.1")
+    monkeypatch.setenv("ESMA_MILAN_PORT", "9123")
+    monkeypatch.setenv("ESMA_MILAN_WORKERS", "2")
+
+    server_module.run()
+
+    assert captured == {
+        "app": "esma_milan.api.server:app",
+        "host": "127.0.0.1",
+        "port": 9123,
+        "workers": 2,
+    }
+
+
+def test_run_defaults_match_previous_hard_coded_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With none of the variables set, laptop behaviour is unchanged."""
+    import uvicorn
+
+    from esma_milan.api import server as server_module
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app_ref, **kw: captured.update(kw))
+    for var in ("ESMA_MILAN_HOST", "ESMA_MILAN_PORT", "ESMA_MILAN_WORKERS"):
+        monkeypatch.delenv(var, raising=False)
+
+    server_module.run()
+
+    assert captured == {"host": "0.0.0.0", "port": 8000, "workers": 4}
+
+
+def _request_with(headers: dict[str, str], client: tuple[str, int] = ("10.0.0.2", 5000)) -> object:
+    """A minimal Starlette Request with the given headers and peer address."""
+    from starlette.requests import Request
+
+    raw_headers = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/health",
+        "headers": raw_headers,
+        "client": client,
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("203.0.113.9, 10.0.0.2", "203.0.113.9"),  # client, then proxy: first wins
+        ("203.0.113.9", "203.0.113.9"),
+        (" 203.0.113.9 ,10.0.0.2", "203.0.113.9"),  # whitespace tolerated
+    ],
+)
+def test_rate_limit_key_uses_first_forwarded_address_when_proxy_trusted(
+    monkeypatch: pytest.MonkeyPatch, header: str, expected: str
+) -> None:
+    from esma_milan.api.server import _rate_limit_key
+
+    monkeypatch.setenv("ESMA_MILAN_TRUST_PROXY", "1")
+    request = _request_with({"X-Forwarded-For": header})
+    assert _rate_limit_key(request) == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Forwarded-For": ""}, {"X-Forwarded-For": " , "}])
+def test_rate_limit_key_falls_back_to_peer_without_usable_header(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    from esma_milan.api.server import _rate_limit_key
+
+    monkeypatch.setenv("ESMA_MILAN_TRUST_PROXY", "1")
+    request = _request_with(headers)
+    assert _rate_limit_key(request) == "10.0.0.2"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("flag", [None, "0", "true", "yes"])
+def test_rate_limit_key_ignores_header_unless_flag_is_exactly_1(
+    monkeypatch: pytest.MonkeyPatch, flag: str | None
+) -> None:
+    """Off by default, and only the literal "1" turns it on: a forged
+    header must never influence the key when the app is exposed directly."""
+    from esma_milan.api.server import _rate_limit_key
+
+    if flag is None:
+        monkeypatch.delenv("ESMA_MILAN_TRUST_PROXY", raising=False)
+    else:
+        monkeypatch.setenv("ESMA_MILAN_TRUST_PROXY", flag)
+    request = _request_with({"X-Forwarded-For": "203.0.113.9"})
+    assert _rate_limit_key(request) == "10.0.0.2"  # type: ignore[arg-type]
+
+
+def test_rate_limit_counts_forwarded_clients_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through the app: with the proxy flag on, two forwarded
+    clients get separate /api/health budgets; with it off they share the
+    peer's. Exhausts the 60/minute health limit, so it relies on the
+    autouse limiter reset."""
+    monkeypatch.setenv("ESMA_MILAN_TRUST_PROXY", "1")
+    client = TestClient(app)
+    for _ in range(60):
+        assert client.get("/api/health", headers={"X-Forwarded-For": "203.0.113.1"}).status_code == 200
+    assert client.get("/api/health", headers={"X-Forwarded-For": "203.0.113.1"}).status_code == 429
+    assert client.get("/api/health", headers={"X-Forwarded-For": "203.0.113.2"}).status_code == 200
+
+
+def test_console_renderer_has_no_colours_when_stdout_is_not_a_tty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Container logs are a pipe: no ANSI escape codes may appear."""
+    import structlog
+
+    from esma_milan.api import server as server_module
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    server_module._configure_logging()
+    structlog.get_logger("colour_probe").info("probe_event", key="value")
+    out = capsys.readouterr().out
+    assert "probe_event" in out
+    assert "\x1b[" not in out

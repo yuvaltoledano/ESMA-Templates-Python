@@ -67,3 +67,19 @@ jobs:
 
       - name: Build (vite)
         run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The app image copies the ESMA taxonomy from the submodule.
+          submodules: true
+
+      - name: Build app image
+        run: docker build --target app -t esma-milan-app .
+
+      - name: Build web image
+        run: docker build --target web -t esma-milan-web .

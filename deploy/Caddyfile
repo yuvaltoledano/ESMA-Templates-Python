@@ -1,0 +1,52 @@
+# Caddy configuration for the ESMA-MILAN deployment (see docs/deploy.md).
+#
+# Every value that varies per deployment is an environment placeholder,
+# {$NAME}, filled from the .env file by docker compose. Nothing is baked in.
+
+{$SITE_HOST} {
+	# Automatic HTTPS: Caddy obtains and renews a Let's Encrypt certificate
+	# for SITE_HOST, and redirects http:// to https://. For
+	# SITE_HOST=localhost it issues a certificate from its own internal CA
+	# instead (local testing; curl needs -k, browsers show a warning).
+
+	# One username and bcrypt hash (from `caddy hash-password`) on every
+	# path, /api/health included. The page's health poll is a same-origin
+	# request, so the browser sends the stored credentials with it.
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# The app caps each uploaded file at 50 MiB and a request carries up
+	# to three files; 160MB leaves room for three files at the cap plus
+	# multipart framing, so an oversized file gets the app's own, clearer
+	# 413 rather than Caddy's.
+	request_body {
+		max_size 160MB
+	}
+
+	# The API. Caddy adds X-Forwarded-For; the app keys its rate limits on
+	# it (ESMA_MILAN_TRUST_PROXY=1 in docker-compose.yml).
+	handle /api/* {
+		reverse_proxy app:8000 {
+			# A synchronous /api/process on a 30,000-loan pool can take
+			# several minutes before the first response byte; do not time
+			# it out before the app does its work.
+			transport http {
+				response_header_timeout 20m
+			}
+		}
+	}
+
+	# Everything else is the built frontend: static files, with the
+	# single-page-app fallback to index.html.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Access log to stderr so `docker compose logs web` shows it.
+	log {
+		output stderr
+	}
+}

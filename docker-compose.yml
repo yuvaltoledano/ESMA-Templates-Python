@@ -1,0 +1,48 @@
+# Two containers on one host; see docs/deploy.md for the runbook.
+#
+#   app  the Python service (FastAPI + uvicorn). No published ports: only
+#        `web` can reach it, over the Compose network.
+#   web  Caddy. Terminates HTTPS, asks for the password, serves the built
+#        frontend and proxies /api/* to app:8000.
+#
+# Every per-deployment value (hostname, user, password hash, worker count,
+# rate limits) comes from a .env file next to this file. Nothing in the
+# repository names a host or a secret.
+
+services:
+  app:
+    build:
+      context: .
+      target: app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ESMA_MILAN_HOST: 0.0.0.0
+      ESMA_MILAN_PORT: "8000"
+      # Rate limits are keyed on the client address Caddy forwards in
+      # X-Forwarded-For. Trusting that header is safe here because the
+      # app has no published port, so only Caddy can reach it. Never set
+      # this when the app port is exposed directly.
+      ESMA_MILAN_TRUST_PROXY: "1"
+    # Liveness comes from the image's HEALTHCHECK (Dockerfile); `web`
+    # waits for it below.
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"     # HTTP: redirected to HTTPS, and used for certificate issuance
+      - "443:443"   # HTTPS (TCP only; HTTP/3 over UDP is not published)
+    volumes:
+      - caddy_data:/data       # certificates and account keys: must survive restarts
+      - caddy_config:/config   # Caddy's last-loaded configuration
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

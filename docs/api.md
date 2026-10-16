@@ -2,9 +2,11 @@
 
 The FastAPI service in `src/esma_milan/api/` is a thin wrapper around
 `runner.run_pipeline`. Start it with `uv run esma-milan-server`
-(uvicorn on `0.0.0.0:8000`, 4 worker processes; host, port and worker
-count are hard-coded). There is no authentication; it is meant to run
-locally behind the Vite dev proxy or a reverse proxy you control.
+(uvicorn on `0.0.0.0:8000`, 4 worker processes by default; see "Limits"
+for the environment variables that change them). There is no
+authentication in the app; it is meant to run locally behind the Vite dev
+proxy or behind a reverse proxy you control. `docs/deploy.md` describes the
+supported server deployment (Caddy: HTTPS and a password in front).
 
 ## Endpoints
 
@@ -113,8 +115,13 @@ exactly as they appear in the workbook.
   `/api/health`. Override with the environment variables
   `ESMA_MILAN_RATE_LIMIT_PROCESS` and `ESMA_MILAN_RATE_LIMIT_HEALTH`
   (slowapi syntax).
-- No `X-Forwarded-For` handling: behind a proxy, the proxy's IP is the
-  rate-limit key.
+- Behind a reverse proxy, set `ESMA_MILAN_TRUST_PROXY=1` so the
+  rate-limit key is the first address in `X-Forwarded-For` rather than
+  the proxy's own IP. Only do this when nothing but the proxy can reach
+  the app (the Compose deployment in `docs/deploy.md` publishes no app
+  port); with the flag unset, the peer IP is the key.
+- Host, port and worker count: `ESMA_MILAN_HOST` (default `0.0.0.0`),
+  `ESMA_MILAN_PORT` (default `8000`), `ESMA_MILAN_WORKERS` (default `4`).
 
 Uploads are written to a per-request temporary directory that is removed
 before the response is sent; the pipeline's input interface is path-based.
