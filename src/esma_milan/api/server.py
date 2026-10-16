@@ -9,9 +9,20 @@ The surface today: ``GET /api/health`` and ``POST /api/process``, per-IP
 rate limiting (``slowapi``, in-memory backend), a consistent
 ``ErrorResponse`` shape on every failure path, and transport-level input
 validation (per-file size cap, Content-Type allowlist, ``deal_name``
-character validation). Not implemented: authentication, an asynchronous
-job endpoint for very large pools, and reverse-proxy ``X-Forwarded-For``
-handling (rate limiting keys on the peer IP).
+character validation). Not implemented: authentication and an
+asynchronous job endpoint for very large pools.
+
+Reverse-proxy deployment (docker-compose.yml + deploy/Caddyfile): with
+``ESMA_MILAN_TRUST_PROXY=1`` the rate limiter keys on the first address
+in ``X-Forwarded-For`` instead of the peer IP, which behind a proxy is
+always the proxy's own. Trusting that header is safe only when nothing
+but the proxy can reach this process: in the Compose deployment the app
+container publishes no port, so every connection comes from Caddy, which
+overwrites the header with the real client address. If the app port were
+ever exposed directly, any client could forge the header and dodge the
+limit, so the flag is off by default and must stay off in that case.
+Host, port and worker count are read from ``ESMA_MILAN_HOST`` /
+``ESMA_MILAN_PORT`` / ``ESMA_MILAN_WORKERS`` (see ``run``).
 
 Note: this module deliberately omits ``from __future__ import
 annotations``. slowapi's ``@limiter.limit`` decorator wraps the endpoint
@@ -25,6 +36,7 @@ where ``X | None`` and ``list[str]`` evaluate fine at runtime anyway.
 
 import logging
 import os
+import sys
 from typing import Annotated, Literal
 
 import structlog
@@ -102,7 +114,11 @@ def _configure_logging() -> None:
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.add_log_level,
-            structlog.dev.ConsoleRenderer(),
+            # Colour only when a person is watching: structlog defaults to
+            # ANSI colours on Linux even for a pipe, which would litter
+            # container logs with escape codes. PrintLogger writes to
+            # stdout, so that is the stream to test.
+            structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty()),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
     )
@@ -111,11 +127,32 @@ def _configure_logging() -> None:
 _configure_logging()
 log = structlog.get_logger(__name__)
 
+TRUST_PROXY_ENV = "ESMA_MILAN_TRUST_PROXY"
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Client address the rate limiter counts against.
+
+    The peer IP (``get_remote_address``), unless ``ESMA_MILAN_TRUST_PROXY``
+    is ``"1"`` and the request carries ``X-Forwarded-For``, in which case
+    the first address in that header - the original client, as written
+    by the proxy - is used. Read from the environment per call so the
+    flag can be toggled without re-importing the module; one dict lookup
+    per request. See the module docstring for when trusting the header
+    is safe.
+    """
+    if os.environ.get(TRUST_PROXY_ENV) == "1":
+        forwarded = request.headers.get("x-forwarded-for", "")
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
 # Rate limiter with an in-memory backend - one counter set per worker
 # process (see the note above RATE_LIMIT_PROCESS). The key is the peer
-# IP; behind a reverse proxy that is the proxy's IP, since there is no
-# X-Forwarded-For handling.
-limiter = Limiter(key_func=get_remote_address)
+# IP, or the forwarded client IP behind a trusted proxy (_rate_limit_key).
+limiter = Limiter(key_func=_rate_limit_key)
 
 app = FastAPI(
     title="ESMA-MILAN pipeline API",
@@ -365,17 +402,20 @@ async def process(
 def run() -> None:
     """Entry point for ``uv run esma-milan-server``.
 
-    Starts uvicorn with 4 worker processes. Each worker is single-
-    threaded and handles one request at a time; four workers serve four
-    concurrent users. Workers are independent OS processes with no
-    shared memory, which is fine because every request is fully
-    independent (the per-worker rate-limit counters are the one
-    consequence; see RATE_LIMIT_PROCESS). Host, port and worker count
-    are hard-coded; there are no CLI flags for them.
+    Starts uvicorn with ``ESMA_MILAN_WORKERS`` worker processes (default
+    4) on ``ESMA_MILAN_HOST:ESMA_MILAN_PORT`` (default ``0.0.0.0:8000``).
+    Each worker is single-threaded and handles one request at a time;
+    four workers serve four concurrent users. Workers are independent OS
+    processes with no shared memory, which is fine because every request
+    is fully independent (the per-worker rate-limit counters are the one
+    consequence; see RATE_LIMIT_PROCESS). There are no CLI flags; the
+    three environment variables are the only configuration, so the
+    defaults keep laptop behaviour unchanged and docker-compose.yml
+    sets them for the container.
     """
     uvicorn.run(
         "esma_milan.api.server:app",
-        host="0.0.0.0",
-        port=8000,
-        workers=4,
+        host=os.environ.get("ESMA_MILAN_HOST", "0.0.0.0"),
+        port=int(os.environ.get("ESMA_MILAN_PORT", "8000")),
+        workers=int(os.environ.get("ESMA_MILAN_WORKERS", "4")),
     )
