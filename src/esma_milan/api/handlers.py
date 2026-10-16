@@ -7,9 +7,10 @@ size guardrail, materialising uploads, invoking the pipeline,
 classifying failures - lives here.
 
 `process_pipeline_from_bytes` is deliberately synchronous and
-side-effect-light (bytes in, a `ProcessResult` out, plus logging), so
-it could equally be called from a background task if an asynchronous
-job endpoint is ever added.
+side-effect-light (bytes in, a `ProcessResult` out, plus logging). The
+background worker (`api/worker.py`) does not call it: it runs
+`run_pipeline` on the job's files directly and shares
+`classify_pipeline_error` so both paths return the same error codes.
 
 Disk note: the pipeline's input interface (`runner.run_pipeline` ->
 `stage1` -> `read_csv` / `read_taxonomy`) is path-based. Refactoring
@@ -62,8 +63,8 @@ log = structlog.get_logger(__name__)
 
 # Hard cap on pool size for the synchronous /api/process endpoint. Pools
 # larger than this risk exceeding reverse-proxy HTTP timeouts on a
-# synchronous request, so they are rejected with HTTP 413. There is no
-# asynchronous alternative endpoint.
+# synchronous request, so they are rejected with HTTP 413. Larger pools
+# go through `POST /api/jobs` (see `server.py`).
 #
 # The count is approximate: it is the data-row limit derived via newline
 # counting on the uploaded loans CSV, not a full parse. With a trailing

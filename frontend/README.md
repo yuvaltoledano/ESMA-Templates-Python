@@ -1,17 +1,35 @@
 # ESMA-MILAN GUI
 
-A minimal local web frontend for the ESMA-MILAN pipeline API. One
-screen, one form: upload a loans CSV and a collaterals CSV (plus an
-optional taxonomy XLSX), enter a deal name, then either
+A minimal web frontend for the ESMA-MILAN pipeline API. One screen, one
+form: upload a loans CSV and a collaterals CSV (plus an optional taxonomy
+XLSX), enter a deal name, then either
 
-- **Process Pool & Download**: `POST /api/process` and save the returned
-  ten-sheet workbook in the browser, or
-- **Analyze Pool**: `POST /api/process` with `analysis_only=true` and
-  render the result inline.
+- **Process Pool & Download**: submit a background job (`POST /api/jobs`),
+  show its progress, then offer **Download workbook** (a link to
+  `GET /api/jobs/{id}/result`, the ten-sheet workbook) and **Delete from
+  server**, or
+- **Analyze Pool**: submit the same job with `analysis_only=true`, then
+  fetch the result JSON and render it inline, with **Delete from server**
+  underneath.
 
-This is intentionally minimal: no dry-run preview, no history, no auth,
-no deployment story. It exists so the API can be exercised through real
-use rather than `curl`.
+This is intentionally minimal: no dry-run preview, no job history (the
+page remembers only the job it started, via `sessionStorage`, so a
+reload of the same tab resumes polling), no auth of its own
+(`../docs/deploy.md` puts a password in front of it on a server). It
+exists so the API can be exercised through real use rather than `curl`.
+
+## Job flow
+
+Both buttons go through the same states: idle, uploading, polling, then
+success or error. While polling, the page asks `GET /api/jobs/{id}` every
+2 seconds and shows "Queued, waiting for the worker to start..." or
+"Stage n of 11: ..." with a progress bar and the elapsed time. **Stop
+watching** leaves the job running on the server; reloading the same tab
+picks it up again. A job that was deleted or has expired on the server
+ends polling with the API's `404 job_not_found`. After five consecutive
+failed polls (no response at all) the page reports "Cannot reach API".
+The result's retention period, shown under the download link, comes from
+`GET /api/health`.
 
 ## Analyze Pool view
 
@@ -40,7 +58,9 @@ See `../docs/analysis.md` for the semantics of each cut.
 
 - Client-side checks mirror the API: both CSVs and a deal name are
   required, and the deal name must match `[A-Za-z0-9 ._-]{1,100}`. Files
-  over 50 MB get a warning; the server enforces the limit.
+  over the per-file cap that `GET /api/health` reports (`max_upload_mb`:
+  50 on a laptop, 600 in the server deployment) get a warning; the
+  server enforces the limit.
 - Every API failure arrives as the structured `ErrorResponse`
   (`error`, `message`, optional `details`) and is shown with its code and
   an expandable details block. A non-JSON failure, or no response at all,
@@ -55,14 +75,22 @@ React 19 + Vite 8 + Tailwind CSS v3 + recharts 3, in plain JavaScript
 
 ## Running it
 
-The API must be running on `localhost:8000`. In one terminal, from the
-repo root:
+The API must be running on `localhost:8000`, and the background-job
+worker must be running too, or every job stays "Queued". In one terminal,
+from the repo root:
 
 ```sh
 uv run esma-milan-server
 ```
 
-In another terminal:
+In a second terminal, also from the repo root (jobs are stored under
+`data/jobs`):
+
+```sh
+uv run esma-milan-worker
+```
+
+In a third terminal:
 
 ```sh
 cd frontend

@@ -1,7 +1,9 @@
 # Analysis view
 
-`POST /api/process` with `analysis_only=true` returns pool stratifications
-and the Execution Summary for the GUI's **Analyze Pool** view. The code
+`POST /api/process` with `analysis_only=true`, or a background job
+submitted with the same flag (served by `GET /api/jobs/{id}/result`),
+returns pool stratifications and the Execution Summary for the GUI's
+**Analyze Pool** view. The code
 lives in `src/esma_milan/analysis/`: `stratifications.py` holds one
 function per cut, `labels.py` the ESMA code → label maps, `__init__.py`
 the ordered registry the API walks.

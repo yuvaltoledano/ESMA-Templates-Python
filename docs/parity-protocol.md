@@ -4,8 +4,12 @@
 
 The Python pipeline at `src/esma_milan/` must produce output that is
 cell-for-cell identical to the R reference at `r_reference/R/`, on every
-input. "Identical" is operationalised as the comparison implemented in
-`src/esma_milan/parity/diff.py`:
+input. Two documented exceptions, from the taxonomy-typed CSV reader, are
+listed in `src/esma_milan/io_layer/read_csv.py` (a numeric field that is
+ND for its first 10,000 rows is read where readr nulls it; a non-numeric
+value in a numeric field halts the run where readr nulls it); neither
+arises on the fixtures. "Identical" is operationalised as the comparison
+implemented in `src/esma_milan/parity/diff.py`:
 
 - **Numeric**: equal within `1e-9` absolute or `1e-12` relative tolerance.
 - **String**: byte-equal after openpyxl read.

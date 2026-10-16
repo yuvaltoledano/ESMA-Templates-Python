@@ -24,10 +24,16 @@ collateral identifiers are perturbed and the deal name used in tests
 ("Domi 2025-1") is the one in the data. The following fields are **not**
 redacted and carry their original values:
 
-- `RREL79` originator legal name, `RREL80` originator LEI, `RREL81`
-  originator country;
-- `RREL82` issuer/SSPE legal name, `RREL83` its LEI, `RREL84` its country;
-- `RREC11` guarantor legal name on the collateral file.
+- `RREL79` Original Lender Name (one legal name, on all 1,295 loan
+  rows), `RREL80` Original Lender Legal Entity Identifier (one LEI, all
+  rows), `RREL81` Original Lender Establishment Country (one country
+  code, all rows);
+- `RREL82` Originator Name (one legal name, all rows), `RREL83`
+  Originator Legal Entity Identifier (one LEI, all rows), `RREL84`
+  Originator Establishment Country (one country code, all rows);
+- `RREC11` Energy Performance Certificate Provider Name on the
+  collateral file (one organisation name on 1,509 of the 1,952 rows, ND
+  on the rest).
 
 Treat the directory accordingly when sharing the repository.
 
