@@ -61,6 +61,12 @@ repository"); if that page shows different commands, prefer the page.
 # apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
+If `apt-get update` reports that the Docker repository has no Release
+file (this happens on a very new Ubuntu release that Docker does not
+package yet), replace the `$(. /etc/os-release && echo ...)` expression
+in the `echo "deb ..."` line with `noble` and run that line and the two
+`apt-get` commands again.
+
 Check that it worked. You should see version numbers, not an error:
 
 ```
@@ -110,7 +116,7 @@ time (one to two minutes), then asks you to type a password twice and
 prints one long line starting with `$2a$`:
 
 ```
-# docker compose run --rm web caddy hash-password
+# docker compose run --rm --no-deps web caddy hash-password
 Enter password:
 Confirm password:
 $2a$14$Q9...long string of letters, digits, . and /...
@@ -220,7 +226,7 @@ All commands assume `cd /opt/esma-milan` first.
 - **Restart everything:** `docker compose restart`.
 - **Stop everything:** `docker compose down`. Certificates and settings
   are kept; `docker compose up -d` brings it back.
-- **Change the password:** run `docker compose run --rm web caddy hash-password`
+- **Change the password:** run `docker compose run --rm --no-deps web caddy hash-password`
   again, put the new hash in `.env` (single quotes), then
   `docker compose up -d`. Caddy restarts in a second; browsers will ask
   for the new password on their next request.
