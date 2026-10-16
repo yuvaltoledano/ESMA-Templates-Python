@@ -45,9 +45,13 @@ COPY src/ ./src/
 COPY ["r_reference/inputs/ESMA template taxonomy.xlsx", "./r_reference/inputs/ESMA template taxonomy.xlsx"]
 RUN uv sync --frozen --no-dev
 
-# Run as an unprivileged user.
+# Run as an unprivileged user. /jobs is the background-job store in the
+# Compose deployment (a named volume mounted there in `app` and `worker`);
+# creating it here, owned by that user, makes Docker initialise the empty
+# volume with the same ownership, so the unprivileged processes can write.
 RUN useradd --system --create-home --uid 10001 esma \
-    && chown -R esma:esma /app
+    && mkdir -p /jobs \
+    && chown -R esma:esma /app /jobs
 USER esma
 
 EXPOSE 8000

@@ -5,14 +5,17 @@ from any browser over HTTPS at a hostname of your choosing, protected by
 a username and password. Follow it top to bottom the first time; the
 "Day-to-day" and "If something goes wrong" sections are for later.
 
-How it fits together, in one paragraph: the server runs two small
-isolated programs ("containers") managed by Docker. One, called `app`,
-is the Python service you run locally with `uv run esma-milan-server`.
-The other, called `web`, is Caddy, a web server that handles the
-encryption certificate, asks for the password, serves the page, and
-passes the page's API requests on to `app`. Only `web` is reachable
-from the internet. Everything that is specific to your server lives in
-one file on the server, `.env`, which is never committed to git.
+How it fits together, in one paragraph: the server runs three small
+isolated programs ("containers") managed by Docker. `app` is the Python
+service you run locally with `uv run esma-milan-server`; it answers the
+page's requests. `worker` runs the pools the page submits, one at a
+time, in the background, so a very large pool can take a quarter of an
+hour without anyone waiting on an open connection (section 11). `web`
+is Caddy, a web server that handles the encryption certificate, asks
+for the password, serves the page, and passes the page's API requests
+on to `app`. Only `web` is reachable from the internet. Everything that
+is specific to your server lives in one file on the server, `.env`,
+which is never committed to git.
 
 ## 1. What you need before starting
 
@@ -81,6 +84,25 @@ Install `git` if it is not already there:
 ```
 # apt-get install -y git
 ```
+
+Add a 2 GB swap file. A pool of a few hundred thousand loans needs most
+of a 4 GB server's memory (section 11); without swap, running out means
+the kernel kills the worker and the job fails. With swap, the job slows
+down instead of dying. This is a safety net, not a substitute for
+enough memory:
+
+```
+# fallocate -l 2G /swapfile
+# chmod 600 /swapfile
+# mkswap /swapfile
+# swapon /swapfile
+# echo '/swapfile none swap sw 0 0' >> /etc/fstab
+# swapon --show
+NAME      TYPE SIZE USED PRIO
+/swapfile file   2G   0B   -2
+```
+
+The `fstab` line makes the swap file come back after a reboot.
 
 ## 3. Get the code
 
@@ -168,9 +190,10 @@ Check that both containers are running and `app` is healthy:
 
 ```
 # docker compose ps
-NAME               IMAGE              STATUS                    PORTS
-esma-milan-app-1   esma-milan-app     Up 2 minutes (healthy)    8000/tcp
-esma-milan-web-1   esma-milan-web     Up 1 minute               0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+NAME                  IMAGE              STATUS                    PORTS
+esma-milan-app-1      esma-milan-app     Up 2 minutes (healthy)    8000/tcp
+esma-milan-web-1      esma-milan-web     Up 1 minute               0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+esma-milan-worker-1   esma-milan-app     Up 2 minutes
 ```
 
 Watch Caddy obtain the certificate (Ctrl+C to stop watching; the
@@ -196,16 +219,28 @@ Download the two CSVs to your Mac from GitHub (open each link, then
 In the page, choose them as the loans and collaterals files, enter any
 deal name (letters, digits, spaces, `.`, `-`, `_`), leave the taxonomy
 empty (the server has the default one) and click **Process Pool &
-Download**. A workbook named `2024-06-30 <deal> Flattened loans and
-collaterals.xlsx` downloads within a few seconds. Try **Analyze Pool**
-too.
+Download**. The page shows the job's progress ("Stage 7 of 11 ...") and,
+within a few seconds, a **Download workbook** button for
+`2024-06-30 <deal> Flattened loans and collaterals.xlsx`; click it, then
+**Delete from server**. Try **Analyze Pool** too.
 
 ## 6. Updating to a new version
 
-When a new version is merged on GitHub:
+When a new version is merged on GitHub, first make sure no pool is
+being processed: `docker compose up -d --build` restarts the worker, and
+a job that is running at that moment is lost (it is marked "interrupted"
+and has to be submitted again). This prints the running job's marker if
+there is one, or "no job running":
 
 ```
 # cd /opt/esma-milan
+# docker compose exec worker sh -c 'ls /jobs/*/running.* 2>/dev/null || echo "no job running"'
+no job running
+```
+
+Then:
+
+```
 # git pull --recurse-submodules
 # docker compose up -d --build
 ```
@@ -213,15 +248,20 @@ When a new version is merged on GitHub:
 The running containers keep serving while the new images build; they are
 replaced only once the build has finished, so the gap is a few seconds.
 If nothing changed in the code, `docker compose up -d --build` finishes
-quickly and leaves the containers running.
+quickly and leaves the containers running. The first update to a version
+with background jobs adds the `worker` container: `docker compose ps`
+shows three containers afterwards instead of two, and a `jobs` volume
+appears in `docker volume ls`.
 
 ## 7. Day-to-day
 
 All commands assume `cd /opt/esma-milan` first.
 
 - **See what the app is doing** (Ctrl+C to stop watching):
-  `docker compose logs -f app`. Each processed pool logs its deal name,
-  file names, row counts and the output file name. Caddy's access log:
+  `docker compose logs -f app` for the API (uploads, job creation,
+  downloads) and `docker compose logs -f worker` for the pools being
+  processed: each job logs `job_start`, its stages, and `job_done` with
+  the duration or `job_failed` with the reason. Caddy's access log:
   `docker compose logs -f web`.
 - **Restart everything:** `docker compose restart`.
 - **Stop everything:** `docker compose down`. Certificates and settings
@@ -267,15 +307,28 @@ All commands assume `cd /opt/esma-milan` first.
 - **"Uploaded file 'loans' exceeds the per-file size limit of 50 MB".**
   The app's own limit; it applies per file. Pools near that size are
   also near the 30,000-loan limit below.
-- **"Pool size exceeds the synchronous endpoint limit".** The app refuses
-  loans files with more than about 30,000 data rows, because a single
-  request would take too long. Background processing of larger pools is
-  planned; until then, split the pool.
-- **A big pool runs for minutes and then the page shows an error.**
-  Processing is synchronous: the browser waits for the whole run. The
-  server side allows up to 20 minutes per request, which covers the
-  30,000-loan limit, but a laptop that goes to sleep mid-request loses
-  the download. Keep the Mac awake, or process smaller pools.
+- **"Pool size exceeds the synchronous endpoint limit".** Only
+  `POST /api/process`, the old one-request path, has that limit. The page
+  uses background jobs, which have none; if you see this, the request was
+  made with a script or an old copy of the page. Reload the page.
+- **The job fails with code `interrupted`.** The worker was restarted
+  while the pool was running: either `docker compose up -d --build` was
+  run during a job (see section 6), or the server ran out of memory and
+  the kernel killed the worker. `docker compose logs worker` shows which;
+  `dmesg | grep -i "out of memory"` confirms a memory kill. Add the swap
+  file from section 2 if it is missing, resize the server for pools of
+  that size (section 11), and submit the pool again.
+- **The job fails with code `output_too_large`.** A sheet of the workbook
+  would exceed Excel's 1,048,576-row limit (the message names the sheet),
+  so nothing was written. Split the pool.
+- **The page lost the job (closed tab, new browser).** The job keeps
+  running. The page remembers the job only in the tab that started it;
+  from another tab there is no list of jobs. Wait for the original tab,
+  or submit the pool again and delete the duplicate result afterwards.
+- **A job sits at "Queued" and never starts.** The worker is not running:
+  `docker compose ps` should show `esma-milan-worker-1` as `Up`;
+  `docker compose logs worker` shows why not; `docker compose up -d`
+  starts it. Queued jobs are picked up as soon as it runs.
 - **"Rate limit exceeded".** More than 10 pools per minute from one
   address (times the number of workers). Wait a minute, or raise
   `ESMA_MILAN_RATE_LIMIT_PROCESS` in `.env` and `docker compose up -d`.
@@ -297,12 +350,16 @@ All commands assume `cd /opt/esma-milan` first.
 - The `app` container has no port open to the internet; the only way in
   is through Caddy, after the password check. SSH (port 22) is the only
   other open port, and it accepts your key, not a password.
-- Uploaded CSV files are written to a temporary folder for the duration
-  of one request and deleted when it ends. The output workbook is built
-  in memory and sent to the browser; it is never written to the server's
-  disk. Nothing from a pool stays on the server after the response.
-- The logs record deal names, file names, row counts, timings and the
-  requesting address. They do not contain loan data.
+- Uploaded CSV files are written to the job's folder on the server for
+  the duration of the run and deleted the moment the job finishes,
+  whether it succeeded or failed. The output workbook (or the analysis
+  result) stays on the server's disk, in the `jobs` volume, until you
+  click **Delete from server** or until the retention period
+  (`ESMA_MILAN_JOB_RETENTION_HOURS` in `.env`, 12 hours by default)
+  passes, when the worker deletes it. Delete results you have downloaded;
+  do not rely on retention for sensitive pools.
+- The logs record deal names, job ids, file sizes, row counts, timings,
+  stage names and the requesting address. They do not contain loan data.
 - Keep the server updated: log in monthly and run
   `apt update && apt upgrade -y`, then `reboot` if a kernel update asks
   for it (the containers come back on their own). Consider
@@ -313,11 +370,71 @@ All commands assume `cd /opt/esma-milan` first.
 
 ## 10. Resizing the server later
 
-If pools take too long or two analysts often process at once, resize the
-server at the provider (Hetzner: power off, Rescale, pick a bigger type,
-power on). Nothing in the app changes. After the resize, set
-`ESMA_MILAN_WORKERS` in `.env` to the new number of vCPUs and run
-`docker compose up -d`. Each worker handles one pool at a time; a
-10,000-loan pool measured about 30 seconds and 200 MB of memory per
-worker, so budget roughly 1 GB of RAM per worker to stay comfortable at
-the 30,000-loan limit.
+If pools take too long, resize the server at the provider (Hetzner:
+power off, Rescale, pick a bigger type, power on). Nothing in the app
+changes. After the resize, set `ESMA_MILAN_WORKERS` in `.env` to the new
+number of vCPUs and run `docker compose up -d`.
+
+Memory is what decides the server size. Background jobs run one at a
+time and the memory a job needs grows with the pool: measured about
+200 MB at 10,000 loans, 470 MB at 50,000 and 780 MB at 100,000, so a pool
+of around 300,000 loans needs about 3 GB. On the 4 GB server that fits,
+with the swap file from section 2 as the safety net, but with little to
+spare; if pools of that size are routine, use the 8 GB tier.
+
+## 11. Large pools: background jobs
+
+Every pool the page submits is a background job. The `app` container
+stores the uploaded files in a job folder and answers immediately; the
+`worker` container picks the job up, runs the pipeline, and writes the
+workbook (or the analysis result) next to it; the page polls every two
+seconds and shows the stage ("Stage 7 of 11: flatten and derived fields")
+until the job is done, then offers **Download workbook** and **Delete
+from server**. Closing the tab does not stop the job; reopening the same
+tab resumes watching it. Jobs run one at a time, in the order they were
+submitted; a second pool waits in the queue ("Queued, waiting for the
+worker to start") until the first finishes.
+
+**Time and memory.** A 10,000-loan pool takes about half a minute, a
+100,000-loan pool about five minutes, and a 300,000-loan pool about a
+quarter of an hour, almost all of it writing the workbook. Memory grows
+with the pool too: about 3 GB at 300,000 loans (section 10). Keep the
+swap file from section 2; if the kernel kills the worker for memory, the
+job ends as `interrupted` and the pool must be submitted again.
+
+**Where things live.** The `jobs` volume (`esma-milan_jobs`), mounted at
+`/jobs` in both `app` and `worker`, holds one folder per job: the
+uploaded files while the job runs (deleted when it finishes), the
+status, and the result. Results stay until deleted from the page or
+until `ESMA_MILAN_JOB_RETENTION_HOURS` (`.env`, default 12) after the
+job finished; the worker sweeps expired jobs every minute.
+
+**Disk space.** During a run the volume holds the uploaded files (up to
+600 MB each by the `ESMA_MILAN_MAX_UPLOAD_MB` cap in `docker-compose.yml`;
+a 300,000-loan pool is about 175 MB of loans and 65 MB of collaterals)
+plus the workbook being written (about 430 MB at 300,000 loans); during
+the upload itself the server briefly holds a second copy. Results that
+are not deleted accumulate until retention expires. Keep at least 5 GB
+free for jobs. To see what the volume holds:
+
+```
+# docker compose exec worker du -sh /jobs
+```
+
+To empty it completely (every queued, running and finished job is lost):
+
+```
+# docker compose down
+# docker volume rm esma-milan_jobs
+# docker compose up -d
+```
+
+**Watching the worker.** `docker compose logs -f worker` shows each job
+start, stage by stage, and finish (`job_done` with the duration, or
+`job_failed` with the error code). `docker compose restart worker`
+restarts it; a job running at that moment ends as `interrupted`.
+
+**Uploads.** The upload itself goes through your connection: a 175 MB
+loans file takes a few minutes on a typical home upload speed, during
+which the page shows "Uploading files...". Caddy allows requests up to
+1900 MB (three files at the 600 MB cap).
