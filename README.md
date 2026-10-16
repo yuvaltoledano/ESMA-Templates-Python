@@ -11,15 +11,20 @@ match it cell for cell.
 
 The port is complete. All ten workbook sheets pass Layer-1 parity against
 the staged R output for both fixtures (`tests/fixtures/synthetic`, 8 loans;
-`tests/fixtures/real_anonymised`, 1,126 active loans). The CLI, the HTTP
-API and the local web frontend all run the same `run_pipeline` function.
+`tests/fixtures/real_anonymised`, 1,126 active loans). It is used in three
+ways: the CLI; the synchronous API (`POST /api/process`) for pools up to
+about 30,000 loans; and the web page, which submits every pool as a
+background job run by a separate `esma-milan-worker` process.
+[docs/deploy.md](docs/deploy.md) runs all of it on one server with Docker
+Compose and Caddy. All paths call the same `run_pipeline` function.
 
 Known gaps (one line each):
 
 - The workbook writer emits values only: no header styling, column widths
   or autofilter, unlike R's openxlsx output. Parity compares values.
 - The "real" fixture is committed to the repo; identifiers are perturbed
-  but originator/issuer legal names and LEIs are present
+  but the original lender's and originator's legal names, LEIs and
+  countries, and the EPC provider name, are real
   (see `tests/fixtures/README.md`).
 - The deal name is validated only at the API layer; the CLI passes it
   straight into the output path.
@@ -84,11 +89,11 @@ Endpoints, form fields and response shapes are documented in
 [docs/analysis.md](docs/analysis.md); the frontend in
 [frontend/README.md](frontend/README.md).
 
-Pools above the synchronous limit (about 30,000 loans) are processed as
-background jobs: the page submits them to `POST /api/jobs` and polls for
-progress, and a separate process, `uv run esma-milan-worker`, runs them
-one at a time from a directory on disk (`data/jobs` by default). See
-[docs/api.md](docs/api.md).
+The page submits every pool as a background job (`POST /api/jobs`) and
+polls for progress; a separate process, `uv run esma-milan-worker`, runs
+the jobs one at a time from a directory on disk (`data/jobs` by default).
+Pools up to about 30,000 loans can also be run synchronously with
+`POST /api/process`. See [docs/api.md](docs/api.md).
 
 To run the service and frontend on a server, over HTTPS and behind a
 password, follow [docs/deploy.md](docs/deploy.md) (Docker Compose +
@@ -122,14 +127,23 @@ src/esma_milan/
 │   └── exec_summary.py    # Stage 10: Execution Summary sheet
 ├── analysis/              # pool stratifications for the GUI (11 cuts)
 ├── parity/                # cell-by-cell workbook diff library
-├── api/                   # FastAPI service (server, handlers, schemas), job store + worker
-├── runner.py              # run_pipeline(): single entry point for CLI + API
+├── api/
+│   ├── server.py          # FastAPI endpoints: /api/health, /api/process, /api/jobs
+│   ├── handlers.py        # upload validation, pipeline calls, error classification
+│   ├── schemas.py         # Pydantic response models and error codes
+│   ├── jobs.py            # on-disk background-job store (one directory per job)
+│   └── worker.py          # the `esma-milan-worker` process that runs queued jobs
+├── runner.py              # run_pipeline(): single entry point for CLI, API and worker
 └── cli.py                 # Click CLI (`esma-milan run`)
 
 frontend/                  # React + Vite + Tailwind single-page GUI
 scripts/run_parity_check.py  # CLI wrapper around the parity diff library
 r_reference/               # READ-ONLY git submodule, pinned at v1.1-r-reference
-docs/                      # parity protocol, API and analysis references
+docs/                      # parity protocol, API, analysis and deployment references
+Dockerfile                 # app (Python) and web (Caddy + built frontend) images
+docker-compose.yml         # app + worker + web containers for the server deployment
+deploy/Caddyfile           # HTTPS, password, static frontend, /api proxy
+.env.example               # per-server settings (copy to .env on the server)
 tests/
 ├── fixtures/              # synthetic + real_anonymised inputs and R outputs
 ├── unit/                  # per-module unit tests
@@ -138,8 +152,9 @@ tests/
 ```
 
 Every module that mirrors R code cites the R file and line range it
-follows (`Mirrors r_reference/R/<file>:<lines>`); the citations are
-checked against the pinned submodule tag.
+follows (`Mirrors r_reference/R/<file>:<lines>`); the citations were
+verified by hand against `v1.1-r-reference` in the documentation pass
+of #24.
 
 ## Parity
 
@@ -180,11 +195,13 @@ uv run pytest -k "synthetic" -v        # one fixture
 uv run ruff check src tests scripts    # lint
 uv run mypy                            # strict type-check
 cd frontend && npm run lint && npm run build
+uv run esma-milan-worker               # background-job worker (needed for the page's jobs)
+docker build --target app . && docker build --target web .   # the two deployment images
 ```
 
 CI (`.github/workflows/ci.yml`) runs the Python checks with the locked
-dependency set (`uv sync --frozen`) and the frontend lint and build on
-Node 22.
+dependency set (`uv sync --frozen`), the frontend lint and build on
+Node 22, and builds the `app` and `web` Docker images.
 
 ## License
 

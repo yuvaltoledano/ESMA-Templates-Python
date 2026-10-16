@@ -178,7 +178,7 @@ exactly as they appear in the workbook.
 | 400 | `invalid_csv` | the pipeline rejected the data (unparseable CSV, missing or duplicate columns, missing `pool_cutoff_date`, …); `details.reason` holds the first line of the pipeline error |
 | 400 | `validation_error` | `analysis_only` and `dry_run` both true |
 | 422 | `validation_error` | a field is present but malformed (e.g. `min_coverage` out of range, or an unknown `aggregation` value) |
-| 413 | `file_too_large` | a single upload exceeds 50 MiB |
+| 413 | `file_too_large` | a single upload exceeds the per-file cap: 50 MiB for `/api/process`, `ESMA_MILAN_MAX_UPLOAD_MB` (default 50) for `/api/jobs` |
 | 413 | `size_limit_exceeded` | the loans CSV has more than ~30,000 data rows (counted by newlines before parsing); use `POST /api/jobs` |
 | 413 | `output_too_large` | a sheet would exceed Excel's 1,048,576-row limit; nothing was written |
 | 429 | `rate_limit_exceeded` | per-IP rate limit tripped |
@@ -210,5 +210,7 @@ exactly as they appear in the workbook.
 - Host, port and worker count: `ESMA_MILAN_HOST` (default `0.0.0.0`),
   `ESMA_MILAN_PORT` (default `8000`), `ESMA_MILAN_WORKERS` (default `4`).
 
-Uploads are written to a per-request temporary directory that is removed
-before the response is sent; the pipeline's input interface is path-based.
+For `/api/process`, uploads are written to a per-request temporary
+directory that is removed before the response is sent; the pipeline's
+input interface is path-based. Job uploads live in the job's `inputs/`
+directory until the job finishes (see Retention above).

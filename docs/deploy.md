@@ -26,7 +26,7 @@ which is never committed to git.
   first: DNS changes can take up to an hour to spread, and the
   certificate step below needs the record to be live.
 - **A server.** A Hetzner Cloud server (or any provider) running Ubuntu
-  24.04, with your SSH public key added when you create it, and a
+  24.04 or later, with your SSH public key added when you create it, and a
   firewall that allows inbound TCP on ports 22 (SSH), 80 (HTTP) and 443
   (HTTPS) and nothing else. 2 vCPUs and 4 GB of RAM are enough; 40 GB of
   disk is plenty. Note its public IPv4 address.
@@ -161,9 +161,15 @@ Fill in each line:
 | `SITE_HOST=` | your hostname, e.g. `milan.example.com` (no `https://`) |
 | `BASIC_AUTH_USER=` | the username you will type in the browser |
 | `BASIC_AUTH_HASH=` | the `$2a$...` line from above, **inside single quotes**: `BASIC_AUTH_HASH='$2a$14$Q9...'`. The quotes matter: without them Docker misreads the `$` signs and the password is never accepted. |
-| `ESMA_MILAN_WORKERS=` | `2` for a 2-vCPU server; one worker handles one pool at a time |
+| `ESMA_MILAN_WORKERS=` | `2` for a 2-vCPU server (API request handlers; pools are processed by the `worker` container, one at a time, whatever this value) |
 | `ESMA_MILAN_RATE_LIMIT_PROCESS=` | leave `10/minute` unless you hit "Rate limit exceeded" |
 | `ESMA_MILAN_RATE_LIMIT_HEALTH=` | leave `60/minute` |
+| `ESMA_MILAN_RATE_LIMIT_JOBS=` | leave `120/minute` (the page's job status polls) |
+| `ESMA_MILAN_JOB_RETENTION_HOURS=` | leave `12` unless results should be kept longer or shorter |
+
+The remaining `ESMA_MILAN_*` settings (`HOST`, `PORT`, `TRUST_PROXY`,
+`JOBS_DIR`, `MAX_UPLOAD_MB`) are fixed in `docker-compose.yml` and need
+no entry in `.env`.
 
 Check that Docker reads the file the way you expect. The command prints
 the full configuration; find `BASIC_AUTH_HASH` in it. It should show
@@ -186,7 +192,7 @@ server, with a lot of scrolling output. It ends with lines like
 # docker compose up -d --build
 ```
 
-Check that both containers are running and `app` is healthy:
+Check that all three containers are running and `app` is healthy:
 
 ```
 # docker compose ps
@@ -272,8 +278,8 @@ All commands assume `cd /opt/esma-milan` first.
   for the new password on their next request.
 - **Change the username or hostname:** edit `.env`, then
   `docker compose up -d`. A new hostname needs its DNS record first.
-- **Change the rate limits or worker count:** edit `.env`, then
-  `docker compose up -d`.
+- **Change the rate limits, worker count or job retention:** edit
+  `.env`, then `docker compose up -d`.
 - **Check disk space:** `df -h /` for the system, `docker system df` for
   Docker's images. Old images from previous builds accumulate; reclaim
   them with `docker image prune -f` (keeps the images in use).
@@ -299,14 +305,16 @@ All commands assume `cd /opt/esma-milan` first.
   `docker compose ps`: if `app` is not `(healthy)`, read
   `docker compose logs app` for the reason. If `app` is healthy, the
   request was probably rejected by Caddy before reaching the app: an
-  upload set larger than 160 MB in total, or a session whose password
+  upload set larger than 1900 MB in total, or a session whose password
   expired in the browser (reload the page and log in again).
 - **A `502` error, or `web` keeps restarting.** `app` is not healthy
-  (see above), or the two containers started in the wrong order;
+  (see above), or `web` started before `app` was healthy;
   `docker compose restart web` once `app` shows healthy.
-- **"Uploaded file 'loans' exceeds the per-file size limit of 50 MB".**
-  The app's own limit; it applies per file. Pools near that size are
-  also near the 30,000-loan limit below.
+- **"Uploaded file 'loans' exceeds the per-file size limit of 600 MB".**
+  The per-file cap for the page's background jobs
+  (`ESMA_MILAN_MAX_UPLOAD_MB` in `docker-compose.yml`); the page warns
+  before submitting a file over it. A message naming `50 MB` comes from
+  the old `POST /api/process` path, which keeps its own fixed cap.
 - **"Pool size exceeds the synchronous endpoint limit".** Only
   `POST /api/process`, the old one-request path, has that limit. The page
   uses background jobs, which have none; if you see this, the request was
