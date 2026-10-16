@@ -37,8 +37,26 @@ from esma_milan.analysis import (
     ExecutionSummaryRow,
     run_all_stratifications,
 )
-from esma_milan.api.schemas import ErrorCode
-from esma_milan.runner import run_pipeline
+from esma_milan.api.schemas import (
+    AnalysisResponse,
+    ErrorCode,
+)
+from esma_milan.api.schemas import (
+    AnalysisSummary as AnalysisSummarySchema,
+)
+from esma_milan.api.schemas import (
+    ExecutionSummaryRow as ExecutionSummaryRowSchema,
+)
+from esma_milan.api.schemas import (
+    Stratification as StratificationSchema,
+)
+from esma_milan.api.schemas import (
+    StratificationRow as StratificationRowSchema,
+)
+from esma_milan.api.schemas import (
+    StratificationTotal as StratificationTotalSchema,
+)
+from esma_milan.runner import OutputTooLargeError, run_pipeline
 
 log = structlog.get_logger(__name__)
 
@@ -169,11 +187,13 @@ def validate_upload(
     *,
     field: str,
     allowed_content_types: frozenset[str],
+    max_bytes: int = MAX_UPLOAD_FILE_SIZE,
 ) -> None:
     """Transport-level checks on an uploaded file, run before `.read()`.
 
-    Rejects a file larger than `MAX_UPLOAD_FILE_SIZE` (413
-    `file_too_large`) or one whose Content-Type is not in
+    Rejects a file larger than `max_bytes` (413 `file_too_large`;
+    `MAX_UPLOAD_FILE_SIZE` for the synchronous endpoint, the configurable
+    job cap for `POST /api/jobs`) or one whose Content-Type is not in
     `allowed_content_types` (400 `invalid_content_type`). Size is
     checked first and before the bytes are pulled into memory, so an
     oversized upload is turned away rather than allocated.
@@ -184,22 +204,23 @@ def validate_upload(
             used in the error so the client knows which file to fix.
         allowed_content_types: the lower-cased Content-Types accepted for
             this field (`CSV_CONTENT_TYPES` or `XLSX_CONTENT_TYPES`).
+        max_bytes: the per-file cap to enforce.
 
     Raises:
         ApiError: 413 for an oversized file, 400 for a disallowed
             Content-Type. Both carry a client-safe `details` dict.
     """
     size = file.size
-    if size is not None and size > MAX_UPLOAD_FILE_SIZE:
+    if size is not None and size > max_bytes:
         raise ApiError(
             413,
             "file_too_large",
             f"Uploaded file '{field}' exceeds the per-file size limit of "
-            f"{MAX_UPLOAD_FILE_SIZE // (1024 * 1024)} MB.",
+            f"{max_bytes // (1024 * 1024)} MB.",
             details={
                 "field": field,
                 "size_bytes": size,
-                "limit_bytes": MAX_UPLOAD_FILE_SIZE,
+                "limit_bytes": max_bytes,
             },
         )
 
@@ -324,7 +345,8 @@ def process_pipeline_from_bytes(
             "size_limit_exceeded",
             "Pool size exceeds the synchronous endpoint limit "
             "(approximately 30,000 loans; the check counts CSV lines, so "
-            "the effective cap is ~29,999 data rows).",
+            "the effective cap is ~29,999 data rows). Submit the pool as a "
+            "background job via POST /api/jobs instead.",
             details={
                 "estimated_loan_rows": estimated_rows,
                 "limit": MAX_SYNC_LOAN_COUNT,
@@ -368,18 +390,7 @@ def process_pipeline_from_bytes(
             taxonomy_path = tmp / "taxonomy.xlsx"
             taxonomy_path.write_bytes(taxonomy_bytes)
         else:
-            taxonomy_path = DEFAULT_TAXONOMY_PATH
-            if not taxonomy_path.exists():
-                log.error(
-                    "api_default_taxonomy_missing",
-                    path=str(taxonomy_path),
-                )
-                raise ApiError(
-                    500,
-                    "internal_error",
-                    "The server's default ESMA taxonomy is unavailable. "
-                    "Include a `taxonomy` file in the request to proceed.",
-                )
+            taxonomy_path = default_taxonomy_path()
 
         try:
             result = run_pipeline(
@@ -395,42 +406,11 @@ def process_pipeline_from_bytes(
             )
         except ApiError:
             raise
-        except (ValueError, pl.exceptions.PolarsError) as exc:
-            # Input-data errors: unparseable CSV, missing/duplicate
-            # columns after the taxonomy rename, missing required
-            # fields, missing pool_cutoff_date. The messages from the
-            # I/O layer and validators describe the *data* problem and
-            # are safe to surface (sanitized + first-line-only).
-            log.warning(
-                "api_process_input_error",
-                deal_name=deal_name,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            raise ApiError(
-                400,
-                "invalid_csv",
-                "The uploaded data could not be processed.",
-                details={"reason": _first_line(str(exc))},
-            ) from exc
         except Exception as exc:
-            # Anything else is unexpected. Log full detail server-side;
-            # return a generic message with no internals leaked.
-            log.error(
-                "api_process_unexpected_error",
-                deal_name=deal_name,
-                error_type=type(exc).__name__,
-                error=str(exc),
-                exc_info=True,
-            )
-            raise ApiError(
-                500,
-                "internal_error",
-                "Pipeline error - check input data.",
-            ) from exc
+            raise classify_pipeline_error(exc, deal_name=deal_name) from exc
 
         if analysis_only:
-            analysis = _build_analysis_result(result, deal_name, aggregation)
+            analysis = build_analysis_result(result, deal_name, aggregation)
             log.info(
                 "api_process_complete",
                 deal_name=deal_name,
@@ -468,6 +448,135 @@ def process_pipeline_from_bytes(
             workbook_bytes=result.workbook_bytes,
             filename=result.output_filename,
         )
+
+
+def default_taxonomy_path() -> Path:
+    """The bundled ESMA taxonomy for requests that upload none.
+
+    Raises:
+        ApiError: 500 `internal_error` if the file is missing from the
+            working directory (the image always carries it; a laptop run
+            needs the submodule checked out).
+    """
+    if not DEFAULT_TAXONOMY_PATH.exists():
+        log.error("api_default_taxonomy_missing", path=str(DEFAULT_TAXONOMY_PATH))
+        raise ApiError(
+            500,
+            "internal_error",
+            "The server's default ESMA taxonomy is unavailable. "
+            "Include a `taxonomy` file in the request to proceed.",
+        )
+    return DEFAULT_TAXONOMY_PATH
+
+
+def classify_pipeline_error(exc: BaseException, *, deal_name: str) -> ApiError:
+    """Turn an exception escaping `run_pipeline` into a classified `ApiError`.
+
+    Shared by the synchronous endpoint (which raises the result) and the
+    background worker (which stores `error`/`message`/`details` in the
+    job's status), so a given bad input yields the same code either way:
+
+      - `OutputTooLargeError` -> 413 `output_too_large` (a sheet would
+        exceed Excel's row limit; nothing was written);
+      - `ValueError` / Polars errors -> 400 `invalid_csv` (unparseable
+        CSV, missing/duplicate columns after the taxonomy rename, missing
+        required fields, missing pool_cutoff_date; the first line of the
+        message describes the data problem and is safe to surface);
+      - anything else -> 500 `internal_error`, full detail logged
+        server-side, generic message to the client.
+
+    An `ApiError` passes through unchanged.
+    """
+    if isinstance(exc, ApiError):
+        return exc
+    if isinstance(exc, OutputTooLargeError):
+        log.warning(
+            "api_output_too_large",
+            deal_name=deal_name,
+            sheet=exc.sheet,
+            rows=exc.rows,
+            limit=exc.limit,
+        )
+        return ApiError(
+            413,
+            "output_too_large",
+            f"The output workbook cannot be written: sheet '{exc.sheet}' "
+            f"would have {exc.rows:,} rows and Excel allows at most "
+            f"{exc.limit:,}. Split the pool.",
+            details={"sheet": exc.sheet, "rows": exc.rows, "limit": exc.limit},
+        )
+    if isinstance(exc, ValueError | pl.exceptions.PolarsError):
+        log.warning(
+            "api_process_input_error",
+            deal_name=deal_name,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return ApiError(
+            400,
+            "invalid_csv",
+            "The uploaded data could not be processed.",
+            details={"reason": _first_line(str(exc))},
+        )
+    log.error(
+        "api_process_unexpected_error",
+        deal_name=deal_name,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        exc_info=exc,
+    )
+    return ApiError(
+        500,
+        "internal_error",
+        "Pipeline error - check input data.",
+    )
+
+
+def analysis_response_from_result(result: AnalysisResult) -> AnalysisResponse:
+    """Convert the pipeline-side `AnalysisResult` dataclasses into the
+    `AnalysisResponse` schema. Used by `POST /api/process` (inline
+    response) and by the background worker (written to `analysis.json`
+    and served by `GET /api/jobs/{id}/result`)."""
+    return AnalysisResponse(
+        deal_name=result.deal_name,
+        summary=AnalysisSummarySchema(
+            loan_count=result.summary.loan_count,
+            property_count=result.summary.property_count,
+            group_count=result.summary.group_count,
+            total_current_balance=result.summary.total_current_balance,
+            chosen_aggregation=result.summary.chosen_aggregation,
+            warnings=result.summary.warnings,
+        ),
+        stratifications={
+            key: StratificationSchema(
+                title=strat.title,
+                type=strat.type,
+                chart_type=strat.chart_type,
+                rows=[
+                    StratificationRowSchema(
+                        label=row.label,
+                        count=row.count,
+                        count_pct=row.count_pct,
+                        balance=row.balance,
+                        balance_pct=row.balance_pct,
+                    )
+                    for row in strat.rows
+                ],
+                total=StratificationTotalSchema(
+                    count=strat.total.count,
+                    balance=strat.total.balance,
+                ),
+                error=strat.error,
+                note=strat.note,
+                weighted_average=strat.weighted_average,
+            )
+            for key, strat in result.stratifications.items()
+        },
+        execution_summary=[
+            ExecutionSummaryRowSchema(label=row.label, value=row.value)
+            for row in result.execution_summary
+        ],
+    )
 
 
 def _build_dry_run_result(
@@ -521,7 +630,7 @@ def _build_dry_run_result(
     )
 
 
-def _build_analysis_result(
+def build_analysis_result(
     result: object,
     deal_name: str,
     aggregation: str,
