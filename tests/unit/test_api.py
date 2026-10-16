@@ -143,11 +143,14 @@ def test_dry_run_group_count_matches_stage4_n_groups() -> None:
 
 
 def test_health_endpoint_returns_ok() -> None:
-    """GET /api/health returns 200 with the {"status": "ok"} body."""
+    """GET /api/health returns 200 with status "ok" plus the two
+    deployment settings the page reads at load (upload cap, retention)."""
     client = TestClient(app)
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert set(body) == {"status", "max_upload_mb", "job_retention_hours"}
 
 
 def test_process_synthetic_fixture_returns_workbook() -> None:

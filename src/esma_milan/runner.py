@@ -11,6 +11,7 @@ The stage numbers in the flow comments below are a map of that sequence.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -40,6 +41,44 @@ from esma_milan.pipeline.stage1 import Stage1Output, run_stage1
 from esma_milan.pipeline.valuation import Stage6Output, run_stage6
 
 log = structlog.get_logger(__name__)
+
+# Excel's hard per-sheet row limit (XLSX, 1900 date system or not). A
+# write-only openpyxl workbook does not check it: rows past the limit are
+# written and the file is then rejected or truncated by Excel. The guard
+# in run_pipeline raises OutputTooLargeError before any byte is written.
+EXCEL_MAX_ROWS: int = 1_048_576
+
+# Stage boundaries reported through `on_progress`, in order. Index i (1-based)
+# is reported when stage i starts; a dry run reports the first nine only.
+PIPELINE_STAGE_LABELS: tuple[str, ...] = (
+    "Stage 1: read and clean",
+    "Stage 2: filter active loans and properties",
+    "Stage 3: identifiers",
+    "Stage 4: collateral graph",
+    "Stage 5: group classification",
+    "Stage 6: aggregation detection",
+    "Stage 7: flatten and derived fields",
+    "Stage 9: MILAN mapping",
+    "Stage 10: execution summary",
+    "Mapping tables",
+    "Writing workbook",
+)
+
+ProgressCallback = Callable[[int, int, str], None]
+"""Called with (stage_index, stage_total, label) at each stage boundary."""
+
+
+class OutputTooLargeError(ValueError):
+    """A sheet would exceed Excel's row limit; nothing was written."""
+
+    def __init__(self, sheet: str, rows: int, limit: int = EXCEL_MAX_ROWS) -> None:
+        self.sheet = sheet
+        self.rows = rows
+        self.limit = limit
+        super().__init__(
+            f"Sheet '{sheet}' would have {rows:,} rows (header included); "
+            f"Excel allows at most {limit:,} rows per sheet."
+        )
 
 
 @dataclass(frozen=True)
@@ -130,6 +169,7 @@ def run_pipeline(
     interactive_mode: bool = False,
     dry_run: bool = False,
     verbose: bool = True,
+    on_progress: ProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the ESMA -> MILAN pipeline.
 
@@ -148,7 +188,22 @@ def run_pipeline(
     cannot determine the aggregation method, this port always falls back
     to "by_loan" (with a warning) instead of prompting, exactly as R does
     in non-interactive mode. The CLI and the API never prompt.
+
+    `on_progress`, when given, is called at each stage boundary with
+    `(stage_index, stage_total, label)` from PIPELINE_STAGE_LABELS; the
+    background-job worker uses it to publish progress. It is never called
+    when None, so the CLI and the synchronous API path are unchanged.
+
+    Raises OutputTooLargeError (a ValueError) if any sheet would exceed
+    Excel's row limit; the check runs after every sheet is composed and
+    before the first byte is written.
     """
+    total_stages = len(PIPELINE_STAGE_LABELS)
+
+    def _report(index: int) -> None:
+        if on_progress is not None:
+            on_progress(index, total_stages, PIPELINE_STAGE_LABELS[index - 1])
+
     if verbose:
         log.info(
             "pipeline_start",
@@ -158,6 +213,7 @@ def run_pipeline(
         )
 
     # --- Stage 1: read & clean -------------------------------------------
+    _report(1)
     stage1 = run_stage1(
         loans_path=loans_file_path,
         collaterals_path=collaterals_file_path,
@@ -165,9 +221,11 @@ def run_pipeline(
     )
 
     # --- Stage 2: filter active loans + RRE properties -------------------
+    _report(2)
     stage2 = run_stage2(stage1.loans, stage1.properties)
 
     # --- Stage 3: select calc_loan_id + intersection filter + IDs --------
+    _report(3)
     stage3 = run_stage3(
         stage2.loans,
         stage2.properties,
@@ -179,9 +237,11 @@ def run_pipeline(
     )
 
     # --- Stage 4: bipartite graph + connected components -----------------
+    _report(4)
     stage4 = run_stage4(stage3.loans, stage3.properties)
 
     # --- Stage 5: classify groups into structure types 1-5 ---------------
+    _report(5)
     stage5 = run_stage5(stage4)
 
     # Compose loans_enriched / properties_enriched ONCE here. These are
@@ -197,6 +257,7 @@ def run_pipeline(
     )
 
     # --- Stage 6: detect aggregation method (by_loan vs by_group) --------
+    _report(6)
     stage6 = run_stage6(loans_enriched, properties_enriched)
 
     # Resolve the aggregation method actually used downstream. Mirrors
@@ -219,6 +280,7 @@ def run_pipeline(
         log.info("chosen_aggregation_method", method=chosen_aggregation)
 
     # --- Stage 7: flatten + derived fields (Combined flattened pool) -----
+    _report(7)
     # `chosen_aggregation` is a str at runtime constrained to {"by_loan",
     # "by_group"} by the resolution above; cast for mypy strict.
     stage7 = run_stage7(
@@ -246,7 +308,9 @@ def run_pipeline(
     # Both run on every code path - dry_run skips only the workbook
     # write below, since the analysis-mode HTTP response needs the
     # summary structure too and the ~60 ms cost is invisible.
+    _report(8)
     milan_pool = compose_milan_pool(stage7.combined_flattened)
+    _report(9)
     execution_summary = compose_execution_summary(
         deal_name=deal_name,
         chosen_aggregation=chosen_aggregation,
@@ -274,6 +338,7 @@ def run_pipeline(
     # Mapping tables (Sheets 2-5): composed from the post-Stage-3
     # loans/properties + post-Stage-5 loans_enriched (the latter for the
     # classification tail on "Loans to properties").
+    _report(10)
     mapping_tables = compose_mapping_tables(
         stage3.loans, stage3.properties, loans_enriched
     )
@@ -288,6 +353,14 @@ def run_pipeline(
         **mapping_tables,  # Sheets 2-5 (mapping tables)
     }
 
+    # Excel row-limit guard: every sheet exists now and nothing has been
+    # written yet, so a pool that cannot fit fails cleanly here instead
+    # of producing a file Excel refuses to open.
+    for sheet_name, frame in populated_sheets.items():
+        if frame.height + 1 > EXCEL_MAX_ROWS:
+            raise OutputTooLargeError(sheet_name, frame.height + 1, EXCEL_MAX_ROWS)
+
+    _report(11)
     if output_dir is None:
         # In-memory mode (FastAPI service): build the workbook as bytes,
         # never touching disk. output_path stays None; the caller reads

@@ -16,12 +16,14 @@
 		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
 	}
 
-	# The app caps each uploaded file at 50 MiB and a request carries up
-	# to three files; 160MB leaves room for three files at the cap plus
-	# multipart framing, so an oversized file gets the app's own, clearer
-	# 413 rather than Caddy's.
+	# Background jobs accept up to ESMA_MILAN_MAX_UPLOAD_MB (600 in
+	# docker-compose.yml) per file and a request carries up to three
+	# files: 3 x 600 MiB = 1,887 MB, plus multipart framing, so 1900MB
+	# lets a legal request through and an oversized file still gets the
+	# app's own, clearer 413 rather than Caddy's. (The synchronous
+	# /api/process keeps its 50 MiB per-file cap inside the app.)
 	request_body {
-		max_size 160MB
+		max_size 1900MB
 	}
 
 	# The API. Caddy adds X-Forwarded-For; the app keys its rate limits on

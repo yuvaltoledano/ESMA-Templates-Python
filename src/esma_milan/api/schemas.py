@@ -26,13 +26,25 @@ ErrorCode = Literal[
     "invalid_deal_name",  # deal_name failed character/length validation
     "rate_limit_exceeded",  # per-IP request rate limit tripped
     "internal_error",  # an unexpected server-side failure
+    "job_not_found",  # no background job with that id (unknown, expired or deleted)
+    "job_not_ready",  # the job has not finished (result/delete requested too early)
+    "interrupted",  # the worker restarted while the job was running; resubmit
+    "output_too_large",  # a sheet would exceed Excel's 1,048,576-row limit
 ]
 
 
 class HealthResponse(BaseModel):
-    """Body of ``GET /api/health``."""
+    """Body of ``GET /api/health``.
+
+    Besides liveness it reports the two deployment settings the page
+    needs at load time: the per-file upload cap for background jobs
+    (``ESMA_MILAN_MAX_UPLOAD_MB``) and how long finished jobs are kept
+    (``ESMA_MILAN_JOB_RETENTION_HOURS``).
+    """
 
     status: str = "ok"
+    max_upload_mb: int = 50
+    job_retention_hours: float = 12.0
 
 
 class DryRunResponse(BaseModel):
@@ -157,3 +169,49 @@ class ErrorResponse(BaseModel):
     error: ErrorCode
     message: str
     details: dict[str, object] | None = None
+
+
+class JobCreated(BaseModel):
+    """Body of ``POST /api/jobs`` (HTTP 202)."""
+
+    job_id: str
+    status_url: str
+    result_url: str
+
+
+class JobStage(BaseModel):
+    """Progress marker: ``index`` of ``total`` stages, with a human label."""
+
+    index: int
+    total: int
+    label: str
+
+
+class JobResult(BaseModel):
+    """What ``GET /api/jobs/{id}/result`` will serve once the job is done."""
+
+    filename: str
+    size_bytes: int
+
+
+class JobStatus(BaseModel):
+    """Body of ``GET /api/jobs/{id}``: the job's ``status.json``.
+
+    ``state`` moves ``queued`` -> ``running`` -> ``done`` | ``failed``.
+    ``error`` (when failed) is the same ``{error, message, details}``
+    shape as every error response; ``result`` (when done) names the file
+    the result endpoint serves. ``retention_hours`` tells the client how
+    long the result stays available after ``finished_at``.
+    """
+
+    job_id: str
+    state: Literal["queued", "running", "done", "failed"]
+    mode: Literal["workbook", "analysis"]
+    deal_name: str
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    stage: JobStage | None = None
+    error: ErrorResponse | None = None
+    result: JobResult | None = None
+    retention_hours: float

@@ -1,13 +1,17 @@
-# Two containers on one host; see docs/deploy.md for the runbook.
+# Three containers on one host; see docs/deploy.md for the runbook.
 #
-#   app  the Python service (FastAPI + uvicorn). No published ports: only
-#        `web` can reach it, over the Compose network.
-#   web  Caddy. Terminates HTTPS, asks for the password, serves the built
-#        frontend and proxies /api/* to app:8000.
+#   app     the Python API (FastAPI + uvicorn). No published ports: only
+#           `web` can reach it, over the Compose network. Requests are
+#           light: pools up to ~30,000 loans run inside the request;
+#           larger ones are queued as background jobs.
+#   worker  the background-job runner (esma-milan-worker), the same image
+#           as `app`. Drains the `jobs` volume one job at a time.
+#   web     Caddy. Terminates HTTPS, asks for the password, serves the
+#           built frontend and proxies /api/* to app:8000.
 #
 # Every per-deployment value (hostname, user, password hash, worker count,
-# rate limits) comes from a .env file next to this file. Nothing in the
-# repository names a host or a secret.
+# rate limits, job retention) comes from a .env file next to this file.
+# Nothing in the repository names a host or a secret.
 
 services:
   app:
@@ -24,8 +28,33 @@ services:
       # app has no published port, so only Caddy can reach it. Never set
       # this when the app port is exposed directly.
       ESMA_MILAN_TRUST_PROXY: "1"
+      # Background jobs: the shared directory and the per-file upload cap
+      # for POST /api/jobs (a 300,000-loan loans CSV is about 175 MB).
+      ESMA_MILAN_JOBS_DIR: /jobs
+      ESMA_MILAN_MAX_UPLOAD_MB: "600"
+    volumes:
+      - jobs:/jobs
     # Liveness comes from the image's HEALTHCHECK (Dockerfile); `web`
     # waits for it below.
+
+  worker:
+    build:
+      context: .
+      target: app
+    command: ["/app/.venv/bin/esma-milan-worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ESMA_MILAN_JOBS_DIR: /jobs
+    volumes:
+      - jobs:/jobs
+    # On `docker compose stop` / `up -d --build` the worker gets this long
+    # to finish the job in flight before it is killed. A job that is
+    # killed anyway is marked failed/interrupted when the worker restarts
+    # and must be resubmitted (see docs/deploy.md).
+    stop_grace_period: 30s
+    healthcheck:
+      disable: true
 
   web:
     build:
@@ -46,3 +75,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  jobs:   # background-job inputs, status and outputs (see docs/deploy.md section 11)

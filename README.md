@@ -84,6 +84,12 @@ Endpoints, form fields and response shapes are documented in
 [docs/analysis.md](docs/analysis.md); the frontend in
 [frontend/README.md](frontend/README.md).
 
+Pools above the synchronous limit (about 30,000 loans) are processed as
+background jobs: the page submits them to `POST /api/jobs` and polls for
+progress, and a separate process, `uv run esma-milan-worker`, runs them
+one at a time from a directory on disk (`data/jobs` by default). See
+[docs/api.md](docs/api.md).
+
 To run the service and frontend on a server, over HTTPS and behind a
 password, follow [docs/deploy.md](docs/deploy.md) (Docker Compose +
 Caddy; the `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` and
@@ -116,7 +122,7 @@ src/esma_milan/
 │   └── exec_summary.py    # Stage 10: Execution Summary sheet
 ├── analysis/              # pool stratifications for the GUI (11 cuts)
 ├── parity/                # cell-by-cell workbook diff library
-├── api/                   # FastAPI service (server, handlers, schemas)
+├── api/                   # FastAPI service (server, handlers, schemas), job store + worker
 ├── runner.py              # run_pipeline(): single entry point for CLI + API
 └── cli.py                 # Click CLI (`esma-milan run`)
 
