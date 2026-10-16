@@ -5,12 +5,16 @@ shape responses; all the real work - the size guardrail, materialising
 uploads, running the pipeline, classifying failures - lives in
 ``handlers.py``. Pipeline logic does not live here.
 
-The surface today: ``GET /api/health`` and ``POST /api/process``, per-IP
-rate limiting (``slowapi``, in-memory backend), a consistent
-``ErrorResponse`` shape on every failure path, and transport-level input
-validation (per-file size cap, Content-Type allowlist, ``deal_name``
-character validation). Not implemented: authentication and an
-asynchronous job endpoint for very large pools.
+The surface today: ``GET /api/health``, the synchronous ``POST
+/api/process`` (pools up to ~30,000 loans), and the background-job
+endpoints ``POST /api/jobs`` / ``GET /api/jobs/{id}`` /
+``GET /api/jobs/{id}/result`` / ``DELETE /api/jobs/{id}`` for larger
+pools (the job store is ``api/jobs.py``; the separate ``esma-milan-worker``
+process in ``api/worker.py`` runs them). Per-IP rate limiting
+(``slowapi``, in-memory backend), a consistent ``ErrorResponse`` shape on
+every failure path, and transport-level input validation (per-file size
+cap, Content-Type allowlist, ``deal_name`` character validation). Not
+implemented: authentication.
 
 Reverse-proxy deployment (docker-compose.yml + deploy/Caddyfile): with
 ``ESMA_MILAN_TRUST_PROXY=1`` the rate limiter keys on the first address
@@ -37,47 +41,39 @@ where ``X | None`` and ``list[str]`` evaluate fine at runtime anyway.
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Annotated, Literal
 
 import structlog
 import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from esma_milan.analysis import AnalysisResult
+from esma_milan.api import jobs
 from esma_milan.api.handlers import (
     CSV_CONTENT_TYPES,
     XLSX_CONTENT_TYPES,
     ApiError,
     DryRunResult,
+    analysis_response_from_result,
     process_pipeline_from_bytes,
+    validate_deal_name,
     validate_upload,
 )
 from esma_milan.api.schemas import (
-    AnalysisResponse,
     DryRunResponse,
     ErrorCode,
     ErrorResponse,
     HealthResponse,
-)
-from esma_milan.api.schemas import (
-    AnalysisSummary as AnalysisSummarySchema,
-)
-from esma_milan.api.schemas import (
-    ExecutionSummaryRow as ExecutionSummaryRowSchema,
-)
-from esma_milan.api.schemas import (
-    Stratification as StratificationSchema,
-)
-from esma_milan.api.schemas import (
-    StratificationRow as StratificationRowSchema,
-)
-from esma_milan.api.schemas import (
-    StratificationTotal as StratificationTotalSchema,
+    JobCreated,
+    JobResult,
+    JobStage,
+    JobStatus,
 )
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
 
@@ -100,6 +96,13 @@ _XLSX_MEDIA_TYPE = (
 # higher ceiling because liveness probes are legitimately frequent.
 RATE_LIMIT_PROCESS = os.environ.get("ESMA_MILAN_RATE_LIMIT_PROCESS", "10/minute")
 RATE_LIMIT_HEALTH = os.environ.get("ESMA_MILAN_RATE_LIMIT_HEALTH", "60/minute")
+# Job status / result / delete: the page polls status every 2 s (30/minute),
+# so the budget must hold on a single worker's counter with room to spare.
+RATE_LIMIT_JOBS = os.environ.get("ESMA_MILAN_RATE_LIMIT_JOBS", "120/minute")
+
+# Uploads for background jobs are streamed to the job directory in chunks
+# of this size; nothing larger than one chunk is held in memory per file.
+_UPLOAD_CHUNK_BYTES = 1 << 20
 
 
 def _configure_logging() -> None:
@@ -279,7 +282,11 @@ async def health(request: Request) -> HealthResponse:
     `request` is unused by the body but required: slowapi's rate-limit
     decorator resolves the caller's IP from it.
     """
-    return HealthResponse(status="ok")
+    return HealthResponse(
+        status="ok",
+        max_upload_mb=jobs.max_upload_mb(),
+        job_retention_hours=jobs.retention().total_seconds() / 3600,
+    )
 
 
 @app.post("/api/process")
@@ -334,47 +341,7 @@ async def process(
     )
 
     if isinstance(result, AnalysisResult):
-        analysis_body = AnalysisResponse(
-            deal_name=result.deal_name,
-            summary=AnalysisSummarySchema(
-                loan_count=result.summary.loan_count,
-                property_count=result.summary.property_count,
-                group_count=result.summary.group_count,
-                total_current_balance=result.summary.total_current_balance,
-                chosen_aggregation=result.summary.chosen_aggregation,
-                warnings=result.summary.warnings,
-            ),
-            stratifications={
-                key: StratificationSchema(
-                    title=strat.title,
-                    type=strat.type,
-                    chart_type=strat.chart_type,
-                    rows=[
-                        StratificationRowSchema(
-                            label=row.label,
-                            count=row.count,
-                            count_pct=row.count_pct,
-                            balance=row.balance,
-                            balance_pct=row.balance_pct,
-                        )
-                        for row in strat.rows
-                    ],
-                    total=StratificationTotalSchema(
-                        count=strat.total.count,
-                        balance=strat.total.balance,
-                    ),
-                    error=strat.error,
-                    note=strat.note,
-                    weighted_average=strat.weighted_average,
-                )
-                for key, strat in result.stratifications.items()
-            },
-            execution_summary=[
-                ExecutionSummaryRowSchema(label=row.label, value=row.value)
-                for row in result.execution_summary
-            ],
-        )
-        return JSONResponse(content=analysis_body.model_dump())
+        return JSONResponse(content=analysis_response_from_result(result).model_dump())
 
     if isinstance(result, DryRunResult):
         body = DryRunResponse(
@@ -397,6 +364,194 @@ async def process(
             "Content-Disposition": f'attachment; filename="{result.filename}"',
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Background jobs
+# ---------------------------------------------------------------------------
+
+
+def _load_job(job_id: str) -> jobs.Job:
+    """Resolve a path id to a job directory, or raise 404 `job_not_found`.
+
+    The id is validated against ``jobs.JOB_ID_RE`` before any filesystem
+    access, so a traversal-shaped id never reaches the disk.
+    """
+    try:
+        return jobs.get_job(jobs.jobs_root(), job_id)
+    except jobs.JobNotFoundError:
+        raise ApiError(
+            404,
+            "job_not_found",
+            "No such job. It may never have existed, or it has expired or been deleted.",
+            details={"job_id": job_id[:64]},
+        ) from None
+
+
+def _job_status_body(job: jobs.Job) -> JobStatus:
+    status = job.read_status()
+    error = None
+    if status.error:
+        error = ErrorResponse(
+            error=status.error.get("error", "internal_error"),
+            message=str(status.error.get("message", "")),
+            details=status.error.get("details"),
+        )
+    return JobStatus(
+        job_id=job.job_id,
+        state=status.state,
+        mode=status.mode,
+        deal_name=status.deal_name,
+        created_at=status.created_at,
+        started_at=status.started_at,
+        finished_at=status.finished_at,
+        stage=JobStage(**status.stage.__dict__) if status.stage else None,
+        error=error,
+        result=JobResult(**status.result) if status.result else None,
+        retention_hours=jobs.retention().total_seconds() / 3600,
+    )
+
+
+async def _stream_upload_to(upload: UploadFile, destination: Path) -> None:
+    """Copy an upload to disk in fixed-size chunks; never the whole file in memory."""
+    with destination.open("wb") as fh:
+        while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
+            fh.write(chunk)
+
+
+@app.post("/api/jobs", status_code=202)
+@limiter.limit(RATE_LIMIT_PROCESS)
+async def create_job(
+    request: Request,
+    loans: Annotated[UploadFile, File()],
+    collaterals: Annotated[UploadFile, File()],
+    deal_name: Annotated[str, Form()],
+    taxonomy: Annotated[UploadFile | None, File()] = None,
+    aggregation: Annotated[Literal["auto", "by_loan", "by_group"], Form()] = "auto",
+    min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_MIN_LOAN_ID_COVERAGE,
+    analysis_only: Annotated[bool, Form()] = False,
+) -> JSONResponse:
+    """Queue a background pipeline run and return 202 with its id.
+
+    Same multipart form as `POST /api/process` minus `dry_run`
+    (`analysis_only` selects the mode), the same validation (deal name,
+    Content-Types, per-file cap) but with the cap taken from
+    `ESMA_MILAN_MAX_UPLOAD_MB` and no loan-count limit. The uploads are
+    streamed into the job directory; the worker process picks the job up
+    from there.
+    """
+    cap = jobs.max_upload_bytes()
+    validate_upload(loans, field="loans", allowed_content_types=CSV_CONTENT_TYPES, max_bytes=cap)
+    validate_upload(
+        collaterals, field="collaterals", allowed_content_types=CSV_CONTENT_TYPES, max_bytes=cap
+    )
+    if taxonomy is not None:
+        validate_upload(
+            taxonomy, field="taxonomy", allowed_content_types=XLSX_CONTENT_TYPES, max_bytes=cap
+        )
+    validate_deal_name(deal_name)
+
+    root = jobs.jobs_root()
+    job_request = jobs.JobRequest(
+        deal_name=deal_name,
+        mode="analysis" if analysis_only else "workbook",
+        aggregation=aggregation,
+        min_coverage=min_coverage,
+        created_at=jobs.now_iso(),
+        filenames={
+            "loans": loans.filename or "",
+            "collaterals": collaterals.filename or "",
+            **({"taxonomy": taxonomy.filename or ""} if taxonomy is not None else {}),
+        },
+    )
+    job = jobs.begin_job(root, job_request)
+    try:
+        await _stream_upload_to(loans, job.inputs_dir / "loans.csv")
+        await _stream_upload_to(collaterals, job.inputs_dir / "collaterals.csv")
+        if taxonomy is not None:
+            await _stream_upload_to(taxonomy, job.inputs_dir / "taxonomy.xlsx")
+        job = jobs.commit_job(root, job)
+    except BaseException:
+        jobs.abort_job(job)
+        raise
+
+    log.info(
+        "api_job_created",
+        job_id=job.job_id,
+        deal_name=deal_name,
+        mode=job_request.mode,
+        loans_bytes=(job.inputs_dir / "loans.csv").stat().st_size,
+        collaterals_bytes=(job.inputs_dir / "collaterals.csv").stat().st_size,
+    )
+    body = JobCreated(
+        job_id=job.job_id,
+        status_url=f"/api/jobs/{job.job_id}",
+        result_url=f"/api/jobs/{job.job_id}/result",
+    )
+    return JSONResponse(status_code=202, content=body.model_dump())
+
+
+@app.get("/api/jobs/{job_id}")
+@limiter.limit(RATE_LIMIT_JOBS)
+async def get_job_status(request: Request, job_id: str) -> JobStatus:
+    """The job's current `status.json`; 404 `job_not_found` otherwise."""
+    return _job_status_body(_load_job(job_id))
+
+
+@app.get("/api/jobs/{job_id}/result")
+@limiter.limit(RATE_LIMIT_JOBS)
+async def get_job_result(request: Request, job_id: str) -> Response:
+    """The finished job's output: the workbook as a download (same
+    `Content-Disposition` convention as `/api/process`) or the analysis
+    JSON. 409 `job_not_ready` while queued/running; 409 carrying the
+    job's own error when failed; 404 when unknown."""
+    job = _load_job(job_id)
+    status = job.read_status()
+    if status.state in ("queued", "running"):
+        raise ApiError(
+            409,
+            "job_not_ready",
+            "The job has not finished yet.",
+            details={"state": status.state, "stage": status.stage.__dict__ if status.stage else None},
+        )
+    if status.state == "failed" or not status.result:
+        err = status.error or {}
+        raise ApiError(
+            409,
+            err.get("error", "internal_error"),
+            str(err.get("message", "The job failed.")),
+            details=err.get("details"),
+        )
+    filename = str(status.result["filename"])
+    path = job.output_dir / filename
+    if not path.is_file():
+        raise ApiError(404, "job_not_found", "The job's output is no longer available.")
+    if status.mode == "analysis":
+        return FileResponse(path, media_type="application/json")
+    return FileResponse(
+        path,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/api/jobs/{job_id}", status_code=204)
+@limiter.limit(RATE_LIMIT_JOBS)
+async def delete_job(request: Request, job_id: str) -> Response:
+    """Remove a finished job's directory (the "delete from server after
+    download" action). 409 `job_not_ready` while queued/running."""
+    job = _load_job(job_id)
+    status = job.read_status()
+    if status.state in ("queued", "running"):
+        raise ApiError(
+            409,
+            "job_not_ready",
+            "The job is still queued or running and cannot be deleted yet.",
+            details={"state": status.state},
+        )
+    jobs.delete_job(job)
+    log.info("api_job_deleted", job_id=job.job_id, state=status.state)
+    return Response(status_code=204)
 
 
 def run() -> None:
