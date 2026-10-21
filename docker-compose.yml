@@ -2,8 +2,9 @@
 #
 #   app     the Python API (FastAPI + uvicorn). No published ports: only
 #           `web` can reach it, over the Compose network. Requests are
-#           light: pools up to ~30,000 loans run inside the request;
-#           larger ones are queued as background jobs.
+#           light: the page queues every pool as a background job; only
+#           direct calls to POST /api/process (pools up to ~30,000 loans)
+#           run inside the request.
 #   worker  the background-job runner (esma-milan-worker), the same image
 #           as `app`. Drains the `jobs` volume one job at a time.
 #   web     Caddy. Terminates HTTPS, asks for the password, serves the

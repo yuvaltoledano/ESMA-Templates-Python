@@ -117,15 +117,29 @@ below keep it so the checkout matches the repository's own instructions:
 # cd /opt/esma-milan
 ```
 
-Trying a branch before it is merged? Clone that branch instead, and
-switch back to `main` when it has been merged:
+Trying a branch before it is merged? On a fresh server, clone that
+branch instead:
 
 ```
 # git clone -b <branch-name> --recurse-submodules https://github.com/yuvaltoledano/ESMA-Templates-Python.git /opt/esma-milan
 # cd /opt/esma-milan
-...
-# git checkout main && git pull --recurse-submodules && docker compose up -d --build
 ```
+
+On a server that already has the checkout, switch to the branch with:
+
+```
+# git fetch --prune origin
+# git checkout -B <branch-name> origin/<branch-name>
+# docker compose up -d --build
+```
+
+`--prune` drops remote-tracking branches that no longer exist on GitHub,
+and `-B` creates or resets the local branch to exactly what GitHub has.
+Both matter when a branch name is reused for a new PR after an earlier
+one was merged: without them `git checkout <branch-name>` lands on the
+stale local branch and `git reset --hard origin/<branch-name>` resets to
+the stale remote-tracking ref. When the PR has been merged, go back to
+`main` as in section 6.
 
 ## 4. Configure
 
@@ -252,6 +266,11 @@ Then:
 # docker compose up -d --build
 ```
 
+After a PR you were trying out (section 3) has been merged,
+`git checkout main && git pull --recurse-submodules` is all that is
+needed before the build; ticking "Delete branch" when merging on GitHub
+keeps the branch list to `main` plus the open PR.
+
 The running containers keep serving while the new images build; they are
 replaced only once the build has finished, so the gap is a few seconds.
 If nothing changed in the code, `docker compose up -d --build` finishes
@@ -275,12 +294,16 @@ All commands assume `cd /opt/esma-milan` first.
   are kept; `docker compose up -d` brings it back.
 - **Change the password:** run `docker compose run --rm --no-deps web caddy hash-password`
   again, put the new hash in `.env` (single quotes), then
-  `docker compose up -d`. Caddy restarts in a second; browsers will ask
-  for the new password on their next request.
+  `docker compose up -d --force-recreate web`. Caddy restarts in a
+  second; browsers will ask for the new password on their next request.
+  (`--force-recreate` matters: a plain `docker compose up -d` can miss
+  an `.env`-only change and leave the old container running.)
 - **Change the username or hostname:** edit `.env`, then
-  `docker compose up -d`. A new hostname needs its DNS record first.
+  `docker compose up -d --force-recreate web`. A new hostname needs its
+  DNS record first.
 - **Change the rate limits, worker count or job retention:** edit
-  `.env`, then `docker compose up -d`.
+  `.env`, then `docker compose up -d --force-recreate` (`app` and
+  `worker` both read these).
 - **Check disk space:** `df -h /` for the system, `docker system df` for
   Docker's images. Old images from previous builds accumulate; reclaim
   them with `docker image prune -f` (keeps the images in use).
@@ -340,7 +363,14 @@ All commands assume `cd /opt/esma-milan` first.
   starts it. Queued jobs are picked up as soon as it runs.
 - **"Rate limit exceeded".** More than 10 pools per minute from one
   address (times the number of workers). Wait a minute, or raise
-  `ESMA_MILAN_RATE_LIMIT_PROCESS` in `.env` and `docker compose up -d`.
+  `ESMA_MILAN_RATE_LIMIT_PROCESS` in `.env` and
+  `docker compose up -d --force-recreate`.
+- **You edited `.env` but nothing changed.** `docker compose up -d`
+  recreates a container only when it detects a difference and can miss
+  an `.env`-only edit; run `docker compose up -d --force-recreate` (or
+  `--force-recreate web` for Caddy settings such as the password,
+  username or hostname) and check that `docker compose ps` shows a fresh
+  `CREATED` time for the container.
 - **The password is never accepted, and `docker compose logs web` shows
   nothing useful.** Almost always the missing single quotes around
   `BASIC_AUTH_HASH` in `.env`; see section 4 and re-run
@@ -382,7 +412,7 @@ All commands assume `cd /opt/esma-milan` first.
 If pools take too long, resize the server at the provider (Hetzner:
 power off, Rescale, pick a bigger type, power on). Nothing in the app
 changes. After the resize, set `ESMA_MILAN_WORKERS` in `.env` to the new
-number of vCPUs and run `docker compose up -d`.
+number of vCPUs and run `docker compose up -d --force-recreate`.
 
 Memory is what decides the server size. Background jobs run one at a
 time and the memory a job needs grows with the pool: measured about

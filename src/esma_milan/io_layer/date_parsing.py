@@ -39,15 +39,7 @@ ISO_DATE_RE = re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}(?:\s.*)?$")
 SERIAL_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 # Excel 1900 system: origin = 1899-12-30 absorbs the 1900 leap-year bug
-# (r_reference/R/utils.R:640). The constant lives in config.EXCEL_EPOCH and
-# is re-exported here; the workbook writer uses the same value for the
-# inverse conversion.
-__all__ = [
-    "EXCEL_EPOCH",
-    "collapse_multi_date_restructuring",
-    "parse_iso_or_excel_date",
-    "parse_iso_or_excel_date_values",
-]
+# (r_reference/R/utils.R:640); the constant lives in config.EXCEL_EPOCH.
 
 DEFAULT_SERIAL_RANGE: tuple[date, date] = (date(1900, 1, 1), date(2100, 1, 1))
 

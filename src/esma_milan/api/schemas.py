@@ -1,10 +1,10 @@
 """Pydantic response schemas for the ESMA-MILAN HTTP API.
 
-Only *response* shapes live here. Requests to ``POST /api/process`` are
-multipart (file uploads + form fields), so FastAPI's ``UploadFile`` /
-``Form`` parameter types in the endpoint signature handle parsing -
-there is no request body to model, and forcing a Pydantic model on it
-would fight the framework.
+Only *response* shapes live here. Requests to ``POST /api/process`` and
+``POST /api/jobs`` are multipart (file uploads + form fields), so
+FastAPI's ``UploadFile`` / ``Form`` parameter types in the endpoint
+signatures handle parsing - there is no request body to model, and
+forcing a Pydantic model on it would fight the framework.
 """
 
 from __future__ import annotations

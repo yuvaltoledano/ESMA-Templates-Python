@@ -202,10 +202,17 @@ def _cast_numeric_columns(
         n_bad = int(bad_mask.sum())
         if n_bad == 0:
             continue
-        bad_rows = df.with_row_index("_row").filter(bad_mask).select("_row", col)
+        bad_rows = [
+            int(row)
+            for row in df.with_row_index("_row")
+            .filter(bad_mask)
+            .head(_MAX_BAD_VALUES_REPORTED)["_row"]
+            .to_list()
+        ]
+        raw_values = _raw_column_text(file_path, df.columns.index(col), bad_rows)
         samples = [
-            f"  data row {int(row) + 1}: {value!r}"
-            for row, value in bad_rows.head(_MAX_BAD_VALUES_REPORTED).iter_rows()
+            f"  data row {row + 1}: {value!r}"
+            for row, value in zip(bad_rows, raw_values, strict=True)
         ]
         more = n_bad - len(samples)
         code = next((k for k, v in taxonomy.items() if clean_name(v) == col), None)
@@ -219,6 +226,28 @@ def _cast_numeric_columns(
         )
 
     return out
+
+
+def _raw_column_text(
+    file_path: Path, column_position: int, data_rows: list[int]
+) -> list[str | None]:
+    """The file's own text in one column for the given 0-based data rows.
+
+    The error samples come from here rather than from the parsed frame so
+    they show what the file holds: Polars has already normalised a
+    TRUE/FALSE column to Boolean, which would print as True/False (or
+    'true'/'false' after a String cast). Only the error path reads the
+    file a second time; `infer_schema_length=0` reads every column as
+    String, and `column_position` is the column's position in the file,
+    which the rename in `read_and_clean` leaves unchanged.
+    """
+    raw = pl.read_csv(
+        _utf8_source(file_path),
+        columns=[column_position],
+        infer_schema_length=0,
+    )
+    values = raw.to_series(0).to_list()
+    return [values[row] for row in data_rows]
 
 
 # ---------------------------------------------------------------------------
