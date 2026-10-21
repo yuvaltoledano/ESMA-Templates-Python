@@ -237,18 +237,23 @@ class Job:
 # ---------------------------------------------------------------------------
 
 
-def write_json_atomic(path: Path, obj: dict[str, Any]) -> None:
+def write_json_atomic(path: Path, obj: dict[str, Any], *, sort_keys: bool = True) -> None:
     """Write ``obj`` as JSON to ``path`` via a temp file + ``os.replace``.
 
     A reader of ``path`` sees either the previous complete file or the
     new complete file, never a partial one. On any failure the temp file
     is removed and ``path`` is left as it was.
+
+    Keys are sorted by default so ``status.json`` and ``request.json`` are
+    deterministic. Pass ``sort_keys=False`` when the order carries
+    meaning, as it does for the analysis result: its ``stratifications``
+    are keyed in the registry order the page renders tiles in.
     """
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, indent=2, sort_keys=True)
+            json.dump(obj, fh, indent=2, sort_keys=sort_keys)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)

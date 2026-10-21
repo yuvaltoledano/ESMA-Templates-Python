@@ -153,7 +153,10 @@ def _execute(
         analysis = build_analysis_result(pipeline, request.deal_name, request.aggregation)
         body = analysis_response_from_result(analysis).model_dump()
         target = job.output_dir / ANALYSIS_FILENAME
-        jobs.write_json_atomic(target, body)
+        # Keep the response's key order: `stratifications` is in the
+        # registry order that POST /api/process returns and the page
+        # renders tiles in; the default sorted write would alphabetise it.
+        jobs.write_json_atomic(target, body, sort_keys=False)
         return {"filename": ANALYSIS_FILENAME, "size_bytes": target.stat().st_size}
 
     # Workbook mode: write under output.tmp/, then move the single file
