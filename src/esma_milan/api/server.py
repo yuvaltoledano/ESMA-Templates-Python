@@ -90,9 +90,10 @@ _XLSX_MEDIA_TYPE = (
 # cross-worker; that is a known limitation, not a planned change here.
 #
 # Module-level so a deployment can tune them without a code change: set
-# ESMA_MILAN_RATE_LIMIT_PROCESS / ESMA_MILAN_RATE_LIMIT_HEALTH (slowapi
-# syntax, e.g. "10/minute") to override the defaults. /api/health gets a
-# higher ceiling because liveness probes are legitimately frequent.
+# ESMA_MILAN_RATE_LIMIT_PROCESS / ESMA_MILAN_RATE_LIMIT_HEALTH /
+# ESMA_MILAN_RATE_LIMIT_JOBS (slowapi syntax, e.g. "10/minute") to
+# override the defaults. /api/health gets a higher ceiling because
+# liveness probes are legitimately frequent.
 RATE_LIMIT_PROCESS = os.environ.get("ESMA_MILAN_RATE_LIMIT_PROCESS", "10/minute")
 RATE_LIMIT_HEALTH = os.environ.get("ESMA_MILAN_RATE_LIMIT_HEALTH", "60/minute")
 # Job status / result / delete: the page polls status every 2 s (30/minute),
@@ -550,10 +551,14 @@ def run() -> None:
     four workers serve four concurrent users. Workers are independent OS
     processes with no shared memory, which is fine because every request
     is fully independent (the per-worker rate-limit counters are the one
-    consequence; see RATE_LIMIT_PROCESS). There are no CLI flags; the
-    three environment variables are the only configuration, so the
-    defaults keep laptop behaviour unchanged and docker-compose.yml
-    sets them for the container.
+    consequence; see RATE_LIMIT_PROCESS). There are no CLI flags; these
+    three environment variables are the only configuration of the server
+    process itself, so the defaults keep laptop behaviour unchanged and
+    docker-compose.yml sets them for the container. The rate limits
+    (RATE_LIMIT_* above), the job store and the proxy flag
+    (ESMA_MILAN_JOBS_DIR, ESMA_MILAN_MAX_UPLOAD_MB,
+    ESMA_MILAN_JOB_RETENTION_HOURS, ESMA_MILAN_TRUST_PROXY) are read
+    where they are used; docs/api.md and docs/deploy.md list them.
     """
     uvicorn.run(
         "esma_milan.api.server:app",

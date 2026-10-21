@@ -265,8 +265,12 @@ def test_numeric_cols_boolean_inferred_column_is_hard_error(tmp_path: Path) -> N
     """Polars infers TRUE/FALSE as Boolean. A monetary column holding only
     TRUE/FALSE is data corruption; it must not be cast to 1.0 / 0.0."""
     p = _csv_with_balances(tmp_path, ["TRUE", "FALSE"])
-    with pytest.raises(ValueError, match="2 non-numeric value"):
+    with pytest.raises(ValueError, match="2 non-numeric value") as excinfo:
         read_and_clean(p, _TAX, numeric_cols={"current_principal_balance"})
+    # The samples show the file's spelling, not the Boolean Polars parsed.
+    msg = str(excinfo.value)
+    assert "data row 1: 'TRUE'" in msg and "data row 2: 'FALSE'" in msg
+    assert "True" not in msg.replace("TRUE", "")
 
 
 def test_numeric_cols_absent_columns_are_ignored(tmp_path: Path) -> None:

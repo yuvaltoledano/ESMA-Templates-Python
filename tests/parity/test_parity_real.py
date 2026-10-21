@@ -74,8 +74,6 @@ from esma_milan.runner import run_pipeline
 
 from .conftest import FIXTURES_ROOT, ParityFixture
 
-SKIP_REAL_FIXTURE: bool = False
-
 # If any of the three real-fixture files is missing on this checkout
 # (e.g. a sparse checkout), every real-fixture parity test is
 # pytest.skip()-ed rather than failing.
@@ -140,10 +138,6 @@ def real_run_output(
 
 
 @pytest.mark.parity
-@pytest.mark.skipif(
-    SKIP_REAL_FIXTURE,
-    reason="real-fixture parity disabled at module level",
-)
 @pytest.mark.skipif(
     not _real_fixture_present(),
     reason=(
