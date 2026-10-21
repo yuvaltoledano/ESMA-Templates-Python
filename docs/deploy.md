@@ -214,8 +214,8 @@ containing `certificate obtained successfully` for your hostname:
 
 Now open `https://milan.example.com` (your hostname) in a browser on
 your Mac. The browser asks for the username and password from `.env`.
-The page appears, and the footer's health indicator shows "healthy"
-within a few seconds.
+The page appears, and the health indicator at the right of the top bar
+shows "API healthy" within a few seconds.
 
 Smoke test with the synthetic fixture that ships in the repository.
 Download the two CSVs to your Mac from GitHub (open each link, then
@@ -226,10 +226,10 @@ Download the two CSVs to your Mac from GitHub (open each link, then
 
 In the page, choose them as the loans and collaterals files, enter any
 deal name (letters, digits, spaces, `.`, `-`, `_`) and click **Process
-Pool & Download**. The page shows the job's progress ("Stage 7 of 11 ...") and,
+& download**. The page shows the job's progress ("Stage 7 of 11 ...") and,
 within a few seconds, a **Download workbook** button for
 `2024-06-30 <deal> Flattened loans and collaterals.xlsx`; click it, then
-**Delete from server**. Try **Analyze Pool** too.
+**Delete from server**. Try **Analyze pool** too.
 
 ## 6. Updating to a new version
 
