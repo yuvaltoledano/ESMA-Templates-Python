@@ -9,7 +9,7 @@ final workbook — exactly the Domi-2025-1 parity failure for
 pool_addition_date, principal_grace_period_end_date, and
 prepayment_date.
 
-This test reads the bundled synthetic taxonomy and asserts every
+This test reads the taxonomy bundled with the package and asserts every
 {DATEFORMAT}-typed RREL/RREC field's cleaned name is present in the
 corresponding date-columns tuple. If a future taxonomy update introduces
 a new date field without updating the parse list, this test fails and
@@ -23,8 +23,6 @@ added without updating parse list".
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import openpyxl
 
 from esma_milan.config import (
@@ -33,9 +31,9 @@ from esma_milan.config import (
     PROPERTY_DATE_COLUMNS,
 )
 from esma_milan.io_layer.clean_names import clean_name
+from esma_milan.io_layer.read_taxonomy import bundled_taxonomy_path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TAXONOMY_PATH = REPO_ROOT / "tests" / "fixtures" / "synthetic" / "taxonomy.xlsx"
+TAXONOMY_PATH = bundled_taxonomy_path()
 
 # Sheet 1 column indices (0-indexed) in the bundled taxonomy:
 #   0 TEMPLATE CATEGORY, 1 SECTION, 2 FIELD CODE, 3 FIELD NAME,

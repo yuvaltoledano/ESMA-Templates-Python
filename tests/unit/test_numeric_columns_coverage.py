@@ -15,19 +15,17 @@ for the {DATEFORMAT} fields.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import openpyxl
 
 from esma_milan.io_layer.clean_names import clean_name
 from esma_milan.io_layer.read_taxonomy import (
+    bundled_taxonomy_path,
     load_taxonomy,
     load_taxonomy_formats,
     numeric_field_names,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TAXONOMY_PATH = REPO_ROOT / "tests" / "fixtures" / "synthetic" / "taxonomy.xlsx"
+TAXONOMY_PATH = bundled_taxonomy_path()
 
 # Sheet 1 column indices (0-indexed) in the bundled taxonomy:
 #   0 TEMPLATE CATEGORY, 1 SECTION, 2 FIELD CODE, 3 FIELD NAME,

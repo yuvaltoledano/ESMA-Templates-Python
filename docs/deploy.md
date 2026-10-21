@@ -107,8 +107,10 @@ The `fstab` line makes the swap file come back after a reboot.
 ## 3. Get the code
 
 Clone the repository into `/opt/esma-milan`. The `--recurse-submodules`
-part also fetches the `r_reference` folder, which the build needs for
-the ESMA taxonomy file:
+part also fetches the `r_reference` folder (the R reference
+implementation). The build does not need it: the ESMA taxonomy ships
+inside the Python package. It is harmless to keep, and the commands
+below keep it so the checkout matches the repository's own instructions:
 
 ```
 # git clone --recurse-submodules https://github.com/yuvaltoledano/ESMA-Templates-Python.git /opt/esma-milan
@@ -223,9 +225,8 @@ Download the two CSVs to your Mac from GitHub (open each link, then
 - `tests/fixtures/synthetic/collaterals.csv`
 
 In the page, choose them as the loans and collaterals files, enter any
-deal name (letters, digits, spaces, `.`, `-`, `_`), leave the taxonomy
-empty (the server has the default one) and click **Process Pool &
-Download**. The page shows the job's progress ("Stage 7 of 11 ...") and,
+deal name (letters, digits, spaces, `.`, `-`, `_`) and click **Process
+Pool & Download**. The page shows the job's progress ("Stage 7 of 11 ...") and,
 within a few seconds, a **Download workbook** button for
 `2024-06-30 <deal> Flattened loans and collaterals.xlsx`; click it, then
 **Delete from server**. Try **Analyze Pool** too.
@@ -305,7 +306,7 @@ All commands assume `cd /opt/esma-milan` first.
   `docker compose ps`: if `app` is not `(healthy)`, read
   `docker compose logs app` for the reason. If `app` is healthy, the
   request was probably rejected by Caddy before reaching the app: an
-  upload set larger than 1900 MB in total, or a session whose password
+  upload set larger than 1300 MB in total, or a session whose password
   expired in the browser (reload the page and log in again).
 - **A `502` error, or `web` keeps restarting.** `app` is not healthy
   (see above), or `web` started before `app` was healthy;
@@ -445,4 +446,4 @@ restarts it; a job running at that moment ends as `interrupted`.
 **Uploads.** The upload itself goes through your connection: a 175 MB
 loans file takes a few minutes on a typical home upload speed, during
 which the page shows "Uploading files...". Caddy allows requests up to
-1900 MB (three files at the 600 MB cap).
+1300 MB (the two files at the 600 MB cap, plus multipart framing).

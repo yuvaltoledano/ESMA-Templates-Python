@@ -21,6 +21,6 @@ frontend/node_modules
 frontend/dist
 frontend/.vite
 REPO_ASSESSMENT.md
-# The R reference is only needed at run time for the ESMA taxonomy.
+# The R reference is not needed by the images: the ESMA taxonomy ships as
+# package data under src/esma_milan/data/.
 r_reference/**
-!r_reference/inputs/ESMA template taxonomy.xlsx

@@ -7,7 +7,7 @@ input is 1,295 loan rows and 1,952 collateral rows). Identifiers in the
 fixture are perturbed; see tests/fixtures/README.md for what is and is
 not anonymised.
 
-If any of the four fixture files is missing (e.g. a sparse checkout),
+If any of the three fixture files is missing (e.g. a sparse checkout),
 every real-fixture test is pytest.skip()-ed rather than failing.
 
 MILAN IEEE-754 tolerance
@@ -76,13 +76,12 @@ from .conftest import FIXTURES_ROOT, ParityFixture
 
 SKIP_REAL_FIXTURE: bool = False
 
-# If any of the four real-fixture files is missing on this checkout
+# If any of the three real-fixture files is missing on this checkout
 # (e.g. a sparse checkout), every real-fixture parity test is
 # pytest.skip()-ed rather than failing.
 _REAL_FIXTURE_FILES = (
     FIXTURES_ROOT / "real_anonymised" / "loans.csv",
     FIXTURES_ROOT / "real_anonymised" / "collaterals.csv",
-    FIXTURES_ROOT / "real_anonymised" / "taxonomy.xlsx",
     FIXTURES_ROOT / "real_anonymised" / "expected_r_output.xlsx",
 )
 
@@ -132,7 +131,6 @@ def real_run_output(
     result = run_pipeline(
         loans_file_path=real_fixture.loans,
         collaterals_file_path=real_fixture.collaterals,
-        taxonomy_file_path=real_fixture.taxonomy,
         deal_name="Domi 2025-1",
         output_dir=out_dir,
         verbose=False,

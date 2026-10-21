@@ -46,7 +46,6 @@ uv run pytest
 uv run esma-milan run \
   --loans tests/fixtures/synthetic/loans.csv \
   --collaterals tests/fixtures/synthetic/collaterals.csv \
-  --taxonomy tests/fixtures/synthetic/taxonomy.xlsx \
   --deal SYNTHETIC_FIXTURE \
   --output /tmp/out
 
@@ -60,9 +59,11 @@ The output file is named `<pool_cutoff_date> <deal> Flattened loans and
 collaterals.xlsx` under `<output>/<deal>/`. `--output` defaults to
 `data/clean` (git-ignored).
 
-`--taxonomy` is required unless the current directory is the repo root
-with the submodule checked out, in which case the default is
-`r_reference/inputs/ESMA template taxonomy.xlsx`.
+The ESMA taxonomy that renames and types the CSV columns is not an
+input. It is a fixed ESMA artefact bundled with the package
+(`src/esma_milan/data/esma_rre_taxonomy.xlsx`), so the CLI runs from any
+directory. There is no `--taxonomy` flag; R's `main.R` has one, and this
+is a documented deviation (see `cli.py`).
 
 Other flags on `esma-milan run`:
 
@@ -106,8 +107,10 @@ Caddy; the `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` and
 src/esma_milan/
 ├── config.py              # constants mirrored from r_reference/R/utils.R
 ├── nd.py                  # ESMA "no data" (ND/NA/blank) detection
+├── data/
+│   └── esma_rre_taxonomy.xlsx  # the ESMA RRE taxonomy, identical to the R reference's copy
 ├── io_layer/
-│   ├── read_taxonomy.py   # taxonomy XLSX -> {field code: field name}
+│   ├── read_taxonomy.py   # bundled taxonomy XLSX -> {field code: field name}, {field code: FORMAT}
 │   ├── read_csv.py        # CSV read, taxonomy rename, snake_case headers
 │   ├── clean_names.py     # janitor::clean_names port
 │   ├── date_parsing.py    # ISO / Excel-serial date parsing
@@ -183,6 +186,11 @@ pipeline's business logic. Read it there rather than in this repo:
   defines the synthetic fixture.
 - `r_reference/mapping/MILAN_mapping_implementation_guide.md`: the
   ESMA → MILAN field mapping.
+- `r_reference/inputs/ESMA template taxonomy.xlsx`: the ESMA RRE
+  taxonomy. The package bundles the same file as
+  `src/esma_milan/data/esma_rre_taxonomy.xlsx`; a test keeps the two
+  byte-identical, so an ESMA republication is a submodule bump plus a
+  copy.
 
 ## Development
 

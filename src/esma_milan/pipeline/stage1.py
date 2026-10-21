@@ -3,8 +3,10 @@
 Composes the I/O-layer helpers into the orchestration described in
 r_reference/R/pipeline.R:130-200:
 
-  1. Load taxonomy (field names and, for the numeric-field typing that
-     replaces readr's sample inference, field FORMATs).
+  1. Load the ESMA taxonomy bundled with the package (field names and,
+     for the numeric-field typing that replaces readr's sample inference,
+     field FORMATs). R reads the same file from a path argument
+     (--taxonomy); here it is a fixed artefact, see read_taxonomy.py.
   2. Read loans + collaterals CSVs with the appropriate character_cols
      overrides and the taxonomy's numeric fields as Float64; apply
      taxonomy rename + clean_names; convert NA tokens.
@@ -44,6 +46,7 @@ from esma_milan.io_layer.date_parsing import (
 )
 from esma_milan.io_layer.read_csv import read_and_clean
 from esma_milan.io_layer.read_taxonomy import (
+    bundled_taxonomy_path,
     load_taxonomy,
     load_taxonomy_formats,
     numeric_field_names,
@@ -66,9 +69,13 @@ def run_stage1(
     *,
     loans_path: Path,
     collaterals_path: Path,
-    taxonomy_path: Path,
 ) -> Stage1Output:
-    """Execute Stage 1 against the three input paths and return cleaned tables."""
+    """Execute Stage 1 against the two input CSVs and return cleaned tables.
+
+    The taxonomy is not a parameter: it is the fixed workbook bundled with
+    the package (`read_taxonomy.bundled_taxonomy_path`).
+    """
+    taxonomy_path = bundled_taxonomy_path()
     log.info(
         "stage1_start",
         loans=loans_path.name,

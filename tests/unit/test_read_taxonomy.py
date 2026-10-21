@@ -1,7 +1,7 @@
 """Tests for esma_milan.io_layer.read_taxonomy.load_taxonomy().
 
 Covers:
-- Successful load against the staged synthetic taxonomy fixture.
+- Successful load against the taxonomy bundled with the package.
 - Error when the file is missing.
 - Error when FIELD CODE column is absent.
 - Error when FIELD NAME column is absent.
@@ -9,7 +9,7 @@ Covers:
   filter(!is.na(`FIELD CODE`), !is.na(`FIELD NAME`))).
 - Whitespace-only cells treated as missing.
 - Spot-check of expected mappings (RREL2, RREC9 etc) against the
-  staged taxonomy.
+  bundled taxonomy.
 - load_taxonomy_formats() / numeric_field_names(): the FORMAT column
   read and the derived set of Float64-typed field names.
 """
@@ -22,13 +22,13 @@ import openpyxl
 import pytest
 
 from esma_milan.io_layer.read_taxonomy import (
+    bundled_taxonomy_path,
     load_taxonomy,
     load_taxonomy_formats,
     numeric_field_names,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SYNTHETIC_TAXONOMY = REPO_ROOT / "tests" / "fixtures" / "synthetic" / "taxonomy.xlsx"
+BUNDLED_TAXONOMY = bundled_taxonomy_path()
 
 
 def _make_taxonomy(path: Path, header: list[str | None], rows: list[list[object]]) -> None:
@@ -40,10 +40,10 @@ def _make_taxonomy(path: Path, header: list[str | None], rows: list[list[object]
     wb.save(path)
 
 
-def test_loads_synthetic_taxonomy() -> None:
-    mapping = load_taxonomy(SYNTHETIC_TAXONOMY)
+def test_loads_bundled_taxonomy() -> None:
+    mapping = load_taxonomy(BUNDLED_TAXONOMY)
     # Spot-check a handful of well-known ESMA codes against their official
-    # taxonomy names. Drift in any of these means the staged taxonomy has
+    # taxonomy names. Drift in any of these means the bundled taxonomy has
     # changed (and the rest of the pipeline likely needs updating too).
     assert mapping["RREL2"] == "Original Underlying Exposure Identifier"
     assert mapping["RREL3"] == "New Underlying Exposure Identifier"
@@ -55,10 +55,11 @@ def test_loads_synthetic_taxonomy() -> None:
     assert mapping["RREC23"] == "Guarantor Type"
 
 
-def test_taxonomy_size_matches_synthetic_fixture() -> None:
-    mapping = load_taxonomy(SYNTHETIC_TAXONOMY)
-    # Synthetic taxonomy has ~109 data rows; the metadata "Information
-    # section" header rows have NA codes and are filtered out.
+def test_taxonomy_size_is_plausible() -> None:
+    mapping = load_taxonomy(BUNDLED_TAXONOMY)
+    # The RRE taxonomy has ~109 data rows; the metadata "Information
+    # section" header rows have NA codes and are filtered out. The exact
+    # count (107) is pinned in test_bundled_taxonomy.py.
     assert 80 < len(mapping) < 200, f"unexpected taxonomy size: {len(mapping)}"
 
 
@@ -164,8 +165,8 @@ def test_duplicate_codes_last_one_wins(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_loads_synthetic_taxonomy_formats() -> None:
-    formats = load_taxonomy_formats(SYNTHETIC_TAXONOMY)
+def test_loads_bundled_taxonomy_formats() -> None:
+    formats = load_taxonomy_formats(BUNDLED_TAXONOMY)
     # One of each numeric format, one date, one list - the FORMAT column
     # is the taxonomy's per-field schema that read_csv types numeric
     # fields from.
@@ -174,7 +175,7 @@ def test_loads_synthetic_taxonomy_formats() -> None:
     assert formats["RREL68"] == "{INTEGER-9999}"
     assert formats["RREL7"] == "{DATEFORMAT}"
     assert formats["RREL69"] == "{LIST}"
-    assert set(formats) == set(load_taxonomy(SYNTHETIC_TAXONOMY))
+    assert set(formats) == set(load_taxonomy(BUNDLED_TAXONOMY))
 
 
 def test_missing_format_column_raises(tmp_path: Path) -> None:

@@ -46,7 +46,6 @@ def synthetic_summary_df(tmp_path_factory: pytest.TempPathFactory) -> pl.DataFra
     result = run_pipeline(
         loans_file_path=SYNTHETIC_FIXTURE / "loans.csv",
         collaterals_file_path=SYNTHETIC_FIXTURE / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC_FIXTURE / "taxonomy.xlsx",
         deal_name="SYNTHETIC_FIXTURE",
         output_dir=out_dir,
         verbose=False,

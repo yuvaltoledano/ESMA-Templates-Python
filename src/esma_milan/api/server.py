@@ -57,7 +57,6 @@ from esma_milan.analysis import AnalysisResult
 from esma_milan.api import jobs
 from esma_milan.api.handlers import (
     CSV_CONTENT_TYPES,
-    XLSX_CONTENT_TYPES,
     ApiError,
     DryRunResult,
     analysis_response_from_result,
@@ -296,7 +295,6 @@ async def process(
     loans: Annotated[UploadFile, File()],
     collaterals: Annotated[UploadFile, File()],
     deal_name: Annotated[str, Form()],
-    taxonomy: Annotated[UploadFile | None, File()] = None,
     aggregation: Annotated[Literal["auto", "by_loan", "by_group"], Form()] = "auto",
     min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_MIN_LOAN_ID_COVERAGE,
     dry_run: Annotated[bool, Form()] = False,
@@ -304,9 +302,12 @@ async def process(
 ) -> Response:
     """Run the pipeline against an uploaded ESMA loans/collaterals pair.
 
-    Validates the uploads at the transport layer (per-file size cap,
-    Content-Type allowlist) *before* reading them into memory, then
-    reads the bytes and hands off to the synchronous
+    The two CSVs are the only files; the ESMA taxonomy is bundled with
+    the package and cannot be supplied per request (a `taxonomy` form
+    field from an older client is ignored, as FastAPI ignores any unknown
+    multipart field). Validates the uploads at the transport layer
+    (per-file size cap, Content-Type allowlist) *before* reading them
+    into memory, then reads the bytes and hands off to the synchronous
     `process_pipeline_from_bytes` (which validates `deal_name` and runs
     the pipeline). Returns the composed workbook as an .xlsx download,
     or - when `dry_run` is true - a `DryRunResponse` JSON summary. All
@@ -320,19 +321,13 @@ async def process(
     validate_upload(
         collaterals, field="collaterals", allowed_content_types=CSV_CONTENT_TYPES
     )
-    if taxonomy is not None:
-        validate_upload(
-            taxonomy, field="taxonomy", allowed_content_types=XLSX_CONTENT_TYPES
-        )
 
     loans_bytes = await loans.read()
     collaterals_bytes = await collaterals.read()
-    taxonomy_bytes = await taxonomy.read() if taxonomy is not None else None
 
     result = process_pipeline_from_bytes(
         loans_bytes=loans_bytes,
         collaterals_bytes=collaterals_bytes,
-        taxonomy_bytes=taxonomy_bytes,
         deal_name=deal_name,
         aggregation=aggregation,
         min_coverage=min_coverage,
@@ -426,7 +421,6 @@ async def create_job(
     loans: Annotated[UploadFile, File()],
     collaterals: Annotated[UploadFile, File()],
     deal_name: Annotated[str, Form()],
-    taxonomy: Annotated[UploadFile | None, File()] = None,
     aggregation: Annotated[Literal["auto", "by_loan", "by_group"], Form()] = "auto",
     min_coverage: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_MIN_LOAN_ID_COVERAGE,
     analysis_only: Annotated[bool, Form()] = False,
@@ -436,19 +430,15 @@ async def create_job(
     Same multipart form as `POST /api/process` minus `dry_run`
     (`analysis_only` selects the mode), the same validation (deal name,
     Content-Types, per-file cap) but with the cap taken from
-    `ESMA_MILAN_MAX_UPLOAD_MB` and no loan-count limit. The uploads are
-    streamed into the job directory; the worker process picks the job up
-    from there.
+    `ESMA_MILAN_MAX_UPLOAD_MB` and no loan-count limit. The two CSV
+    uploads are streamed into the job directory; the worker process picks
+    the job up from there and reads the bundled ESMA taxonomy itself.
     """
     cap = jobs.max_upload_bytes()
     validate_upload(loans, field="loans", allowed_content_types=CSV_CONTENT_TYPES, max_bytes=cap)
     validate_upload(
         collaterals, field="collaterals", allowed_content_types=CSV_CONTENT_TYPES, max_bytes=cap
     )
-    if taxonomy is not None:
-        validate_upload(
-            taxonomy, field="taxonomy", allowed_content_types=XLSX_CONTENT_TYPES, max_bytes=cap
-        )
     validate_deal_name(deal_name)
 
     root = jobs.jobs_root()
@@ -461,15 +451,12 @@ async def create_job(
         filenames={
             "loans": loans.filename or "",
             "collaterals": collaterals.filename or "",
-            **({"taxonomy": taxonomy.filename or ""} if taxonomy is not None else {}),
         },
     )
     job = jobs.begin_job(root, job_request)
     try:
         await _stream_upload_to(loans, job.inputs_dir / "loans.csv")
         await _stream_upload_to(collaterals, job.inputs_dir / "collaterals.csv")
-        if taxonomy is not None:
-            await _stream_upload_to(taxonomy, job.inputs_dir / "taxonomy.xlsx")
         job = jobs.commit_job(root, job)
     except BaseException:
         jobs.abort_job(job)

@@ -28,7 +28,6 @@ def _make_job(
     mode: str = "workbook",
     loans: bytes = LOANS,
     collaterals: bytes = COLLATERALS,
-    taxonomy: bytes | None = None,
     deal: str = "SYNTHETIC_FIXTURE",
 ) -> jobs.Job:
     request = jobs.JobRequest(
@@ -41,8 +40,6 @@ def _make_job(
     job = jobs.begin_job(root, request)
     (job.inputs_dir / "loans.csv").write_bytes(loans)
     (job.inputs_dir / "collaterals.csv").write_bytes(collaterals)
-    if taxonomy is not None:
-        (job.inputs_dir / "taxonomy.xlsx").write_bytes(taxonomy)
     return jobs.commit_job(root, job)
 
 
@@ -89,24 +86,6 @@ def test_bad_csv_job_fails_with_same_code_as_sync_endpoint(tmp_path: Path) -> No
     assert "reason" in (status.error["details"] or {})
     assert not job.inputs_dir.exists()
     assert not (job.output_dir / "analysis.json").exists()
-
-
-def test_taxonomy_without_format_fails_with_invalid_csv_naming_column(tmp_path: Path) -> None:
-    import io
-
-    import openpyxl
-
-    wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet("Sheet1")
-    ws.append(["FIELD CODE", "FIELD NAME"])
-    ws.append(["RREL30", "Current Principal Balance"])
-    buf = io.BytesIO()
-    wb.save(buf)
-    _make_job(tmp_path, taxonomy=buf.getvalue())
-    status = worker.process_one(tmp_path, "w")
-    assert status is not None and status.state == "failed"
-    assert status.error is not None and status.error["error"] == "invalid_csv"
-    assert "FORMAT" in status.error["details"]["reason"]
 
 
 def test_row_limit_guard_fails_job_with_output_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

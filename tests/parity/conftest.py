@@ -1,8 +1,9 @@
 """Shared parity-test fixtures.
 
-Each fixture pairs an input directory (loans.csv, collaterals.csv,
-taxonomy.xlsx) with the staged R-reference output that the Python pipeline
-must reproduce cell-for-cell.
+Each fixture pairs an input directory (loans.csv, collaterals.csv) with
+the staged R-reference output that the Python pipeline must reproduce
+cell-for-cell. The ESMA taxonomy is not a fixture: the pipeline reads the
+copy bundled with the package.
 """
 
 from __future__ import annotations
@@ -21,11 +22,10 @@ class ParityFixture:
     name: str
     loans: Path
     collaterals: Path
-    taxonomy: Path
     expected_output: Path
 
     def __post_init__(self) -> None:
-        for p in (self.loans, self.collaterals, self.taxonomy, self.expected_output):
+        for p in (self.loans, self.collaterals, self.expected_output):
             if not p.exists():
                 raise FileNotFoundError(f"parity fixture missing: {p}")
 
@@ -36,7 +36,6 @@ def _build_fixture(name: str) -> ParityFixture:
         name=name,
         loans=base / "loans.csv",
         collaterals=base / "collaterals.csv",
-        taxonomy=base / "taxonomy.xlsx",
         expected_output=base / "expected_r_output.xlsx",
     )
 

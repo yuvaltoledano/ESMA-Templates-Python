@@ -13,12 +13,14 @@ background worker (`api/worker.py`) does not call it: it runs
 `classify_pipeline_error` so both paths return the same error codes.
 
 Disk note: the pipeline's input interface (`runner.run_pipeline` ->
-`stage1` -> `read_csv` / `read_taxonomy`) is path-based. Refactoring
-that whole chain to accept in-memory bytes would touch the most
-parity-sensitive code in the repo, so the handler instead materialises
-uploads into a per-request `tempfile.TemporaryDirectory()` that is torn
-down before the function returns. The workbook *output* is true
-in-memory (`runner.run_pipeline(output_dir=None)` -> bytes).
+`stage1` -> `read_csv`) is path-based. Refactoring that chain to accept
+in-memory bytes would touch the most parity-sensitive code in the repo,
+so the handler instead materialises the two uploads (loans and
+collaterals CSVs) into a per-request `tempfile.TemporaryDirectory()` that
+is torn down before the function returns. The ESMA taxonomy is not an
+upload: Stage 1 reads the copy bundled with the package. The workbook
+*output* is true in-memory (`runner.run_pipeline(output_dir=None)` ->
+bytes).
 """
 
 from __future__ import annotations
@@ -75,11 +77,6 @@ log = structlog.get_logger(__name__)
 # pool size is known once the pipeline parses the file.
 MAX_SYNC_LOAN_COUNT: int = 30_000
 
-# Default ESMA taxonomy used when a request omits the optional taxonomy
-# upload. Mirrors the CLI default in cli.py: a path relative to the
-# process working directory, bundled with the R reference submodule.
-DEFAULT_TAXONOMY_PATH: Path = Path("r_reference/inputs/ESMA template taxonomy.xlsx")
-
 _AGGREGATION_CHOICES: frozenset[str] = frozenset({"auto", "by_loan", "by_group"})
 
 # Transport-level hard cap on a single uploaded file, enforced before the
@@ -89,14 +86,11 @@ _AGGREGATION_CHOICES: frozenset[str] = frozenset({"auto", "by_loan", "by_group"}
 # hostile 1 GB upload from forcing a large allocation in the first place.
 MAX_UPLOAD_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MiB
 
-# Content-Type allowlists for the uploaded files. Strict by design: a
+# Content-Type allowlist for the uploaded CSVs. Strict by design: a
 # public API accepting only explicit content types has less attack
 # surface than one that sniffs `application/octet-stream`. Clients that
 # mislabel their CSVs get a 400 that names the accepted types.
 CSV_CONTENT_TYPES: frozenset[str] = frozenset({"text/csv", "application/csv"})
-XLSX_CONTENT_TYPES: frozenset[str] = frozenset(
-    {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
-)
 
 # deal_name flows into the Content-Disposition header and the output
 # workbook filename. The allowlist - alphanumerics, space, hyphen,
@@ -201,10 +195,10 @@ def validate_upload(
 
     Args:
         file: the multipart `UploadFile` from the endpoint signature.
-        field: the form field name ("loans", "collaterals", "taxonomy"),
-            used in the error so the client knows which file to fix.
+        field: the form field name ("loans" or "collaterals"), used in
+            the error so the client knows which file to fix.
         allowed_content_types: the lower-cased Content-Types accepted for
-            this field (`CSV_CONTENT_TYPES` or `XLSX_CONTENT_TYPES`).
+            this field (`CSV_CONTENT_TYPES`).
         max_bytes: the per-file cap to enforce.
 
     Raises:
@@ -280,7 +274,6 @@ def process_pipeline_from_bytes(
     *,
     loans_bytes: bytes,
     collaterals_bytes: bytes,
-    taxonomy_bytes: bytes | None,
     deal_name: str,
     aggregation: str,
     min_coverage: float,
@@ -292,8 +285,6 @@ def process_pipeline_from_bytes(
     Args:
         loans_bytes: raw bytes of the uploaded loans CSV.
         collaterals_bytes: raw bytes of the uploaded collaterals CSV.
-        taxonomy_bytes: raw bytes of an uploaded taxonomy XLSX, or None
-            to fall back to `DEFAULT_TAXONOMY_PATH`.
         deal_name: deal name used in the output filename and summary.
         aggregation: one of "auto" | "by_loan" | "by_group". "auto"
             lets the pipeline detect the method (Stage 6).
@@ -365,7 +356,6 @@ def process_pipeline_from_bytes(
         dry_run=dry_run,
         analysis_only=analysis_only,
         estimated_rows=estimated_rows,
-        taxonomy="uploaded" if taxonomy_bytes is not None else "default",
     )
 
     # analysis_only reuses the dry_run code path internally: Stage 7's
@@ -375,7 +365,7 @@ def process_pipeline_from_bytes(
     pipeline_dry_run = dry_run or analysis_only
 
     # --- Materialise uploads + run the pipeline ---------------------------
-    # The temp dir holds only the *input* CSVs/XLSX; it is torn down on
+    # The temp dir holds only the two *input* CSVs; it is torn down on
     # exit from the `with` block. The workbook output never touches disk
     # (run_pipeline(output_dir=None) -> bytes), and the dry-run summary
     # is extracted into plain ints before the block exits, so nothing
@@ -387,17 +377,10 @@ def process_pipeline_from_bytes(
         loans_path.write_bytes(loans_bytes)
         collaterals_path.write_bytes(collaterals_bytes)
 
-        if taxonomy_bytes is not None:
-            taxonomy_path = tmp / "taxonomy.xlsx"
-            taxonomy_path.write_bytes(taxonomy_bytes)
-        else:
-            taxonomy_path = default_taxonomy_path()
-
         try:
             result = run_pipeline(
                 loans_file_path=loans_path,
                 collaterals_file_path=collaterals_path,
-                taxonomy_file_path=taxonomy_path,
                 deal_name=deal_name,
                 output_dir=None,  # in-memory: workbook returned as bytes
                 aggregation_method=aggregation_method,
@@ -449,25 +432,6 @@ def process_pipeline_from_bytes(
             workbook_bytes=result.workbook_bytes,
             filename=result.output_filename,
         )
-
-
-def default_taxonomy_path() -> Path:
-    """The bundled ESMA taxonomy for requests that upload none.
-
-    Raises:
-        ApiError: 500 `internal_error` if the file is missing from the
-            working directory (the image always carries it; a laptop run
-            needs the submodule checked out).
-    """
-    if not DEFAULT_TAXONOMY_PATH.exists():
-        log.error("api_default_taxonomy_missing", path=str(DEFAULT_TAXONOMY_PATH))
-        raise ApiError(
-            500,
-            "internal_error",
-            "The server's default ESMA taxonomy is unavailable. "
-            "Include a `taxonomy` file in the request to proceed.",
-        )
-    return DEFAULT_TAXONOMY_PATH
 
 
 def classify_pipeline_error(exc: BaseException, *, deal_name: str) -> ApiError:
