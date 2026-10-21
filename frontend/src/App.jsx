@@ -17,7 +17,10 @@
 // cap the page warns about. All requests use relative /api URLs, proxied
 // to localhost:8000 by the Vite dev server (vite.config.js).
 // See docs/api.md and docs/analysis.md for the contract.
-import { useCallback, useEffect, useState } from 'react'
+//
+// The network, storage and formatting code lives in lib/ and hooks/; this
+// file holds the markup.
+import { useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -30,116 +33,19 @@ import {
   YAxis,
 } from 'recharts'
 
-// Mirrors the API's deal_name rule (handlers.py::validate_deal_name):
-// letters, digits, space, hyphen, underscore, period; length 1-100.
-// The server stays the source of truth - this is just fast-fail UX.
-const DEAL_NAME_PATTERN = /^[A-Za-z0-9 ._-]{1,100}$/
-
-const NETWORK_ERROR_MESSAGE =
-  'Cannot reach API at localhost:8000. Is `uv run esma-milan-server` running?'
-
-// Background-job polling. The server's status rate limit (120/minute by
-// default) comfortably covers one poll every 2 s; a short run of failed
-// polls (a proxy hiccup, a redeploy) is tolerated before giving up.
-const JOB_STORAGE_KEY = 'esma-milan-job'
-const POLL_INTERVAL_MS = 2000
-const MAX_POLL_FAILURES = 5
-
-// sessionStorage is per tab and may be unavailable (private mode); every
-// access is guarded so the page works without it.
-function readStoredJob() {
-  try {
-    const raw = sessionStorage.getItem(JOB_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed.id === 'string' ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-function storeJob(job) {
-  try {
-    if (job) sessionStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(job))
-    else sessionStorage.removeItem(JOB_STORAGE_KEY)
-  } catch {
-    // Storage unavailable: a reload will not resume, nothing else changes.
-  }
-}
-
-function errorFromBody(body) {
-  return {
-    type: 'api',
-    code: body.error,
-    message: body.message || 'The request failed.',
-    details: body.details ?? null,
-  }
-}
-
-function networkError() {
-  return { type: 'network', message: NETWORK_ERROR_MESSAGE }
-}
-
-function formatElapsed(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return minutes > 0 ? `${minutes} min ${seconds} s` : `${seconds} s`
-}
-
-// Categorical pie-chart palette. Indexed by spec-row position, so the
-// biggest categoricals (interest rate type and loan purpose, 13 ESMA
-// codes each, plus a possible UNK row) each get a distinct colour without
-// cycling. The first 11 entries are the original palette; the last four
-// extend it. The bar charts use only CHART_COLORS[0].
-const CHART_COLORS = [
-  '#0f766e', '#1d4ed8', '#b45309', '#7c3aed',
-  '#be123c', '#0369a1', '#15803d', '#c2410c',
-  '#475569', '#a16207', '#9f1239', '#4d7c0f',
-  '#6d28d9', '#0e7490', '#b91c1c',
-]
-
-// EUR formatter without decimals - pool balances are large enough that
-// cent-level precision in a stratification table is noise.
-const EUR_FORMAT = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'EUR',
-  maximumFractionDigits: 0,
-})
-const PCT_FORMAT = new Intl.NumberFormat('en-US', {
-  style: 'percent',
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-})
-
-// Compact-EUR formatter for bar-chart Y-axis ticks. Real pools push
-// into the hundreds of millions; the full euro string overflows the
-// axis gutter. Convention is standard structured-finance:
-//   < €1K   -> exact (€500)
-//   €1K-€1M -> €1K, €500K (no decimals)
-//   €1M-€1B -> €1.5M, €500M (one decimal)
-//   >= €1B  -> €1.5B, €2.3B (one decimal)
-// The chart tooltip still uses the full EUR formatter so hover-over a
-// bar shows the precise number.
-function formatEurAxis(value) {
-  if (value == null || Number.isNaN(value)) return ''
-  const abs = Math.abs(value)
-  const sign = value < 0 ? '-' : ''
-  if (abs < 1_000) return `${sign}€${Math.round(abs)}`
-  if (abs < 1_000_000) return `${sign}€${Math.round(abs / 1_000)}K`
-  if (abs < 1_000_000_000) return `${sign}€${(abs / 1_000_000).toFixed(1)}M`
-  return `${sign}€${(abs / 1_000_000_000).toFixed(1)}B`
-}
-
-// X-axis tick formatter for bucketed bar charts. Strips the unit
-// suffix from the bucketed labels (seasoning's " months", LTV's "%")
-// since the chart's title already conveys the unit and the suffix
-// just crowds the tick text. Tables keep the full label. Geography
-// bar-chart labels (NL-NH, NL-UT, ...) carry neither suffix, so the
-// formatter passes them through unchanged.
-function formatBucketTick(value) {
-  return String(value).replace(/ months$/, '').replace(/%$/, '')
-}
+import { useAnalysis } from './hooks/useAnalysis.js'
+import { useHealth } from './hooks/useHealth.js'
+import { useJob } from './hooks/useJob.js'
+import { BAR_COLOR, colorForRow } from './lib/chartPalette.js'
+import {
+  formatBucketTick,
+  formatCount,
+  formatCurrency,
+  formatEurAxis,
+  formatFileSize,
+  formatPercent,
+  formatWeightedAverage,
+} from './lib/format.js'
 
 function HealthIndicator({ status }) {
   const config = {
@@ -161,282 +67,38 @@ function App() {
   const [collateralsFile, setCollateralsFile] = useState(null)
   const [dealName, setDealName] = useState('')
 
-  // A job started in this tab (or restored from sessionStorage after a
-  // reload): { id, mode: 'download'|'analysis', statusUrl, resultUrl }.
-  const [job, setJob] = useState(() => readStoredJob())
-  // 'idle' | 'uploading' | 'polling' | 'stopped' | 'success' | 'error' | 'deleted'
-  const [phase, setPhase] = useState(() => (readStoredJob() ? 'polling' : 'idle'))
-  // Last GET /api/jobs/{id} body, for the progress panel.
-  const [jobStatus, setJobStatus] = useState(null)
-  const [now, setNow] = useState(() => Date.now())
-  // The download mode produces { filename, url }; analysis mode the full
-  // AnalysisResponse JSON. One state holder, distinguished by `mode`.
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null) // { type, message, code?, details? }
-  const [formError, setFormError] = useState(null) // client-side validation
-
-  const [health, setHealth] = useState('unknown')
-  // From GET /api/health: { maxUploadMb, retentionHours }. Null until the
-  // first health response; the page cannot read the server's env itself.
-  const [serverLimits, setServerLimits] = useState(null)
-
-  // Poll /api/health on load and every 30s so a server that died
-  // unexpectedly is visible without a manual refresh.
-  useEffect(() => {
-    let cancelled = false
-    async function check() {
-      try {
-        const res = await fetch('/api/health')
-        if (cancelled) return
-        if (!res.ok) {
-          setHealth('down')
-          return
-        }
-        const body = await res.json()
-        if (!cancelled) {
-          setHealth(body && body.status === 'ok' ? 'healthy' : 'down')
-          if (body && typeof body.max_upload_mb === 'number') {
-            setServerLimits({
-              maxUploadMb: body.max_upload_mb,
-              retentionHours: body.job_retention_hours,
-            })
-          }
-        }
-      } catch {
-        if (!cancelled) setHealth('unknown')
-      }
-    }
-    check()
-    const id = setInterval(check, 30000)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [])
-
-  // Poll the job while the page is watching it. Ends on done/failed, on
-  // "Stop watching", or when the job disappears (404 after expiry/delete).
-  useEffect(() => {
-    if (phase !== 'polling' || !job) return undefined
-    let cancelled = false
-    let failures = 0
-
-    async function finishAnalysis() {
-      const res = await fetch(job.resultUrl)
-      const data = await res.json().catch(() => null)
-      if (cancelled) return
-      if (!res.ok || !data) {
-        setError(data && typeof data.error === 'string' ? errorFromBody(data) : networkError())
-        setPhase('error')
-        return
-      }
-      setResult({ mode: 'analysis', data })
-      setPhase('success')
-    }
-
-    async function tick() {
-      let res
-      try {
-        res = await fetch(job.statusUrl)
-      } catch {
-        failures += 1
-        if (failures >= MAX_POLL_FAILURES && !cancelled) {
-          setError(networkError())
-          setPhase('error')
-        }
-        return
-      }
-      if (cancelled) return
-      failures = 0
-      if (res.status === 429) return // rate limited: skip this tick, keep polling
-      const body = await res.json().catch(() => null)
-      if (cancelled) return
-      if (!res.ok || !body) {
-        if (res.status === 404) storeJob(null)
-        setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
-        setPhase('error')
-        return
-      }
-      setJobStatus(body)
-      setNow(Date.now())
-      if (body.state === 'done') {
-        if (job.mode === 'analysis') {
-          try {
-            await finishAnalysis()
-          } catch {
-            if (!cancelled) {
-              setError(networkError())
-              setPhase('error')
-            }
-          }
-        } else {
-          setResult({
-            mode: 'download',
-            filename: body.result?.filename ?? 'pool.xlsx',
-            url: job.resultUrl,
-          })
-          setPhase('success')
-        }
-      } else if (body.state === 'failed') {
-        setError(
-          body.error && typeof body.error.error === 'string'
-            ? errorFromBody(body.error)
-            : { type: 'api', code: 'internal_error', message: 'The job failed.' },
-        )
-        setPhase('error')
-      }
-    }
-
-    tick()
-    const id = setInterval(tick, POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [phase, job])
-
-  // Any change to the form is a fresh attempt - drop stale results/errors.
-  const resetStatus = useCallback(() => {
-    setFormError(null)
-    setError(null)
-    setPhase((p) => (['success', 'error', 'stopped', 'deleted'].includes(p) ? 'idle' : p))
-    setResult(null)
-  }, [])
+  const health = useHealth()
+  const { job, phase, status: jobStatus, result, error: jobError, formError, elapsed, progressPct, busy, actions } =
+    useJob()
+  const analysis = useAnalysis(job, phase)
+  const error = jobError ?? analysis.error
 
   const onFileChange = (setter) => (event) => {
     setter(event.target.files[0] ?? null)
-    resetStatus()
+    actions.reset()
   }
 
   const onDealNameChange = (event) => {
     setDealName(event.target.value)
-    resetStatus()
+    actions.reset()
   }
 
   // Warn (the server enforces) when a file exceeds the per-file cap the
   // server reported; silent until /api/health has answered.
-  const maxUploadBytes = serverLimits ? serverLimits.maxUploadMb * 1024 * 1024 : null
+  const maxUploadBytes = health.maxUploadMb !== null ? health.maxUploadMb * 1024 * 1024 : null
   const oversizedFiles = [
     ['loans', loansFile],
     ['collaterals', collateralsFile],
   ].filter(([, file]) => file && maxUploadBytes !== null && file.size > maxUploadBytes)
 
-  // Both buttons share validation + the POST; only the result handling
-  // diverges. The intent is signalled by the `mode` argument, which maps
-  // directly onto the API's `analysis_only` form field.
-  async function submit(mode) {
-    if (!loansFile || !collateralsFile) {
-      setFormError('Both a loans CSV and a collaterals CSV are required.')
-      return
-    }
-    if (dealName.trim() === '') {
-      setFormError('Deal name is required.')
-      return
-    }
-    if (!DEAL_NAME_PATTERN.test(dealName)) {
-      setFormError(
-        'Deal name may only contain letters, digits, spaces, hyphens, ' +
-          'underscores and periods, and must be 1-100 characters long.',
-      )
-      return
-    }
+  const submit = (mode) => actions.submit(mode, { loansFile, collateralsFile, dealName })
+  const stopWatching = actions.stopWatching
+  const deleteFromServer = actions.deleteFromServer
 
-    setFormError(null)
-    setError(null)
-    setResult(null)
-    setJobStatus(null)
-    setPhase('uploading')
-
-    const formData = new FormData()
-    formData.append('loans', loansFile)
-    formData.append('collaterals', collateralsFile)
-    formData.append('deal_name', dealName)
-    if (mode === 'analysis') formData.append('analysis_only', 'true')
-
-    try {
-      const response = await fetch('/api/jobs', {
-        method: 'POST',
-        body: formData,
-      })
-
-      // Every API failure path returns the ErrorResponse JSON shape. A
-      // non-JSON body means the request never reached the API (e.g. the
-      // dev proxy could not connect) - treat that as a network error.
-      let body = null
-      try {
-        body = await response.json()
-      } catch {
-        body = null
-      }
-      if (!response.ok) {
-        setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
-        setPhase('error')
-        return
-      }
-      if (!body || typeof body.job_id !== 'string') {
-        setError(networkError())
-        setPhase('error')
-        return
-      }
-      const newJob = {
-        id: body.job_id,
-        mode,
-        statusUrl: body.status_url,
-        resultUrl: body.result_url,
-      }
-      storeJob(newJob)
-      setJob(newJob)
-      setNow(Date.now())
-      setPhase('polling')
-    } catch {
-      setError(networkError())
-      setPhase('error')
-    }
-  }
-
-  function stopWatching() {
-    // The job keeps running on the server; the stored id lets a reload
-    // pick it up again.
-    setPhase('stopped')
-  }
-
-  async function deleteFromServer() {
-    if (!job) return
-    try {
-      const response = await fetch(job.statusUrl, { method: 'DELETE' })
-      if (response.status === 204 || response.status === 404) {
-        storeJob(null)
-        setJob(null)
-        setJobStatus(null)
-        setResult(null)
-        setPhase('deleted')
-        return
-      }
-      let body = null
-      try {
-        body = await response.json()
-      } catch {
-        body = null
-      }
-      setError(body && typeof body.error === 'string' ? errorFromBody(body) : networkError())
-      setPhase('error')
-    } catch {
-      setError(networkError())
-      setPhase('error')
-    }
-  }
-
-  const busy = phase === 'uploading' || phase === 'polling'
-  const stage = jobStatus?.stage ?? null
-  const progressPct =
-    stage && stage.total > 0 ? Math.round((stage.index / stage.total) * 100) : 0
-  const startedMs = jobStatus
-    ? Date.parse(jobStatus.started_at ?? jobStatus.created_at)
-    : null
-  const elapsed = startedMs ? formatElapsed(now - startedMs) : null
-  const retentionText = serverLimits
-    ? `Kept on the server for ${serverLimits.retentionHours} hours, then deleted automatically.`
-    : 'Kept on the server for a limited time, then deleted automatically.'
+  const retentionText =
+    health.retentionHours !== null
+      ? `Kept on the server for ${health.retentionHours} hours, then deleted automatically.`
+      : 'Kept on the server for a limited time, then deleted automatically.'
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-700">
@@ -493,7 +155,7 @@ function App() {
           {oversizedFiles.length > 0 && (
             <p className="text-sm text-amber-700">
               Notice: {oversizedFiles.map(([name]) => name).join(', ')} exceed
-              the server&apos;s upload limit of {serverLimits.maxUploadMb} MB
+              the server&apos;s upload limit of {health.maxUploadMb} MB
               per file and will be rejected.
             </p>
           )}
@@ -578,7 +240,7 @@ function App() {
             </p>
           )}
 
-          {phase === 'error' && error && (
+          {error && (
             <div className="rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
               <p className="font-medium">{error.message}</p>
               {error.type === 'api' && error.code && (
@@ -605,9 +267,9 @@ function App() {
           )}
         </div>
 
-        {phase === 'success' && result?.mode === 'analysis' && (
+        {phase === 'success' && result?.mode === 'analysis' && analysis.data && (
           <>
-            <AnalysisResults analysis={result.data} />
+            <AnalysisResults analysis={analysis.data} />
             <div className="mt-4 flex items-center gap-3 text-xs text-slate-500">
               <span>{retentionText}</span>
               <button
@@ -623,11 +285,12 @@ function App() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white px-6 py-3">
-        <HealthIndicator status={health} />
+        <HealthIndicator status={health.status} />
       </footer>
     </div>
   )
 }
+
 
 function JobProgress({ job, status, progressPct, elapsed, onStop }) {
   const state = status?.state ?? 'queued'
@@ -682,12 +345,12 @@ function AnalysisResults({ analysis }) {
           Pool analysis: {dealName}
         </h2>
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-600 sm:grid-cols-4">
-          <SummaryStat label="Loans" value={summary.loan_count.toLocaleString()} />
-          <SummaryStat label="Properties" value={summary.property_count.toLocaleString()} />
-          <SummaryStat label="Groups" value={summary.group_count.toLocaleString()} />
+          <SummaryStat label="Loans" value={formatCount(summary.loan_count)} />
+          <SummaryStat label="Properties" value={formatCount(summary.property_count)} />
+          <SummaryStat label="Groups" value={formatCount(summary.group_count)} />
           <SummaryStat
             label="Total balance"
-            value={EUR_FORMAT.format(summary.total_current_balance)}
+            value={formatCurrency(summary.total_current_balance)}
           />
         </dl>
         <p className="mt-2 text-xs text-slate-500">
@@ -759,26 +422,6 @@ function SummaryStat({ label, value }) {
   )
 }
 
-// Pool-level weighted-average formatter, keyed on the stratification's
-// registry key. seasoning's WA is in months (zero decimals, "months"
-// suffix); current_ltv's is a decimal 0..1+ (one decimal, percent);
-// current_interest_rate's is already in percent units (two decimals,
-// i.e. basis-point resolution). Other strats have
-// `weighted_average: null` so this is only called for the three
-// numeric ones.
-function formatWeightedAverage(stratKey, value) {
-  if (stratKey === 'seasoning') {
-    return `WA: ${Math.round(value).toLocaleString()} months`
-  }
-  if (stratKey === 'current_ltv') {
-    return `WA: ${(value * 100).toFixed(1)}%`
-  }
-  if (stratKey === 'current_interest_rate') {
-    return `WA: ${value.toFixed(2)}%`
-  }
-  return `WA: ${value}`
-}
-
 function StratificationTile({ stratKey, strat }) {
   const {
     title,
@@ -805,7 +448,7 @@ function StratificationTile({ stratKey, strat }) {
   // same colour in every run, even when other codes drop in and out
   // of being non-zero. The table swatch and the pie slice read from
   // the same array, so the two stay in sync.
-  const rowColors = rows.map((_, i) => CHART_COLORS[i % CHART_COLORS.length])
+  const rowColors = rows.map((row, i) => colorForRow(row.label, i))
 
   // Swatches replace the pie chart's removed legend - they're the
   // bridge between slice colour and bucket name. Bar charts use a
@@ -857,27 +500,27 @@ function StratificationTile({ stratKey, strat }) {
                   </div>
                 </td>
                 <td className="py-1.5 pr-2 text-right tabular-nums">
-                  {row.count.toLocaleString()}
+                  {formatCount(row.count)}
                 </td>
                 <td className="py-1.5 pr-2 text-right tabular-nums text-slate-500">
-                  {PCT_FORMAT.format(row.count_pct)}
+                  {formatPercent(row.count_pct)}
                 </td>
                 <td className="py-1.5 pr-2 text-right tabular-nums">
-                  {EUR_FORMAT.format(row.balance)}
+                  {formatCurrency(row.balance)}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-slate-500">
-                  {PCT_FORMAT.format(row.balance_pct)}
+                  {formatPercent(row.balance_pct)}
                 </td>
               </tr>
             ))}
             <tr className="bg-slate-50 font-medium text-slate-800">
               <td className="py-1.5 pr-2">Total</td>
               <td className="py-1.5 pr-2 text-right tabular-nums">
-                {total.count.toLocaleString()}
+                {formatCount(total.count)}
               </td>
               <td />
               <td className="py-1.5 pr-2 text-right tabular-nums">
-                {EUR_FORMAT.format(total.balance)}
+                {formatCurrency(total.balance)}
               </td>
               <td />
             </tr>
@@ -901,12 +544,12 @@ function ChartTooltip({ active, payload }) {
     <div className="rounded-md bg-slate-900/95 px-3 py-2 text-xs text-white shadow-lg">
       <div className="mb-1 font-medium">{datum.name}</div>
       <div className="tabular-nums">
-        Count: {datum.count.toLocaleString()} (
-        {PCT_FORMAT.format(datum.count_pct)})
+        Count: {formatCount(datum.count)} (
+        {formatPercent(datum.count_pct)})
       </div>
       <div className="tabular-nums">
-        Balance: {EUR_FORMAT.format(datum.balance)} (
-        {PCT_FORMAT.format(datum.balance_pct)})
+        Balance: {formatCurrency(datum.balance)} (
+        {formatPercent(datum.balance_pct)})
       </div>
     </div>
   )
@@ -988,7 +631,7 @@ function StratificationChart({ chartType, rows, rowColors, stratKey }) {
         />
         <YAxis tick={{ fontSize: 10 }} width={60} tickFormatter={formatEurAxis} />
         <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(15,23,42,0.05)' }} />
-        <Bar dataKey="value" fill={CHART_COLORS[0]} />
+        <Bar dataKey="value" fill={BAR_COLOR} />
       </BarChart>
     </ResponsiveContainer>
   )
@@ -1014,7 +657,7 @@ function FileField({ id, label, accept, file, onChange, disabled, required }) {
       />
       {file && (
         <p className="mt-1 text-xs text-slate-500">
-          {file.name} ({(file.size / 1024).toFixed(1)} KB)
+          {file.name} ({formatFileSize(file.size)})
         </p>
       )}
     </div>
