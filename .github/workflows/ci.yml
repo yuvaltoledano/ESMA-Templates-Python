@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # tests/unit/test_bundled_taxonomy.py checks the bundled taxonomy
+          # against the R reference's copy and skips when the submodule is
+          # absent; checking it out here makes CI enforce the lockstep.
           submodules: recursive
 
       - name: Install uv
@@ -74,9 +77,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The app image copies the ESMA taxonomy from the submodule.
-          submodules: true
 
       - name: Build app image
         run: docker build --target app -t esma-milan-app .

@@ -31,12 +31,18 @@ returns one of three bodies depending on the flags.
 |---|---|---|---|
 | `loans` | file | yes | ESMA loans CSV. Content-Type `text/csv` or `application/csv`. |
 | `collaterals` | file | yes | ESMA collaterals CSV. Same content types. |
-| `taxonomy` | file | no | Taxonomy XLSX (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`). Defaults to `r_reference/inputs/ESMA template taxonomy.xlsx` relative to the server's working directory; a 500 is returned if that file is absent and none was uploaded. |
 | `deal_name` | string | yes | 1 to 100 characters from `[A-Za-z0-9 ._-]`. Flows into the output filename and the `Content-Disposition` header. |
 | `aggregation` | `auto` \| `by_loan` \| `by_group` | no | Default `auto`. |
 | `min_coverage` | float in [0, 1] | no | Default `0.85` (`config.DEFAULT_MIN_LOAN_ID_COVERAGE`). |
 | `dry_run` | bool | no | Default `false`. Run the pipeline, write no workbook, return counts. |
 | `analysis_only` | bool | no | Default `false`. Run the pipeline, return stratifications + Execution Summary as JSON. Mutually exclusive with `dry_run`. |
+
+The ESMA taxonomy that renames and types the CSV columns is not an
+input: it is the fixed ESMA workbook bundled with the package
+(`src/esma_milan/data/esma_rre_taxonomy.xlsx`). Earlier versions accepted
+an optional `taxonomy` upload; a client that still sends that field gets
+the same result as one that does not, because FastAPI ignores unknown
+multipart fields. It is not an error.
 
 ### Background jobs: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/result`, `DELETE /api/jobs/{id}`
 
@@ -56,8 +62,8 @@ for every pool.
 | `DELETE` | `/api/jobs/{id}` | `204` | 409 `job_not_ready` while queued or running, 404 `job_not_found`, 429 |
 
 **Request.** The same multipart form as `/api/process` minus `dry_run`:
-`loans`, `collaterals`, optional `taxonomy`, `deal_name`, `aggregation`,
-`min_coverage`, and `analysis_only` (which selects the mode: `workbook`
+`loans`, `collaterals`, `deal_name`, `aggregation`, `min_coverage`, and
+`analysis_only` (which selects the mode: `workbook`
 or `analysis`). Validation is the same except that there is no
 loan-count limit and the per-file cap is `ESMA_MILAN_MAX_UPLOAD_MB`
 (default 50, so a laptop behaves as before; the server deployment sets
@@ -191,7 +197,9 @@ exactly as they appear in the workbook.
 
 - Per-file upload cap: 50 MiB for `/api/process`, checked before the
   bytes are read; `ESMA_MILAN_MAX_UPLOAD_MB` (default 50) for
-  `/api/jobs`.
+  `/api/jobs`. In the Compose deployment Caddy additionally caps the
+  whole request at 1300 MB: two files at the 600 MiB cap are 1,258 MB,
+  plus multipart framing (`deploy/Caddyfile`).
 - Pool-size guardrail: ~30,000 loan rows for the synchronous endpoint;
   larger pools go through `POST /api/jobs`, which has no row limit (a
   sheet may still not exceed Excel's 1,048,576 rows).

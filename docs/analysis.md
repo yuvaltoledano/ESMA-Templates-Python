@@ -38,7 +38,9 @@ Conventions:
 
 - **ESMA-coded categoricals** show every published code as a row, in
   taxonomy order, even at count 0, labelled `CODE — Description` verbatim
-  from the taxonomy (two trims: the "underlying exposure" qualifier and
+  from the taxonomy's "CONTENT TO REPORT" column (the bundled
+  `src/esma_milan/data/esma_rre_taxonomy.xlsx`, identical to the R
+  reference's copy; two trims: the "underlying exposure" qualifier and
   the FOWN/POWN "i.e. …" clauses). Nulls and codes outside the taxonomy
   go to a `UNK — Unknown / not in ESMA taxonomy` row that appears only
   when its count is above zero.

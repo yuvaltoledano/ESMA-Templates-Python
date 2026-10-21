@@ -9,9 +9,11 @@ data says, code by code.
 When ESMA standards add a new value code, add it here verbatim from
 the taxonomy. Don't invent groupings.
 
-**Source**: ``r_reference/inputs/ESMA template taxonomy.xlsx`` -
-"CONTENT TO REPORT" column - for each indicated field (RREL42 for
-interest_rate_type, RREL27 for purpose, RREC7 for occupancy_type).
+**Source**: the ESMA RRE taxonomy bundled with the package,
+``src/esma_milan/data/esma_rre_taxonomy.xlsx`` (byte-identical to
+``r_reference/inputs/ESMA template taxonomy.xlsx``) - "CONTENT TO REPORT"
+column - for each indicated field (RREL42 for interest_rate_type, RREL27
+for purpose, RREC7 for occupancy_type).
 Descriptions are taxonomy-verbatim with two pragmatic trims:
 
   1. The qualifier "underlying exposure" - which appears in every

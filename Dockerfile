@@ -30,19 +30,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
 
-# The repo root is the working directory: handlers.py and cli.py resolve
-# the default taxonomy relative to it.
 WORKDIR /app
 
 # Dependencies first, so a change under src/ does not reinstall them.
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# The application, plus the one file from the R reference it needs at
-# run time, at the same relative path as in the repository. JSON form:
-# the path contains a space, and COPY's shell form splits on whitespace.
+# The application. The ESMA taxonomy it needs at run time is package data
+# (src/esma_milan/data/esma_rre_taxonomy.xlsx), so nothing from the R
+# reference submodule is copied into the image.
 COPY src/ ./src/
-COPY ["r_reference/inputs/ESMA template taxonomy.xlsx", "./r_reference/inputs/ESMA template taxonomy.xlsx"]
 RUN uv sync --frozen --no-dev
 
 # Run as an unprivileged user. /jobs is the background-job store in the

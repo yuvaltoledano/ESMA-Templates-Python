@@ -144,13 +144,15 @@ def test_run_pipeline_dry_run_skips_workbook_write(tmp_path: Path) -> None:
 REAL = REPO_ROOT / "tests" / "fixtures" / "real_anonymised"
 
 
-def _numeric_cols(taxonomy_path: Path) -> frozenset[str]:
+def _numeric_cols() -> frozenset[str]:
     from esma_milan.io_layer.read_taxonomy import (
+        bundled_taxonomy_path,
         load_taxonomy,
         load_taxonomy_formats,
         numeric_field_names,
     )
 
+    taxonomy_path = bundled_taxonomy_path()
     return numeric_field_names(load_taxonomy(taxonomy_path), load_taxonomy_formats(taxonomy_path))
 
 
@@ -177,7 +179,7 @@ def test_stage1_taxonomy_numeric_columns_are_float64(fixture_dir: Path) -> None:
         loans_path=fixture_dir / "loans.csv",
         collaterals_path=fixture_dir / "collaterals.csv",
     )
-    numeric = _numeric_cols(fixture_dir / "taxonomy.xlsx")
+    numeric = _numeric_cols()
     for df, label in ((out.loans, "loans"), (out.properties, "properties")):
         present = [c for c in df.columns if c in numeric]
         assert present, f"{label}: no taxonomy-numeric columns present"

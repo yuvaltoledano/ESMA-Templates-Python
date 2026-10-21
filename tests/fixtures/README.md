@@ -13,7 +13,8 @@ and the R reference implementation pinned at `r_reference/`.
 
 Each subfolder contains:
 
-- `loans.csv`, `collaterals.csv`, `taxonomy.xlsx`: pipeline inputs
+- `loans.csv`, `collaterals.csv`: pipeline inputs (the ESMA taxonomy is
+  not a fixture; the pipeline reads the copy bundled with the package)
 - `expected_r_output.xlsx`: the R output for those inputs, used as the
   parity baseline
 

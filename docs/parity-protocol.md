@@ -139,13 +139,15 @@ listed in `r_reference/DESCRIPTION`:
    Rscript R/main.R \
      --loans=../tests/fixtures/synthetic/loans.csv \
      --collaterals=../tests/fixtures/synthetic/collaterals.csv \
-     --taxonomy=../tests/fixtures/synthetic/taxonomy.xlsx \
+     --taxonomy="inputs/ESMA template taxonomy.xlsx" \
      --deal=SYNTHETIC_FIXTURE \
      --output=/tmp/r_out
    ```
 
    (`main.R` reads `--loans`, `--collaterals`, `--taxonomy`, `--deal` and
-   `--output`; see `r_reference/R/cli_helpers.R`.)
+   `--output`; see `r_reference/R/cli_helpers.R`. The taxonomy is the R
+   reference's own copy, the file the Python package bundles as
+   `src/esma_milan/data/esma_rre_taxonomy.xlsx`.)
 2. Copy the produced `<cutoff> <deal> Flattened loans and collaterals.xlsx`
    to the fixture directory as `expected_r_output.xlsx`.
 3. Tag the R repository, update the submodule pointer to that tag and
