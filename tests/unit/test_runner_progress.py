@@ -29,7 +29,6 @@ def _run(tmp_path: Path, **kwargs: object) -> list[tuple[int, int, str]]:
     run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYN",
         output_dir=tmp_path,
         verbose=False,
@@ -63,7 +62,6 @@ def test_callback_defaults_to_none_and_is_optional(tmp_path: Path) -> None:
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYN",
         output_dir=tmp_path,
         verbose=False,
@@ -79,7 +77,6 @@ def test_row_guard_raises_before_writing(tmp_path: Path, monkeypatch: pytest.Mon
         run_pipeline(
             loans_file_path=SYNTHETIC / "loans.csv",
             collaterals_file_path=SYNTHETIC / "collaterals.csv",
-            taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
             deal_name="SYN",
             output_dir=tmp_path,
             verbose=False,
@@ -104,7 +101,6 @@ def test_row_guard_passes_a_sheet_exactly_at_the_limit(tmp_path: Path, monkeypat
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYN",
         output_dir=tmp_path / "ok",
         verbose=False,
@@ -115,7 +111,6 @@ def test_row_guard_passes_a_sheet_exactly_at_the_limit(tmp_path: Path, monkeypat
         run_pipeline(
             loans_file_path=SYNTHETIC / "loans.csv",
             collaterals_file_path=SYNTHETIC / "collaterals.csv",
-            taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
             deal_name="SYN",
             output_dir=tmp_path / "fail",
             verbose=False,

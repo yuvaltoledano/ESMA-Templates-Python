@@ -44,7 +44,6 @@ from esma_milan.api.handlers import (
     analysis_response_from_result,
     build_analysis_result,
     classify_pipeline_error,
-    default_taxonomy_path,
 )
 from esma_milan.runner import ProgressCallback, run_pipeline
 
@@ -135,8 +134,6 @@ def _execute(
     """Run the pipeline for `job`; return the `result` record for status.json."""
     loans_path = job.inputs_dir / "loans.csv"
     collaterals_path = job.inputs_dir / "collaterals.csv"
-    uploaded_taxonomy = job.inputs_dir / "taxonomy.xlsx"
-    taxonomy_path = uploaded_taxonomy if uploaded_taxonomy.is_file() else default_taxonomy_path()
     aggregation_method = None if request.aggregation == "auto" else request.aggregation
 
     job.output_dir.mkdir(exist_ok=True)
@@ -145,7 +142,6 @@ def _execute(
         pipeline = run_pipeline(
             loans_file_path=loans_path,
             collaterals_file_path=collaterals_path,
-            taxonomy_file_path=taxonomy_path,
             deal_name=request.deal_name,
             output_dir=None,
             aggregation_method=aggregation_method,
@@ -167,7 +163,6 @@ def _execute(
     pipeline = run_pipeline(
         loans_file_path=loans_path,
         collaterals_file_path=collaterals_path,
-        taxonomy_file_path=taxonomy_path,
         deal_name=request.deal_name,
         output_dir=tmp_out,
         aggregation_method=aggregation_method,

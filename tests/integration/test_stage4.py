@@ -46,7 +46,6 @@ def stage1_synthetic() -> Stage1Output:
     return run_stage1(
         loans_path=SYNTHETIC / "loans.csv",
         collaterals_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_path=SYNTHETIC / "taxonomy.xlsx",
     )
 
 

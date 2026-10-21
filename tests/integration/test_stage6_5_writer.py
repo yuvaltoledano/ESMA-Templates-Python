@@ -39,7 +39,6 @@ def synthetic_output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYNTHETIC_FIXTURE",
         output_dir=out_dir,
         verbose=False,

@@ -1,5 +1,14 @@
 """ESMA taxonomy loader.
 
+The taxonomy is a fixed ESMA artefact: ESMA defines the RRE template and
+it changes only when ESMA republishes it. The workbook ships inside this
+package as ``esma_milan/data/esma_rre_taxonomy.xlsx`` and
+`bundled_taxonomy_path()` locates it through `importlib.resources`, so the
+pipeline needs neither a working-directory convention nor an upload. The
+R reference carries the same file at
+``r_reference/inputs/ESMA template taxonomy.xlsx``;
+tests/unit/test_bundled_taxonomy.py keeps the two byte-identical.
+
 Mirrors the taxonomy read in r_reference/R/pipeline.R:134 and the use
 inside r_reference/R/utils.R:86-89:
 
@@ -24,6 +33,7 @@ types from a 10,000-row sample, which is the mechanism this replaces.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from importlib.resources import as_file, files
 from pathlib import Path
 
 import openpyxl
@@ -34,6 +44,36 @@ from esma_milan.io_layer.clean_names import clean_name
 FIELD_CODE_COLUMN: str = "FIELD CODE"
 FIELD_NAME_COLUMN: str = "FIELD NAME"
 FORMAT_COLUMN: str = "FORMAT"
+
+BUNDLED_TAXONOMY_PACKAGE: str = "esma_milan.data"
+BUNDLED_TAXONOMY_FILENAME: str = "esma_rre_taxonomy.xlsx"
+
+
+def bundled_taxonomy_path() -> Path:
+    """Filesystem path of the ESMA RRE taxonomy shipped with the package.
+
+    Resolved through `importlib.resources`, so it is independent of the
+    current working directory and of how the package was installed
+    (editable checkout or wheel). `as_file` yields the on-disk file for a
+    directory install and is a no-op on exit, so the path stays valid
+    after the `with` block. The package is never installed zipped; were
+    it, `as_file` would yield a temporary extraction that is removed on
+    exit, and the check below turns that into a clear error instead of a
+    dangling path.
+
+    Raises:
+        FileNotFoundError: if the bundled workbook is not a regular file
+            (a broken or zipped install).
+    """
+    resource = files(BUNDLED_TAXONOMY_PACKAGE).joinpath(BUNDLED_TAXONOMY_FILENAME)
+    with as_file(resource) as path:
+        resolved = Path(path)
+    if not resolved.is_file():
+        raise FileNotFoundError(
+            f"Bundled ESMA taxonomy not found at {resolved}; the package must be "
+            "installed as a directory (editable checkout or wheel), not zipped."
+        )
+    return resolved
 
 
 def load_taxonomy(path: Path) -> dict[str, str]:

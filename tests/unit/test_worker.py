@@ -91,24 +91,6 @@ def test_bad_csv_job_fails_with_same_code_as_sync_endpoint(tmp_path: Path) -> No
     assert not (job.output_dir / "analysis.json").exists()
 
 
-def test_taxonomy_without_format_fails_with_invalid_csv_naming_column(tmp_path: Path) -> None:
-    import io
-
-    import openpyxl
-
-    wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet("Sheet1")
-    ws.append(["FIELD CODE", "FIELD NAME"])
-    ws.append(["RREL30", "Current Principal Balance"])
-    buf = io.BytesIO()
-    wb.save(buf)
-    _make_job(tmp_path, taxonomy=buf.getvalue())
-    status = worker.process_one(tmp_path, "w")
-    assert status is not None and status.state == "failed"
-    assert status.error is not None and status.error["error"] == "invalid_csv"
-    assert "FORMAT" in status.error["details"]["reason"]
-
-
 def test_row_limit_guard_fails_job_with_output_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the Excel limit so the 8-loan fixture trips it; the job must
     end `output_too_large` naming the sheet, with no output written."""

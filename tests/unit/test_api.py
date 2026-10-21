@@ -106,7 +106,6 @@ def test_dry_run_group_count_matches_stage4_n_groups() -> None:
     pipeline_result = run_pipeline(
         loans_file_path=loans,
         collaterals_file_path=collaterals,
-        taxonomy_file_path=taxonomy,
         deal_name="SYNTHETIC_FIXTURE",
         dry_run=True,
         verbose=False,
@@ -521,32 +520,6 @@ def test_process_deal_name_with_special_chars_rejected() -> None:
         )
         assert response.status_code == 400, (bad_name, response.text)
         assert response.json()["error"] == "invalid_deal_name"
-
-
-def test_process_taxonomy_without_format_column_returns_400_naming_column() -> None:
-    """A taxonomy upload missing the FORMAT column cannot type the numeric
-    fields. The pipeline raises ValueError, which the handler maps to a
-    400 whose reason names the column - never a 500."""
-    import io
-
-    import openpyxl
-
-    wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet("Sheet1")
-    ws.append(["FIELD CODE", "FIELD NAME"])
-    ws.append(["RREL30", "Current Principal Balance"])
-    buf = io.BytesIO()
-    wb.save(buf)
-
-    client = TestClient(app)
-    files = _process_files()
-    files["taxonomy"] = ("taxonomy.xlsx", buf.getvalue(), _XLSX_MEDIA_TYPE)
-    response = client.post("/api/process", files=files, data={"deal_name": "NO_FORMAT"})
-
-    assert response.status_code == 400, response.text
-    body = response.json()
-    assert body["error"] == "invalid_csv"
-    assert "FORMAT" in body["details"]["reason"]
 
 
 # --- Deployment configuration: run() env vars, proxy-aware rate-limit key, log colours

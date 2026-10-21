@@ -25,7 +25,6 @@ def synthetic_run_output(synthetic_fixture: ParityFixture, tmp_path_factory: pyt
     result = run_pipeline(
         loans_file_path=synthetic_fixture.loans,
         collaterals_file_path=synthetic_fixture.collaterals,
-        taxonomy_file_path=synthetic_fixture.taxonomy,
         deal_name="SYNTHETIC_FIXTURE",
         output_dir=out_dir,
         verbose=False,

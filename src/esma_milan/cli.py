@@ -107,7 +107,6 @@ def run(
     result = run_pipeline(
         loans_file_path=loans_file,
         collaterals_file_path=collaterals_file,
-        taxonomy_file_path=taxonomy_file,
         deal_name=deal_name,
         output_dir=output_dir,
         aggregation_method=aggregation_method,

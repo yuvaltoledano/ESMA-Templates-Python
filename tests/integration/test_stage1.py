@@ -32,7 +32,6 @@ def stage1_synthetic() -> Stage1Output:
     return run_stage1(
         loans_path=SYNTHETIC / "loans.csv",
         collaterals_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_path=SYNTHETIC / "taxonomy.xlsx",
     )
 
 
@@ -111,7 +110,6 @@ def test_run_pipeline_against_synthetic_fixture(tmp_path: Path) -> None:
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYNTHETIC_FIXTURE",
         output_dir=tmp_path,
         verbose=False,
@@ -129,7 +127,6 @@ def test_run_pipeline_dry_run_skips_workbook_write(tmp_path: Path) -> None:
     result = run_pipeline(
         loans_file_path=SYNTHETIC / "loans.csv",
         collaterals_file_path=SYNTHETIC / "collaterals.csv",
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="SYNTHETIC_FIXTURE",
         output_dir=tmp_path,
         dry_run=True,
@@ -179,7 +176,6 @@ def test_stage1_taxonomy_numeric_columns_are_float64(fixture_dir: Path) -> None:
     out = run_stage1(
         loans_path=fixture_dir / "loans.csv",
         collaterals_path=fixture_dir / "collaterals.csv",
-        taxonomy_path=fixture_dir / "taxonomy.xlsx",
     )
     numeric = _numeric_cols(fixture_dir / "taxonomy.xlsx")
     for df, label in ((out.loans, "loans"), (out.properties, "properties")):

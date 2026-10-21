@@ -161,7 +161,6 @@ def run_pipeline(
     *,
     loans_file_path: Path,
     collaterals_file_path: Path,
-    taxonomy_file_path: Path,
     deal_name: str,
     output_dir: Path | None = None,
     aggregation_method: str | None = None,
@@ -172,6 +171,11 @@ def run_pipeline(
     on_progress: ProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the ESMA -> MILAN pipeline.
+
+    The inputs are the two ESMA CSVs. The taxonomy that renames and types
+    their columns is the fixed ESMA workbook bundled with the package
+    (`io_layer.read_taxonomy.bundled_taxonomy_path`); R's `run_pipeline()`
+    takes it as a path argument instead.
 
     Output destination is selected by `output_dir`:
       - a Path  -> the workbook is written to disk under
@@ -217,7 +221,6 @@ def run_pipeline(
     stage1 = run_stage1(
         loans_path=loans_file_path,
         collaterals_path=collaterals_file_path,
-        taxonomy_path=taxonomy_file_path,
     )
 
     # --- Stage 2: filter active loans + RRE properties -------------------

@@ -232,4 +232,4 @@ scripts/local_*
 scripts/*.local.*
 
 # CLI default output root (`esma-milan run --output` defaults to data/clean)
-data/
+/data/

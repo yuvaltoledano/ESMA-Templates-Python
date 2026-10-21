@@ -132,7 +132,6 @@ def real_run_output(
     result = run_pipeline(
         loans_file_path=real_fixture.loans,
         collaterals_file_path=real_fixture.collaterals,
-        taxonomy_file_path=real_fixture.taxonomy,
         deal_name="Domi 2025-1",
         output_dir=out_dir,
         verbose=False,

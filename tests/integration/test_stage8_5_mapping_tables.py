@@ -33,7 +33,6 @@ def synthetic_mapping_tables() -> dict[str, pl.DataFrame]:
         s1 = run_stage1(
             loans_path=SYNTHETIC / "loans.csv",
             collaterals_path=SYNTHETIC / "collaterals.csv",
-            taxonomy_path=SYNTHETIC / "taxonomy.xlsx",
         )
         s2 = run_stage2(s1.loans, s1.properties)
         s3 = run_stage3(s2.loans, s2.properties)

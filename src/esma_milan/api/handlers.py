@@ -397,7 +397,6 @@ def process_pipeline_from_bytes(
             result = run_pipeline(
                 loans_file_path=loans_path,
                 collaterals_file_path=collaterals_path,
-                taxonomy_file_path=taxonomy_path,
                 deal_name=deal_name,
                 output_dir=None,  # in-memory: workbook returned as bytes
                 aggregation_method=aggregation_method,

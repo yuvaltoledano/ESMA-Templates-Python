@@ -32,7 +32,6 @@ def synthetic_pipeline_run(tmp_path_factory: pytest.TempPathFactory) -> Pipeline
         return run_pipeline(
             loans_file_path=SYNTHETIC / "loans.csv",
             collaterals_file_path=SYNTHETIC / "collaterals.csv",
-            taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
             deal_name="SYNTHETIC_FIXTURE",
             output_dir=out_dir,
             verbose=False,

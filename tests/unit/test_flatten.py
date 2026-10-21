@@ -1334,7 +1334,6 @@ def test_apply_derived_fields_full_pipeline_matches_fixture_column_order() -> No
         s1 = run_stage1(
             loans_path=syn / "loans.csv",
             collaterals_path=syn / "collaterals.csv",
-            taxonomy_path=syn / "taxonomy.xlsx",
         )
         s2 = run_stage2(s1.loans, s1.properties)
         s3 = run_stage3(s2.loans, s2.properties)

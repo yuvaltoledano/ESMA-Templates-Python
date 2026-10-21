@@ -115,7 +115,6 @@ def _run(loans: Path, collaterals: Path, out_dir: Path | None, deal: str = "SYN"
     result = run_pipeline(
         loans_file_path=loans,
         collaterals_file_path=collaterals,
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name=deal,
         output_dir=out_dir,
         dry_run=out_dir is None,
@@ -139,7 +138,6 @@ def test_late_decimal_past_row_10000_no_longer_crashes(tmp_path: Path) -> None:
     result = run_pipeline(
         loans_file_path=loans,
         collaterals_file_path=props,
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="PADDED",
         output_dir=tmp_path / "out",
         dry_run=True,
@@ -174,7 +172,6 @@ def test_numeric_field_nd_for_10000_rows_then_populated(tmp_path: Path) -> None:
     result = run_pipeline(
         loans_file_path=loans,
         collaterals_file_path=props,
-        taxonomy_file_path=SYNTHETIC / "taxonomy.xlsx",
         deal_name="PADDED",
         output_dir=tmp_path / "out",
         dry_run=True,
