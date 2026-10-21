@@ -64,10 +64,6 @@ SYNTHETIC = REPO_ROOT / "tests" / "fixtures" / "synthetic"
 
 _LOANS_BYTES = (SYNTHETIC / "loans.csv").read_bytes()
 _COLLATERALS_BYTES = (SYNTHETIC / "collaterals.csv").read_bytes()
-_TAXONOMY_BYTES = (SYNTHETIC / "taxonomy.xlsx").read_bytes()
-_XLSX_MEDIA_TYPE = (
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
 
 
 @pytest.fixture(autouse=True)
@@ -731,17 +727,10 @@ client = TestClient(app)
 
 
 def _process_files() -> dict[str, tuple[str, bytes, str]]:
-    """Files mapping for a synthetic-fixture /api/process request.
-
-    Includes the taxonomy upload because the r_reference submodule
-    (which holds the default taxonomy) may not be initialised in every
-    test environment - shipping the synthetic taxonomy keeps the test
-    self-contained.
-    """
+    """Files mapping for a synthetic-fixture /api/process request."""
     return {
         "loans": ("loans.csv", _LOANS_BYTES, "text/csv"),
         "collaterals": ("collaterals.csv", _COLLATERALS_BYTES, "text/csv"),
-        "taxonomy": ("taxonomy.xlsx", _TAXONOMY_BYTES, _XLSX_MEDIA_TYPE),
     }
 
 

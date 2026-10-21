@@ -28,7 +28,6 @@ def _make_job(
     mode: str = "workbook",
     loans: bytes = LOANS,
     collaterals: bytes = COLLATERALS,
-    taxonomy: bytes | None = None,
     deal: str = "SYNTHETIC_FIXTURE",
 ) -> jobs.Job:
     request = jobs.JobRequest(
@@ -41,8 +40,6 @@ def _make_job(
     job = jobs.begin_job(root, request)
     (job.inputs_dir / "loans.csv").write_bytes(loans)
     (job.inputs_dir / "collaterals.csv").write_bytes(collaterals)
-    if taxonomy is not None:
-        (job.inputs_dir / "taxonomy.xlsx").write_bytes(taxonomy)
     return jobs.commit_job(root, job)
 
 

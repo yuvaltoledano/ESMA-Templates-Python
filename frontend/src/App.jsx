@@ -1,7 +1,7 @@
 // ESMA-MILAN GUI: a single-page client for the pipeline API.
 //
-// Two modes share one upload form (loans CSV, collaterals CSV, optional
-// taxonomy XLSX, deal name). Both submit a background job:
+// Two modes share one upload form (loans CSV, collaterals CSV, deal
+// name). Both submit a background job:
 //   POST /api/jobs            -> 202 {job_id, status_url, result_url}
 //   GET  /api/jobs/{id}       -> polled every 2 s: queued | running (with a
 //                                stage label) | done | failed
@@ -159,7 +159,6 @@ function HealthIndicator({ status }) {
 function App() {
   const [loansFile, setLoansFile] = useState(null)
   const [collateralsFile, setCollateralsFile] = useState(null)
-  const [taxonomyFile, setTaxonomyFile] = useState(null)
   const [dealName, setDealName] = useState('')
 
   // A job started in this tab (or restored from sessionStorage after a
@@ -320,7 +319,6 @@ function App() {
   const oversizedFiles = [
     ['loans', loansFile],
     ['collaterals', collateralsFile],
-    ['taxonomy', taxonomyFile],
   ].filter(([, file]) => file && maxUploadBytes !== null && file.size > maxUploadBytes)
 
   // Both buttons share validation + the POST; only the result handling
@@ -353,7 +351,6 @@ function App() {
     formData.append('loans', loansFile)
     formData.append('collaterals', collateralsFile)
     formData.append('deal_name', dealName)
-    if (taxonomyFile) formData.append('taxonomy', taxonomyFile)
     if (mode === 'analysis') formData.append('analysis_only', 'true')
 
     try {
@@ -475,15 +472,6 @@ function App() {
             disabled={busy}
             required
           />
-          <FileField
-            id="taxonomy"
-            label="Taxonomy (optional)"
-            accept=".xlsx"
-            file={taxonomyFile}
-            onChange={onFileChange(setTaxonomyFile)}
-            disabled={busy}
-          />
-
           <div>
             <label
               htmlFor="deal-name"

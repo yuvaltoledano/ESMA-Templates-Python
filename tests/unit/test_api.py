@@ -33,14 +33,12 @@ _XLSX_MEDIA_TYPE = (
 # self-contained with no file-handle lifecycle to manage.
 _LOANS_BYTES = (SYNTHETIC / "loans.csv").read_bytes()
 _COLLATERALS_BYTES = (SYNTHETIC / "collaterals.csv").read_bytes()
-_TAXONOMY_BYTES = (SYNTHETIC / "taxonomy.xlsx").read_bytes()
 
 
 def _process_files(
     *,
     loans: bool = True,
     collaterals: bool = True,
-    taxonomy: bool = False,
     loans_content_type: str = "text/csv",
 ) -> dict[str, tuple[str, bytes, str]]:
     """Build the multipart ``files=`` mapping for a /api/process request.
@@ -53,8 +51,6 @@ def _process_files(
         files["loans"] = ("loans.csv", _LOANS_BYTES, loans_content_type)
     if collaterals:
         files["collaterals"] = ("collaterals.csv", _COLLATERALS_BYTES, "text/csv")
-    if taxonomy:
-        files["taxonomy"] = ("taxonomy.xlsx", _TAXONOMY_BYTES, _XLSX_MEDIA_TYPE)
     return files
 
 
@@ -99,7 +95,6 @@ def test_dry_run_group_count_matches_stage4_n_groups() -> None:
     """
     loans = SYNTHETIC / "loans.csv"
     collaterals = SYNTHETIC / "collaterals.csv"
-    taxonomy = SYNTHETIC / "taxonomy.xlsx"
 
     # Stage 4's own count of connected components (collateral groups),
     # taken straight from the pipeline's dry-run output.
@@ -119,14 +114,12 @@ def test_dry_run_group_count_matches_stage4_n_groups() -> None:
     with (
         loans.open("rb") as lf,
         collaterals.open("rb") as cf,
-        taxonomy.open("rb") as tf,
     ):
         response = client.post(
             "/api/process",
             files={
                 "loans": ("loans.csv", lf, "text/csv"),
                 "collaterals": ("collaterals.csv", cf, "text/csv"),
-                "taxonomy": ("taxonomy.xlsx", tf, _XLSX_MEDIA_TYPE),
             },
             data={"deal_name": "SYNTHETIC_FIXTURE", "dry_run": "true"},
         )
@@ -153,8 +146,8 @@ def test_health_endpoint_returns_ok() -> None:
 
 
 def test_process_synthetic_fixture_returns_workbook() -> None:
-    """POST /api/process (synthetic loans+collaterals, default taxonomy)
-    returns a 200 .xlsx download.
+    """POST /api/process (synthetic loans+collaterals) returns a 200
+    .xlsx download.
 
     Pins the success contract: the .xlsx media type, an attachment
     Content-Disposition naming the file with the pool cutoff date, and a
@@ -307,19 +300,6 @@ def test_process_filename_in_content_disposition_uses_cutoff_date() -> None:
         f'attachment; filename="{expected_cutoff} '
     )
 
-
-def test_process_with_explicit_taxonomy_argument() -> None:
-    """Supplying `taxonomy` as a third upload works the same as relying
-    on the server's bundled default taxonomy."""
-    client = TestClient(app)
-    response = client.post(
-        "/api/process",
-        files=_process_files(taxonomy=True),
-        data={"deal_name": "SYNTHETIC_FIXTURE", "dry_run": "true"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["loan_count"] == 8
 
 
 def test_process_with_min_coverage_override() -> None:

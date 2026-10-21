@@ -1,16 +1,21 @@
 """ESMA -> MILAN CLI.
 
-A strict superset of r_reference/R/main.R's CLI surface: the same
---loans/--collaterals/--taxonomy/--deal/--output flags, plus
---aggregation, --min-coverage, --dry-run and --verbose/--quiet, which
-R exposes only as function arguments. This is a deliberate, documented
-deviation from the R reference.
+Mirrors r_reference/R/main.R's CLI surface with two deliberate,
+documented deviations:
+
+- The same --loans/--collaterals/--deal/--output flags, plus
+  --aggregation, --min-coverage, --dry-run and --verbose/--quiet, which
+  R exposes only as function arguments.
+- No --taxonomy flag. R takes the ESMA taxonomy workbook as a path
+  argument; here it is a fixed ESMA artefact bundled with the package
+  (esma_milan/data/esma_rre_taxonomy.xlsx, byte-identical to the R
+  reference's copy), so the CLI runs from any directory and nothing can
+  substitute a different taxonomy.
 """
 
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import click
@@ -47,13 +52,6 @@ def main() -> None:
 )
 @click.option("--deal", "deal_name", type=str, required=True)
 @click.option(
-    "--taxonomy",
-    "taxonomy_file",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to ESMA taxonomy XLSX. Defaults to r_reference/inputs/ESMA template taxonomy.xlsx.",
-)
-@click.option(
     "--output",
     "output_dir",
     type=click.Path(path_type=Path),
@@ -79,7 +77,6 @@ def run(
     loans_file: Path,
     collaterals_file: Path,
     deal_name: str,
-    taxonomy_file: Path | None,
     output_dir: Path,
     aggregation: str,
     min_coverage: float | None,
@@ -88,19 +85,6 @@ def run(
 ) -> None:
     """Run the pipeline against a pair of ESMA CSVs."""
     _configure_logging(verbose)
-
-    if taxonomy_file is None:
-        # Default to the taxonomy bundled with the R reference submodule
-        # (read-only, but reading from it is fine). The path is relative
-        # to the current working directory, so this only works from the
-        # repo root with the submodule checked out.
-        taxonomy_file = Path("r_reference/inputs/ESMA template taxonomy.xlsx")
-        if not taxonomy_file.exists():
-            click.echo(
-                f"Error: --taxonomy not provided and default {taxonomy_file} not found.",
-                err=True,
-            )
-            sys.exit(2)
 
     aggregation_method = None if aggregation == "auto" else aggregation
 

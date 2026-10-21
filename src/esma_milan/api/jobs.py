@@ -6,8 +6,8 @@ A job is a directory under the jobs root (``ESMA_MILAN_JOBS_DIR``, default
     <root>/<job_id>/
         request.json      what was asked (deal name, mode, options, filenames)
         status.json       the state machine below; replaced atomically
-        inputs/           loans.csv, collaterals.csv, taxonomy.xlsx (optional);
-                          deleted the moment the job finishes
+        inputs/           loans.csv, collaterals.csv; deleted the moment
+                          the job finishes
         output/           the workbook, or analysis.json
         queued            marker file while queued ...
         running.<worker>  ... renamed by the worker that claimed the job

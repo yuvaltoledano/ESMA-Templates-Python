@@ -1,8 +1,8 @@
 # ESMA-MILAN GUI
 
 A minimal web frontend for the ESMA-MILAN pipeline API. One screen, one
-form: upload a loans CSV and a collaterals CSV (plus an optional taxonomy
-XLSX), enter a deal name, then either
+form: upload a loans CSV and a collaterals CSV, enter a deal name, then
+either
 
 - **Process Pool & Download**: submit a background job (`POST /api/jobs`),
   show its progress, then offer **Download workbook** (a link to
