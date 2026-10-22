@@ -82,7 +82,11 @@ and named in the PR.
   `docs/parity-protocol.md`, `frontend/README.md`, `docs/analysis.md`,
   `docs/decisions.md` and this file must stay true after the PR. When a PR
   makes or changes a decision, add an entry to `docs/decisions.md` and
-  update its "Where things stand" section.
+  update its "Where things stand" section. A PR that changes the mapping
+  (filters, identifier choice, valuation selection, grouping, allocation,
+  a MILAN column rule, a code map or an Execution Summary metric) also
+  updates `frontend/public/mapping-reference.html` and bumps its version
+  line.
 
 ## Branches, commits, PRs
 

@@ -140,6 +140,7 @@ src/esma_milan/
 └── cli.py                 # Click CLI (`esma-milan run`)
 
 frontend/                  # React + Vite + Tailwind single-page GUI
+├── public/mapping-reference.html  # analyst-facing mapping reference, served as-is by the web UI
 scripts/run_parity_check.py  # CLI wrapper around the parity diff library
 r_reference/               # READ-ONLY git submodule, pinned at v1.1-r-reference
 docs/                      # parity protocol, API, analysis, deployment and decisions references
@@ -174,12 +175,24 @@ re-pinned.
 
 ## Domain reference
 
-The R repository carries the analyst-facing documentation of the
-pipeline's business logic. Read it there rather than in this repo:
+[`frontend/public/mapping-reference.html`](frontend/public/mapping-reference.html)
+is the analyst-facing description of what this tool does to a pool: the
+nine steps from the two ESMA files to the flattened pool, every one of the
+175 MILAN columns with its ESMA source, rule and missing-value behaviour
+(searchable), the code maps, the Execution Summary metrics and a
+data-quality checklist, with worked examples from the synthetic fixture.
+It is hand-written from the Python pipeline, carries a version line, and
+is served by the web UI ("Mapping reference" in the top bar, or
+`/mapping-reference.html`). Open the file directly in a browser to read it
+without the service. A change to the mapping is not complete until this
+document and its version line are updated (`CLAUDE.md`).
+
+The R repository carries the documentation of the original pipeline:
 
 - `r_reference/docs/esma-milan-guide.html` and
-  `r_reference/docs/esma-milan-reference-updated.html`: analyst guide and
-  field reference.
+  `r_reference/docs/esma-milan-reference-updated.html`: the R analyst
+  guide and field reference, which the document above supersedes for
+  this tool.
 - `r_reference/docs/ESMA_PROCESSING_DOCUMENTATION.md`: code-aligned
   stage-by-stage description.
 - `r_reference/rmarkdown/analyst-walkthrough.Rmd`: the walkthrough that
