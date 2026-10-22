@@ -1,0 +1,1143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESMA to MILAN mapping reference</title>
+<meta name="description" content="How the ESMA to MILAN tool turns an ESMA Annex 2 RRE loan-level pool into Moody's MILAN input, step by step and column by column.">
+<!--
+  Hand-written reference. Keep the version line in the header current:
+  any pull request that changes the mapping (filters, identifier choice,
+  valuation selection, grouping, allocation, a MILAN column rule, a code
+  map, or an Execution Summary metric) must update this file and bump
+  the version. Self-contained on purpose: no fonts, scripts or styles are
+  fetched from any other host.
+-->
+<style>
+:root{
+  --navy:#0b2a3a; --navy-text:#e2ecf2; --navy-muted:#9fb3c0;
+  --accent:#0e7490; --accent-hover:#155e75; --accent-soft:#ccfbf1; --accent-soft-text:#115e59; --glow:#5eead4;
+  --ground:#eef2f6; --surface:#ffffff; --surface-alt:#f8fafc;
+  --ink:#0f172a; --ink-muted:#475569; --ink-faint:#64748b;
+  --line:#cbd5e1; --line-soft:#e2e8f0; --line-hair:#f1f5f9;
+  --ok:#15803d; --warn:#b45309; --warn-soft:#fef3c7; --danger:#b91c1c; --danger-soft:#fee2e2;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:10px; --toc-w:272px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.55}
+a{color:var(--accent)}
+a:hover{color:var(--accent-hover)}
+code,kbd{font-family:var(--mono);font-size:.92em;background:var(--surface-alt);border:1px solid var(--line-soft);border-radius:4px;padding:0 .3em}
+pre{font-family:var(--mono);font-size:.88em;background:var(--navy);color:var(--navy-text);padding:14px 16px;border-radius:var(--radius);overflow-x:auto;line-height:1.5}
+pre code{background:none;border:0;padding:0;color:inherit}
+h1,h2,h3,h4{line-height:1.25;margin:0 0 .5em}
+h1{font-size:2rem;font-weight:600}
+h2{font-size:1.5rem;font-weight:600;margin-top:0}
+h3{font-size:1.15rem;font-weight:600;margin-top:1.6em}
+h4{font-size:1rem;font-weight:600;margin-top:1.3em}
+p{margin:0 0 1em}
+ul,ol{margin:0 0 1em;padding-left:1.4em}
+li{margin-bottom:.35em}
+table{border-collapse:collapse;width:100%;margin:0 0 1.2em;font-size:.93rem;background:var(--surface)}
+th,td{border:1px solid var(--line-soft);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--surface-alt);font-weight:600}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl-wrap{overflow-x:auto;margin-bottom:1.2em}
+.tbl-wrap table{margin:0}
+.esma{font-family:var(--mono);font-size:.86em;color:var(--accent-soft-text);background:var(--accent-soft);border-radius:4px;padding:0 .35em;white-space:nowrap}
+.milan{font-weight:600}
+
+/* top bar */
+.top{background:var(--navy);color:var(--navy-text);position:sticky;top:0;z-index:20}
+.top .in{max-width:1240px;margin:0 auto;padding:10px 24px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;min-height:56px}
+.top .brand{font-weight:600;display:flex;align-items:center;gap:8px}
+.top .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--glow);display:inline-block}
+.top .ver{color:var(--navy-muted);font-size:.9rem}
+.top a{color:var(--navy-text);text-decoration:none;border-bottom:2px solid transparent}
+.top a:hover{border-color:var(--glow)}
+.top .right{margin-left:auto;display:flex;gap:18px;align-items:center;font-size:.95rem}
+.menu-btn{display:none;background:none;border:1px solid var(--navy-muted);color:var(--navy-text);border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer}
+
+/* layout */
+.wrap{max-width:1240px;margin:0 auto;padding:24px;display:grid;grid-template-columns:var(--toc-w) minmax(0,1fr);gap:28px}
+nav.toc{position:sticky;top:72px;align-self:start;max-height:calc(100vh - 88px);overflow:auto;background:var(--surface);border:1px solid var(--line-soft);border-radius:var(--radius);padding:14px 12px;font-size:.9rem}
+nav.toc .part{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin:12px 8px 4px;font-weight:600}
+nav.toc .part:first-child{margin-top:0}
+nav.toc a{display:block;color:var(--ink-muted);text-decoration:none;padding:4px 8px;border-radius:6px;border-left:2px solid transparent}
+nav.toc a:hover{background:var(--surface-alt);color:var(--ink)}
+nav.toc a.active{color:var(--accent-hover);border-left-color:var(--accent);background:var(--accent-soft)}
+main{min-width:0}
+section.chapter{background:var(--surface);border:1px solid var(--line-soft);border-radius:var(--radius);padding:28px 32px;margin-bottom:22px;box-shadow:0 1px 2px rgba(15,23,42,.06)}
+.kicker{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:6px}
+.lede{font-size:1.05rem;color:var(--ink-muted);margin-bottom:1.4em}
+.part-head{padding:8px 4px 18px}
+.part-head h2{font-size:1.7rem}
+.part-head p{color:var(--ink-muted);max-width:70ch}
+
+/* callouts */
+.box{border:1px solid var(--line-soft);border-left:4px solid var(--accent);background:var(--surface-alt);border-radius:8px;padding:12px 16px;margin:0 0 1.2em}
+.box.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.box.halt{border-left-color:var(--danger);background:var(--danger-soft)}
+.box.ok{border-left-color:var(--ok)}
+.box .t{font-weight:600;margin-bottom:4px;display:block}
+.box p:last-child,.box ul:last-child{margin-bottom:0}
+.rule{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;background:var(--surface-alt);border:1px solid var(--line-soft);border-radius:8px;padding:12px 16px;margin:0 0 1.2em;font-size:.95rem}
+.rule .k{font-weight:600;color:var(--ink-muted);white-space:nowrap}
+.formula{font-family:var(--mono);font-size:.9rem;background:var(--surface-alt);border:1px dashed var(--line);border-radius:8px;padding:10px 14px;margin:0 0 1.2em;white-space:pre-wrap}
+
+/* worked examples with tabs */
+.ex{border:1px solid var(--line);border-radius:var(--radius);margin:0 0 1.4em;overflow:hidden}
+.ex .ex-head{background:var(--navy);color:var(--navy-text);padding:8px 14px;font-size:.85rem;font-weight:600;letter-spacing:.03em}
+.ex .ex-head span{color:var(--navy-muted);font-weight:400;margin-left:8px}
+.ex .tabs{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px 0;background:var(--surface-alt)}
+.ex .tab{font:inherit;font-size:.86rem;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 12px;cursor:pointer;color:var(--ink-muted)}
+.ex .tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.ex .pane{display:none;padding:14px;overflow-x:auto}
+.ex .pane.active{display:block}
+.ex .pane p:last-child{margin-bottom:0}
+.ex .pane table{font-size:.9rem}
+
+/* chips and search in the index */
+.toolbar{position:sticky;top:60px;z-index:5;background:var(--surface);padding:10px 0 12px;border-bottom:1px solid var(--line-soft);margin-bottom:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.toolbar input{font:inherit;font-size:.95rem;padding:8px 12px;border:1px solid var(--line);border-radius:8px;min-width:260px;flex:1 1 260px}
+.toolbar input:focus{outline:2px solid var(--glow);border-color:var(--accent)}
+.chip{font:inherit;font-size:.84rem;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 11px;cursor:pointer;color:var(--ink-muted)}
+.chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip.ghost{border-style:dashed}
+.count{font-size:.85rem;color:var(--ink-faint);margin-left:auto}
+.kind{display:inline-block;font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;border-radius:4px;padding:1px 6px;vertical-align:middle;margin-left:6px}
+.kind.direct{background:#dbeafe;color:#1e40af}
+.kind.fixed{background:var(--line-hair);color:var(--ink-muted)}
+.kind.code{background:var(--accent-soft);color:var(--accent-soft-text)}
+.kind.calc{background:#fde68a;color:#78350f}
+.kind.infer{background:#e9d5ff;color:#5b21b6}
+.grp{margin:22px 0 8px;font-size:1.05rem;font-weight:600;color:var(--ink);border-bottom:2px solid var(--line-soft);padding-bottom:4px}
+details.col{border:1px solid var(--line-soft);border-radius:8px;margin-bottom:6px;background:var(--surface)}
+details.col summary{list-style:none;cursor:pointer;padding:9px 12px;display:grid;grid-template-columns:3.2em minmax(0,1fr);gap:10px;align-items:baseline}
+details.col summary::-webkit-details-marker{display:none}
+details.col summary .n{font-family:var(--mono);color:var(--ink-faint);font-size:.85rem}
+details.col summary .nm{font-weight:600;overflow-wrap:anywhere}
+details.col summary .src{display:block;color:var(--ink-muted);font-size:.88rem;margin-top:2px}
+details.col[open] summary{border-bottom:1px solid var(--line-hair);background:var(--surface-alt)}
+details.col .body{padding:10px 12px 12px 12px;font-size:.93rem}
+details.col .body .lbl{color:var(--ink-faint);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;font-weight:600;display:block;margin-top:8px}
+details.col .body .lbl:first-child{margin-top:0}
+details.col .body p{margin:2px 0 0}
+details.col.hidden{display:none}
+.nores{color:var(--ink-faint);padding:20px 0;display:none}
+
+/* small helpers */
+.muted{color:var(--ink-muted)}
+.small{font-size:.9rem}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:1.2em}
+.card{border:1px solid var(--line-soft);border-radius:8px;padding:12px 14px;background:var(--surface-alt)}
+.card .t{font-weight:600;margin-bottom:4px}
+.card p{margin:0;font-size:.93rem}
+.steps{counter-reset:s;list-style:none;padding:0}
+.steps li{counter-increment:s;position:relative;padding-left:2.4em;margin-bottom:.6em}
+.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:1.7em;height:1.7em;border-radius:50%;background:var(--accent);color:#fff;font-size:.8rem;font-weight:600;display:flex;align-items:center;justify-content:center}
+.types{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:1.2em}
+.types .ty{border:1px solid var(--line-soft);border-radius:8px;padding:10px;background:var(--surface-alt);text-align:center}
+.types .ty svg{display:block;margin:0 auto 6px}
+.types .ty b{display:block;font-size:.9rem}
+.types .ty span{font-size:.82rem;color:var(--ink-muted)}
+footer.foot{max-width:1240px;margin:0 auto;padding:10px 24px 40px;font-size:.85rem;color:var(--ink-muted)}
+.skip{position:absolute;left:-999px}
+.skip:focus{left:8px;top:8px;background:#fff;padding:8px;z-index:99}
+
+@media (max-width: 960px){
+  .wrap{grid-template-columns:minmax(0,1fr);padding:16px}
+  nav.toc{position:static;max-height:none;display:none}
+  nav.toc.open{display:block}
+  .menu-btn{display:inline-block}
+  section.chapter{padding:20px 16px}
+  .toolbar{top:56px}
+  .top .right{font-size:.85rem;gap:12px}
+}
+@media print{
+  .top,nav.toc,.toolbar,.menu-btn{display:none}
+  .wrap{display:block;padding:0}
+  section.chapter{box-shadow:none;border:0;page-break-inside:avoid}
+  details.col{page-break-inside:avoid}
+  details.col .body{display:block}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#a1">Skip to content</a>
+<header class="top">
+  <div class="in">
+    <div class="brand"><span class="dot"></span>ESMA → MILAN · Mapping reference</div>
+    <div class="ver">Version 1.0 · describes the tool as of 22 October 2026</div>
+    <div class="right">
+      <button class="menu-btn" type="button" id="menuBtn" aria-controls="toc" aria-expanded="false">Contents</button>
+      <a href="/">Open the app</a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<nav class="toc" id="toc" aria-label="Contents">
+  <div class="part">Start here</div>
+  <a href="#intro">How to read this</a>
+  <div class="part">Part A · What happens to the pool</div>
+  <a href="#a1">1 · The two files and how they are read</a>
+  <a href="#a2">2 · Which loans and properties are kept</a>
+  <a href="#a3">3 · Which identifiers are used</a>
+  <a href="#a4">4 · Which valuation is trusted</a>
+  <a href="#a5">5 · How shared collateral is grouped</a>
+  <a href="#a6">6 · Which valuation convention applies</a>
+  <a href="#a7">7 · Which property represents the group</a>
+  <a href="#a8">8 · How value, LTV and seasoning are allocated</a>
+  <a href="#a9">9 · The flattened pool</a>
+  <div class="part">Part B · The 175 MILAN columns</div>
+  <a href="#b1">Rules that apply to every column</a>
+  <a href="#b2">Column index (searchable)</a>
+  <a href="#b3">Code maps</a>
+  <a href="#b4">Deep dives</a>
+  <div class="part">Part C · The Execution Summary</div>
+  <a href="#c1">The 38 metrics</a>
+  <a href="#c2">The other sheets</a>
+  <div class="part">Part D · Before you submit a pool</div>
+  <a href="#d1">Data-quality checklist</a>
+</nav>
+
+<main>
+<section class="chapter" id="intro">
+  <div class="kicker">Reference</div>
+  <h1>From an ESMA pool to a MILAN pool</h1>
+  <p class="lede">This document describes exactly what the ESMA → MILAN tool does to a residential mortgage pool reported in the ESMA Annex 2 (RRE) loan-level templates when it produces the Moody's MILAN input file. It is written for the person preparing or reviewing the pool, not for the person maintaining the software.</p>
+  <div class="grid2">
+    <div class="card"><div class="t">Part A · The pool</div><p>Nine steps that decide which loans and properties are in, which identifiers and valuations are used, how shared collateral is grouped and how value is allocated to each loan. Read once, in order.</p></div>
+    <div class="card"><div class="t">Part B · The columns</div><p>All 175 MILAN columns, each with its ESMA source, its rule and what happens when the input is missing. Searchable by MILAN header or ESMA field code. The code maps and the harder derivations have their own sections.</p></div>
+    <div class="card"><div class="t">Part C · The summary</div><p>How each line of the Execution Summary sheet is calculated and what the other sheets of the workbook contain.</p></div>
+    <div class="card"><div class="t">Part D · The checklist</div><p>What makes a run stop, what makes it warn, and which ESMA inputs end up as "ND" in MILAN. Read before submitting a pool.</p></div>
+  </div>
+  <h3>Conventions used here</h3>
+  <ul>
+    <li>ESMA fields are named by code and template name, for example <span class="esma">RREL30</span> Current Principal Balance. Codes starting <span class="esma">RREL</span> are in the loans file, codes starting <span class="esma">RREC</span> in the collaterals file.</li>
+    <li>MILAN columns are named by their exact header in the output, for example <span class="milan">Loan CB</span>, with their position (1 to 175) in the column index.</li>
+    <li>Fields the tool computes itself carry a <code>calc_</code> prefix in the workbook, for example <code>calc_aggregated_property_value</code>. They appear in the "Combined flattened pool" sheet and again in MILAN's "Additional data" columns.</li>
+    <li>"Missing" means a cell that was empty, <code>NA</code>, <code>ND</code> or <code>ND1</code> to <code>ND5</code> in the ESMA file. "ND" in bold quotes means the literal text the tool writes to MILAN.</li>
+    <li>Worked examples use the tool's built-in synthetic test pool: 8 loans, 12 collateral rows, cut-off date 2024-06-30, one example of every collateral structure. Every number shown is what the tool produces for that pool.</li>
+  </ul>
+  <h3>What the tool produces</h3>
+  <p>One Excel workbook named <code>&lt;cut-off date&gt; &lt;deal name&gt; Flattened loans and collaterals.xlsx</code> with ten sheets. Sheet 10, "MILAN template pool", is the MILAN input: one row per loan, 175 columns, every cell written as text. Sheet 1 is the Execution Summary. Sheets 2 to 9 are the audit trail: the cleaned inputs, the identifier mapping tables, the group classifications and the flattened pool that MILAN is built from.</p>
+</section>
+
+<div class="part-head" id="partA">
+  <div class="kicker">Part A</div>
+  <h2>What happens to the pool</h2>
+  <p>Before any MILAN column exists, the tool has to decide which rows count, which of the duplicated ESMA identifiers to trust, which of the two valuations on each collateral row to use, and how to turn a many-to-many loan–property structure into one row per loan. These nine steps are that decision chain.</p>
+</div>
+
+<section class="chapter" id="a1">
+  <div class="kicker">Step 1</div>
+  <h2>The two files and how they are read</h2>
+  <p class="lede">The tool reads the loans file and the collaterals file as exported from the securitisation repository, renames the ESMA field codes to readable names, types the numeric fields from the ESMA taxonomy, and normalises the dates.</p>
+
+  <h3>What the files look like</h3>
+  <p>Both files are CSVs with one column per ESMA field, headed by the field code: <span class="esma">RREL1</span> to <span class="esma">RREL84</span> in the loans file, <span class="esma">RREC1</span> to <span class="esma">RREC23</span> in the collaterals file. Repository exports also carry a <code>Sec_Id</code> column, a <code>Pool_Cutoff_Date</code> column and, next to every monetary field, a currency companion column named with the suffix <code>_CURRENCY</code> (for example <code>RREL30_CURRENCY</code>).</p>
+  <p>Each field code is renamed to the field name in the ESMA RRE taxonomy, then lower-cased with underscores: <span class="esma">RREL30</span> becomes <code>current_principal_balance</code>, <span class="esma">RREC13</span> becomes <code>current_valuation_amount</code>. Columns the taxonomy does not know keep their name, cleaned the same way (<code>Pool_Cutoff_Date</code> becomes <code>pool_cutoff_date</code>). These cleaned names are the headers you see in the audit-trail sheets.</p>
+
+  <h3>Missing values</h3>
+  <p>Eight tokens mean "no data" and are read as missing: an empty cell, <code>NA</code>, <code>ND</code>, <code>ND1</code>, <code>ND2</code>, <code>ND3</code>, <code>ND4</code> and <code>ND5</code>. The distinction between the ND reasons is not carried forward: whatever the reason, a missing value reaches MILAN as <b>"ND"</b>. A cell that contains only spaces is also treated as missing wherever a rule tests for missing data.</p>
+
+  <h3>How values are typed</h3>
+  <ul>
+    <li><b>Amounts, percentages and counts.</b> Every field the ESMA taxonomy formats as <code>{MONETARY}</code>, <code>{PERCENTAGE}</code> or <code>{INTEGER-n}</code> is read as a number. Surrounding spaces are ignored. A value in such a field that is not a number and not a missing-value token stops the run with a message naming the file, the field, the row and the value. Nothing is silently dropped.</li>
+    <li><b>Identifiers.</b> <span class="esma">RREL2</span> to <span class="esma">RREL5</span> and <span class="esma">RREC2</span> to <span class="esma">RREC4</span> are always read as text, so an identifier such as <code>007</code> keeps its leading zeros.</li>
+    <li><b>Everything else</b> (codes, names, flags) is read as text.</li>
+    <li><b>Character encoding.</b> A file that is not valid UTF-8 is repaired field by field (UTF-8, then Windows-1252, then Latin-1, then unreadable bytes are dropped), so a Windows-exported file with accented names loads without manual conversion.</li>
+  </ul>
+
+  <h3>Columns that are dropped</h3>
+  <ul>
+    <li><code>Sec_Id</code>, <span class="esma">RREL1</span> / <span class="esma">RREC1</span> Unique Identifier and <span class="esma">RREL6</span> Data Cut-Off Date: they identify the submission, not a loan.</li>
+    <li>The currency companions of fifteen loan fields (<span class="esma">RREL16</span>, 20, 29, 31, 32, 33, 39, 41, 61, 64, 67, 71, 73, 74, 77) and three collateral fields (<span class="esma">RREC13</span>, 17, 21). The pool is treated as single-currency. One companion is kept: <code>RREL30_CURRENCY</code>, which becomes MILAN's <span class="milan">Loan Currency</span>.</li>
+  </ul>
+
+  <h3>Dates</h3>
+  <p>Date fields often arrive in two forms at once, ISO text (<code>2023-12-31</code>) and Excel serial numbers (<code>45291</code>), typically because the file was opened and re-saved in Excel. The tool accepts both: ISO dates written <code>YYYY-MM-DD</code> or <code>YYYY/MM/DD</code> (a time after the date is ignored), and whole or decimal serial numbers that fall between 1900-01-01 and 2100-01-01 (counted from Excel's 1899-12-30 origin). Anything else becomes missing, and a warning lists up to five of the offending values per column.</p>
+  <p>This applies to all sixteen loan-side date fields (<span class="esma">RREL7</span>, 8, 9, 23, 24, 36, 51, 53, 55, 60, 62, 63, 65, 66, 72 and <code>Pool_Cutoff_Date</code>) and to <span class="esma">RREC15</span>, <span class="esma">RREC19</span> and <span class="esma">RREC20</span> on the collateral side. <span class="esma">RREL65</span> Date of Restructuring may contain several dates separated by commas or semicolons, as the ESMA schema allows; the tool keeps the latest one.</p>
+
+  <h3>The pool cut-off date</h3>
+  <p>The first non-missing <code>Pool_Cutoff_Date</code> in the loans file names the output workbook and anchors the Execution Summary. Seasoning and the arrears-timing columns use each loan's own cut-off date value, which in a normal export is the same date on every row.</p>
+
+  <div class="box halt"><span class="t">The run stops here when</span>
+    <ul>
+      <li>a numeric field holds a non-numeric value (the message names file, field, row and value);</li>
+      <li>a file has a header but no data rows;</li>
+      <li>two columns end up with the same name after renaming;</li>
+      <li>a required column is absent. Loans: <span class="esma">RREL2</span>, <span class="esma">RREL3</span>, <span class="esma">RREL5</span>, <span class="esma">RREL23</span>, <span class="esma">RREL30</span>, <span class="esma">RREL69</span> and <code>Pool_Cutoff_Date</code>. Collaterals: <span class="esma">RREC2</span>, <span class="esma">RREC4</span>, <span class="esma">RREC5</span>, <span class="esma">RREC9</span> and <span class="esma">RREC13</span>;</li>
+      <li>no row in the loans file carries a cut-off date.</li>
+    </ul>
+    <p>Any other field may be absent or partly missing. An absent field that MILAN needs is treated as missing on every row and announced in a warning (see <a href="#b1">the global rules</a>).</p>
+  </div>
+</section>
+
+<section class="chapter" id="a2">
+  <div class="kicker">Step 2</div>
+  <h2>Which loans and properties are kept</h2>
+  <p class="lede">Only active loans with a positive balance enter the pool, and only real-estate collateral rows that back one of those loans and carry a usable valuation.</p>
+
+  <h3>Loans</h3>
+  <p>A loan row is kept when both hold:</p>
+  <ol>
+    <li><span class="esma">RREL69</span> Account Status is one of <code>PERF</code> (performing), <code>ARRE</code> (in arrears), <code>RARR</code> (restructured, in arrears) or <code>RNAR</code> (restructured, no arrears). Defaulted, redeemed and repurchased loans leave the pool here.</li>
+    <li><span class="esma">RREL30</span> Current Principal Balance is greater than zero. A missing balance fails this test.</li>
+  </ol>
+
+  <h3>Collateral rows</h3>
+  <p>A collateral row is kept when all four hold:</p>
+  <ol>
+    <li><span class="esma">RREC9</span> Property Type is present.</li>
+    <li><span class="esma">RREC5</span> Collateral Type is not one of the nineteen non-property codes: guarantees (<code>GUAR</code>), vehicles (<code>CARX</code>, <code>CMTR</code>, <code>RALV</code>, <code>NACM</code>, <code>NALV</code>, <code>AERO</code>, <code>OTHV</code>), equipment (<code>MCHT</code>, <code>INDE</code>, <code>OFEQ</code>, <code>ITEQ</code>, <code>MDEQ</code>, <code>ENEQ</code>, <code>OTHE</code>), financial assets (<code>SECU</code>, <code>OTFA</code>), and inventory or individual items (<code>OTGI</code>, <code>INDV</code>). Any other code passes, including <code>RBLD</code>, <code>CBLD</code>, <code>IBLD</code>, <code>OTRE</code>, <code>MIXD</code> and <code>OTHR</code>.</li>
+    <li><span class="esma">RREC2</span> Underlying Exposure Identifier matches a kept loan under either identifier convention (<span class="esma">RREL2</span> original or <span class="esma">RREL3</span> new). The tool has not yet chosen between the two conventions, so it accepts both here.</li>
+    <li>At least one of <span class="esma">RREC17</span> Original Valuation Amount and <span class="esma">RREC13</span> Current Valuation Amount is greater than zero.</li>
+  </ol>
+  <div class="box"><span class="t">Why loans go first</span><p>The surviving loans decide which collateral rows survive. A collateral row whose loan has been excluded has nothing to secure in this pool, so it is dropped with the loan rather than kept as an orphan.</p></div>
+  <div class="box halt"><span class="t">The run stops here when</span><p>no collateral row survives.</p></div>
+  <div class="ex"><div class="ex-head">Worked example<span>synthetic pool</span></div>
+    <div class="pane active"><p>All 8 loans are <code>PERF</code> or <code>ARRE</code> with positive balances and all 12 collateral rows are <code>RES</code> property rows with positive valuations, so nothing is removed. In a real pool this step typically removes the redeemed and repurchased loans that repositories keep reporting after they leave the pool.</p></div>
+  </div>
+</section>
+
+<section class="chapter" id="a3">
+  <div class="kicker">Step 3</div>
+  <h2>Which identifiers are used</h2>
+  <p class="lede">ESMA reports every loan, borrower and collateral under two identifiers, "original" and "new". The tool picks one of each pair and keys everything on it.</p>
+
+  <h3>The loan identifier</h3>
+  <p>The loan identifier is the join between the two files, so its selection is strict. The candidates are <span class="esma">RREL2</span> Original Underlying Exposure Identifier and <span class="esma">RREL3</span> New Underlying Exposure Identifier; the chosen one becomes <code>calc_loan_id</code> and MILAN's <span class="milan">Loan Identifier</span>.</p>
+  <ol class="steps">
+    <li><b>Uniqueness.</b> A candidate is disqualified if any non-missing value appears on more than one loan row, or if every value is missing.</li>
+    <li><b>Coverage.</b> For each remaining candidate, coverage is the share of its distinct values that appear as <span class="esma">RREC2</span> in the kept collateral rows. 100% means every loan has at least one collateral row.</li>
+    <li><b>Choice.</b> One survivor: it wins. Both at 100%: original wins. Exactly one at 100%: it wins. Both partial but different: the higher wins. Both partial and equal: original wins and a warning lists unmatched identifiers from both.</li>
+    <li><b>Threshold.</b> If the winner's coverage is below the minimum coverage setting (0.85 unless you change it on the page or the command line) the run stops. Between the minimum and 100% the run continues with a warning that lists up to ten unmatched identifiers.</li>
+  </ol>
+  <p>Loans whose chosen identifier is missing are dropped with a warning. Then both files are cut to their intersection: a loan without any collateral row is dropped, and a collateral row whose loan is not in the pool is dropped.</p>
+
+  <h3>Borrower and property identifiers</h3>
+  <p>Duplicates are expected here (one borrower has several loans; one property backs several loans), so the rule is simpler: whichever of the pair has more distinct non-missing values wins; on a tie, or when the two columns are identical, the original wins.</p>
+  <div class="rule">
+    <span class="k">Borrower</span><span><span class="esma">RREL4</span> Original Obligor Identifier vs <span class="esma">RREL5</span> New Obligor Identifier → <code>calc_borrower_id</code>, MILAN <span class="milan">Borrower Identifier</span></span>
+    <span class="k">Property</span><span><span class="esma">RREC3</span> Original Collateral Identifier vs <span class="esma">RREC4</span> New Collateral Identifier → <code>calc_property_id</code>, and for the main property MILAN <span class="milan">Property Identifier</span></span>
+  </div>
+  <div class="box halt"><span class="t">The run stops here when</span>
+    <ul>
+      <li>both loan-identifier columns are unusable (duplicates, or entirely missing);</li>
+      <li>the chosen loan identifier's coverage is below the minimum coverage setting;</li>
+      <li>no loan or no collateral row remains after the intersection.</li>
+    </ul>
+  </div>
+  <div class="ex"><div class="ex-head">Worked example<span>synthetic pool</span></div>
+    <div class="pane active">
+      <p>The collateral rows reference the new identifiers (<code>NEW_001</code> …). <span class="esma">RREL2</span> is unique but has 0% coverage; <span class="esma">RREL3</span> is unique with 100% coverage, so <span class="esma">RREL3</span> wins and <code>calc_loan_id</code> is <code>NEW_001</code> to <code>NEW_008</code>.</p>
+      <p>Borrowers: <span class="esma">RREL4</span> and <span class="esma">RREL5</span> both have six distinct values, so the original <code>BORIG_01</code> … is used. Properties: both have eight distinct values, so <code>PORIG_01</code> … is used. That is why the MILAN output keys loans on <code>NEW_</code> identifiers but borrowers and properties on <code>ORIG</code> ones.</p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="a4">
+  <div class="kicker">Step 4</div>
+  <h2>Which valuation is trusted</h2>
+  <p class="lede">Every collateral row carries two valuations, original and current, each with a method, an amount and a date. One of them is chosen per row, and its method, amount and date always travel together.</p>
+  <ol class="steps">
+    <li><b>Prefer a full inspection.</b> If <span class="esma">RREC14</span> Current Valuation Method is <code>FIEI</code> (full, internal and external) or <code>FOEI</code> (full, external only), take the current valuation (<span class="esma">RREC13</span> amount, <span class="esma">RREC14</span> method, <span class="esma">RREC15</span> date). Otherwise take the original valuation (<span class="esma">RREC17</span>, <span class="esma">RREC18</span>, <span class="esma">RREC19</span>). A recent drive-by, desktop, indexed or automated value does not displace a full inspection at origination.</li>
+    <li><b>Reject an implausible amount.</b> If the amount chosen in step 1 is missing or at most 10, switch to the other valuation. This catches zero fills, placeholders and amounts reported in thousands.</li>
+  </ol>
+  <div class="formula">full_inspection = current method in {FIEI, FOEI}
+chosen  = current  if full_inspection else original
+if chosen amount is missing or ≤ 10:  chosen = the other one
+use chosen.method, chosen.amount, chosen.date</div>
+  <p>The chosen method and date reach MILAN as <span class="milan">Property Valuation Type</span> and <span class="milan">Property Valuation Date</span> for the group's main property (step 7); the chosen amount feeds the allocation in step 8. Because all three come from the same valuation, MILAN's value, type and date never describe different appraisals.</p>
+  <div class="ex"><div class="ex-head">Worked examples<span>synthetic pool, loan NEW_002</span></div>
+    <div class="tabs"><button class="tab active" data-pane="v1" type="button">Current is not a full inspection</button><button class="tab" data-pane="v2" type="button">Full inspection, bad amount</button></div>
+    <div class="pane active" data-pane="v1">
+      <div class="tbl-wrap"><table><tr><th>Property PORIG_02</th><th>Method</th><th class="num">Amount</th><th>Date</th></tr>
+      <tr><td>Current</td><td>DRVB</td><td class="num">250,000</td><td>2023-11-01</td></tr>
+      <tr><td>Original</td><td>FIEI</td><td class="num">230,000</td><td>2020-06-01</td></tr></table></div>
+      <p>Step 1: current is a drive-by, so the original is taken. Step 2: 230,000 is fine. Result: FIEI, 230,000, 2020-06-01. The newer, higher drive-by figure is discarded by design.</p>
+    </div>
+    <div class="pane" data-pane="v2">
+      <div class="tbl-wrap"><table><tr><th>Property PORIG_03</th><th>Method</th><th class="num">Amount</th><th>Date</th></tr>
+      <tr><td>Current</td><td>FIEI</td><td class="num">5</td><td>2024-02-20</td></tr>
+      <tr><td>Original</td><td>DRVB</td><td class="num">180,000</td><td>2020-06-01</td></tr></table></div>
+      <p>Step 1 takes the current full inspection. Step 2 sees an amount of 5 and switches to the original. Result: DRVB, 180,000, 2020-06-01. The method reported downstream is the drive-by, because that is the valuation whose amount is being used.</p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="a5">
+  <div class="kicker">Step 5</div>
+  <h2>How shared collateral is grouped</h2>
+  <p class="lede">A property that secures several loans ties those loans together, and a loan secured on several properties ties those properties together. The tool follows every such link and treats each connected set as one collateral group.</p>
+  <p>Each kept collateral row is one link between a loan (<code>calc_loan_id</code>) and a property (<code>calc_property_id</code>); duplicate links count once. Everything reachable through links, directly or indirectly, forms one group, numbered 1, 2, 3 … in a fixed order so that the same input always gives the same numbering. Every loan and every property belongs to exactly one group, and from here on the tool works group by group.</p>
+  <h3>The five structure types</h3>
+  <p>Each group is classified from its loan count L, property count P and link count E compared with the maximum possible L × P:</p>
+  <div class="types">
+    <div class="ty"><svg width="90" height="44" viewBox="0 0 90 44"><circle cx="20" cy="22" r="9" fill="#0e7490"/><rect x="61" y="13" width="18" height="18" rx="3" fill="#b45309"/><line x1="29" y1="22" x2="61" y2="22" stroke="#475569" stroke-width="2"/></svg><b>Type 1</b><span>one loan → one property</span></div>
+    <div class="ty"><svg width="90" height="44" viewBox="0 0 90 44"><circle cx="20" cy="22" r="9" fill="#0e7490"/><rect x="61" y="2" width="18" height="18" rx="3" fill="#b45309"/><rect x="61" y="24" width="18" height="18" rx="3" fill="#b45309"/><line x1="29" y1="22" x2="61" y2="11" stroke="#475569" stroke-width="2"/><line x1="29" y1="22" x2="61" y2="33" stroke="#475569" stroke-width="2"/></svg><b>Type 2</b><span>one loan → multiple properties</span></div>
+    <div class="ty"><svg width="90" height="44" viewBox="0 0 90 44"><circle cx="20" cy="11" r="9" fill="#0e7490"/><circle cx="20" cy="33" r="9" fill="#0e7490"/><rect x="61" y="13" width="18" height="18" rx="3" fill="#b45309"/><line x1="29" y1="11" x2="61" y2="22" stroke="#475569" stroke-width="2"/><line x1="29" y1="33" x2="61" y2="22" stroke="#475569" stroke-width="2"/></svg><b>Type 3</b><span>multiple loans → one property</span></div>
+    <div class="ty"><svg width="90" height="44" viewBox="0 0 90 44"><circle cx="20" cy="11" r="9" fill="#0e7490"/><circle cx="20" cy="33" r="9" fill="#0e7490"/><rect x="61" y="2" width="18" height="18" rx="3" fill="#b45309"/><rect x="61" y="24" width="18" height="18" rx="3" fill="#b45309"/><line x1="29" y1="11" x2="61" y2="11" stroke="#475569" stroke-width="2"/><line x1="29" y1="11" x2="61" y2="33" stroke="#475569" stroke-width="2"/><line x1="29" y1="33" x2="61" y2="11" stroke="#475569" stroke-width="2"/><line x1="29" y1="33" x2="61" y2="33" stroke="#475569" stroke-width="2"/></svg><b>Type 4</b><span>full set: every loan on every property</span></div>
+    <div class="ty"><svg width="90" height="44" viewBox="0 0 90 44"><circle cx="20" cy="11" r="9" fill="#0e7490"/><circle cx="20" cy="33" r="9" fill="#0e7490"/><rect x="61" y="2" width="18" height="18" rx="3" fill="#b45309"/><rect x="61" y="24" width="18" height="18" rx="3" fill="#b45309"/><line x1="29" y1="11" x2="61" y2="11" stroke="#475569" stroke-width="2"/><line x1="29" y1="33" x2="61" y2="11" stroke="#475569" stroke-width="2"/><line x1="29" y1="33" x2="61" y2="33" stroke="#475569" stroke-width="2"/></svg><b>Type 5</b><span>cross-collateralised: at least one pairing missing</span></div>
+  </div>
+  <div class="tbl-wrap"><table><tr><th>Type</th><th>L</th><th>P</th><th>Links</th><th>Label written to the workbook</th></tr>
+  <tr><td>1</td><td>1</td><td>1</td><td>1</td><td><code>1: one loan → one property</code></td></tr>
+  <tr><td>2</td><td>1</td><td>&gt;1</td><td>P</td><td><code>2: one loan → multiple properties</code></td></tr>
+  <tr><td>3</td><td>&gt;1</td><td>1</td><td>L</td><td><code>3: multiple loans → one property</code></td></tr>
+  <tr><td>4</td><td>&gt;1</td><td>&gt;1</td><td>L × P</td><td><code>4: Full set</code></td></tr>
+  <tr><td>5</td><td>&gt;1</td><td>&gt;1</td><td>&lt; L × P</td><td><code>5: Cross-collateralised set</code></td></tr></table></div>
+  <p>Types 4 and 5 are allocated identically in step 8; the distinction is reported so the structure of the pool is visible. The type, the counts and the group number reach MILAN as <span class="milan">Additional data 4</span> to <span class="milan">9</span>.</p>
+  <div class="ex"><div class="ex-head">Worked example<span>synthetic pool</span></div>
+    <div class="pane active">
+      <div class="tbl-wrap"><table><tr><th>Group</th><th>Loans</th><th>Properties</th><th>Links</th><th>Type</th></tr>
+      <tr><td>1</td><td>NEW_001</td><td>PORIG_01</td><td>1</td><td>1</td></tr>
+      <tr><td>2</td><td>NEW_002</td><td>PORIG_02, PORIG_03</td><td>2</td><td>2</td></tr>
+      <tr><td>3</td><td>NEW_003, NEW_004</td><td>PORIG_04</td><td>2</td><td>3</td></tr>
+      <tr><td>4</td><td>NEW_005, NEW_006</td><td>PORIG_05, PORIG_06</td><td>4 of 4</td><td>4</td></tr>
+      <tr><td>5</td><td>NEW_007, NEW_008</td><td>PORIG_07, PORIG_08</td><td>3 of 4</td><td>5</td></tr></table></div>
+      <p>In group 5, NEW_007 is linked to PORIG_07 only, NEW_008 to both properties. One pairing is missing, so the group is cross-collateralised rather than a full set. The two loans still form one group because they share PORIG_07.</p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="a6">
+  <div class="kicker">Step 6</div>
+  <h2>Which valuation convention applies</h2>
+  <p class="lede">When one property backs several loans, it appears on several collateral rows. Issuers populate the amount on those rows in one of two ways, and the tool has to know which before it can recover the property's value.</p>
+  <div class="grid2">
+    <div class="card"><div class="t">by_loan · value repeated</div><p>The full property value is written on every row the property appears on. The property's value is the amount on one row (the first non-missing).</p></div>
+    <div class="card"><div class="t">by_group · value split</div><p>The issuer has already divided the property value across the rows, usually pro rata to loan balance. The property's value is the sum of its rows.</p></div>
+  </div>
+  <h3>Detection</h3>
+  <p>The tool looks only where the two conventions give different data: properties linked to two or more loans whose balances differ, with at least two non-missing valuation amounts after step 4. For each such property, identical amounts across its rows are a vote for by_loan and differing amounts a vote for by_group. If more than 90% of the votes go one way, that convention is used. Otherwise the detection is ambiguous: the tool uses by_loan and warns. A pool with no multi-loan property is also ambiguous and gets by_loan.</p>
+  <p>You can override the detection on the page (aggregation: auto, by_loan or by_group) or with the command-line option. The convention actually used is written to the Execution Summary as <b>Aggregation Method</b>.</p>
+  <div class="box warn"><span class="t">Why this matters</span><p>Reading a by_group file as by_loan deflates every property value; reading by_loan as by_group double-counts it. Neither mistake stops the run; both move every LTV. If the summary shows a convention you did not expect, or the run warns that detection was ambiguous, check the collateral file before using the output.</p></div>
+  <p>Under by_loan, if a property's rows carry different non-missing amounts the first one is used and a warning names up to five such properties. Under by_group the rows are summed and nothing is checked.</p>
+  <div class="ex"><div class="ex-head">Worked example<span>synthetic pool</span></div>
+    <div class="pane active"><p>PORIG_04 backs NEW_003 (160,000) and NEW_004 (95,000) and carries 400,000 on both rows; PORIG_05, PORIG_06 and PORIG_07 are likewise repeated unchanged. Four votes for by_loan, none against: by_loan is used, and the Execution Summary shows <code>by_loan</code>.</p></div>
+  </div>
+</section>
+
+<section class="chapter" id="a7">
+  <div class="kicker">Step 7</div>
+  <h2>Which property represents the group</h2>
+  <p class="lede">A MILAN row describes one property. When a group has several, one is chosen as the main property, and every loan in the group reports that property's identifier, type, region, occupancy, valuation type and valuation date.</p>
+  <p>Within a group, the properties are ordered by the following keys, and the first one wins. A missing value on any key sorts last.</p>
+  <ol class="steps">
+    <li><b>Highest value</b>, using the per-property value from step 6.</li>
+    <li><b>Owner-occupied first</b>: <span class="esma">RREC7</span> Occupancy Type equal to <code>FOWN</code> beats any other code.</li>
+    <li><b>Full inspection first</b>: the method chosen in step 4 is <code>FIEI</code> or <code>FOEI</code>.</li>
+    <li><b>Most recent valuation date</b>, from the valuation chosen in step 4.</li>
+    <li><b>Lowest property identifier</b>, alphabetically. This last key guarantees that two runs on the same input choose the same property.</li>
+  </ol>
+  <p>The choice is made once per group, not per loan: in a full set of two loans and two properties, both loans report the same main property even though each is directly secured on both.</p>
+  <div class="ex"><div class="ex-head">Worked example<span>synthetic pool</span></div>
+    <div class="pane active">
+      <div class="tbl-wrap"><table><tr><th>Group</th><th>Candidates (value after step 4)</th><th>Main property</th><th>Decided by</th></tr>
+      <tr><td>2</td><td>PORIG_02 (230,000), PORIG_03 (180,000)</td><td>PORIG_02</td><td>value</td></tr>
+      <tr><td>4</td><td>PORIG_05 (380,000), PORIG_06 (290,000)</td><td>PORIG_05</td><td>value</td></tr>
+      <tr><td>5</td><td>PORIG_07 (420,000), PORIG_08 (310,000)</td><td>PORIG_07</td><td>value</td></tr></table></div>
+      <p>NEW_008 is secured on PORIG_07 and PORIG_08, but its MILAN row carries PORIG_07's attributes, including the region <code>NL-LI</code> rather than PORIG_08's <code>NL-NH</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="a8">
+  <div class="kicker">Step 8</div>
+  <h2>How value, LTV and seasoning are allocated</h2>
+  <p class="lede">The group's collateral is shared out to its loans in proportion to balance. That share is MILAN's Property Value. Two group-level LTVs and a per-loan seasoning are computed alongside it.</p>
+  <h3>Allocated property value</h3>
+  <div class="formula">group property total = sum of the per-property values in the group (step 6)
+group loan total     = sum of RREL30 Current Principal Balance over the group's loans
+allocated(loan)      = group property total × RREL30(loan) / group loan total</div>
+  <p>The allocated values of a group always add back to the group property total. If the group loan total is zero or missing (which step 2 normally prevents) the total is split equally and a warning is issued. The result is <code>calc_aggregated_property_value</code>, MILAN's <span class="milan">Property Value</span> and <span class="milan">Additional data 10</span>.</p>
+  <div class="box"><span class="t">Allocation ignores which property a loan is actually on</span><p>In a cross-collateralised group every property stands behind every loan, so a loan secured on one property still receives a share of the whole group's value. The individual property values are not preserved on the MILAN row; only the allocated share is.</p></div>
+  <h3>Group-level LTVs</h3>
+  <div class="formula">calc_current_LTV  = sum of RREL30 over the group ÷ sum of allocated values over the group
+calc_original_LTV = sum of RREL29 over the group ÷ the same denominator</div>
+  <p>Both are the same for every loan in the group, missing balances count as zero, and both are missing when the denominator is zero. They reach MILAN as <span class="milan">Additional data 11</span> and <span class="milan">12</span>. They are not MILAN's <span class="milan">Original LTV</span> and <span class="milan">Current LTV</span> (columns 120 and 121), which come from the ESMA-reported <span class="esma">RREC16</span> and <span class="esma">RREC12</span> of the main property divided by 100. The Execution Summary's LTV lines use the group-level pair.</p>
+  <h3>Seasoning</h3>
+  <div class="formula">calc_seasoning (years) = (pool cut-off date − RREL23 Origination Date) ÷ 365.25</div>
+  <p>Per loan, missing if either date is missing, negative without warning if origination is after cut-off. MILAN's <span class="milan">Additional data 13</span>.</p>
+  <div class="ex"><div class="ex-head">Worked examples<span>synthetic pool</span></div>
+    <div class="tabs"><button class="tab active" data-pane="al1" type="button">Type 3 · one property, two loans</button><button class="tab" data-pane="al2" type="button">Type 2 · two properties, one loan</button><button class="tab" data-pane="al3" type="button">Type 5 · cross-collateralised</button><button class="tab" data-pane="al4" type="button">Seasoning</button></div>
+    <div class="pane active" data-pane="al1">
+      <p>Group 3: PORIG_04 is worth 400,000. NEW_003 has a balance of 160,000 and NEW_004 of 95,000, so the loan total is 255,000.</p>
+      <div class="tbl-wrap"><table><tr><th>Loan</th><th class="num">RREL30</th><th class="num">Share</th><th class="num">Property Value</th><th class="num">RREL29</th></tr>
+      <tr><td>NEW_003</td><td class="num">160,000</td><td class="num">62.75%</td><td class="num">250,980.39</td><td class="num">200,000</td></tr>
+      <tr><td>NEW_004</td><td class="num">95,000</td><td class="num">37.25%</td><td class="num">149,019.61</td><td class="num">130,000</td></tr></table></div>
+      <p>Group current LTV = 255,000 ÷ 400,000 = 0.6375; original LTV = 330,000 ÷ 400,000 = 0.825. Both loans carry both values.</p>
+    </div>
+    <div class="pane" data-pane="al2">
+      <p>Group 2: PORIG_02 (230,000) and PORIG_03 (180,000) back NEW_002 alone. Property total 410,000, loan total 290,000, so NEW_002's Property Value is the full 410,000. Current LTV 290,000 ÷ 410,000 = 0.7073; original LTV 350,000 ÷ 410,000 = 0.8537.</p>
+    </div>
+    <div class="pane" data-pane="al3">
+      <p>Group 5: PORIG_07 (420,000) and PORIG_08 (310,000), total 730,000. NEW_007 (265,000) and NEW_008 (170,000), total 435,000.</p>
+      <div class="tbl-wrap"><table><tr><th>Loan</th><th class="num">RREL30</th><th class="num">Property Value</th></tr>
+      <tr><td>NEW_007</td><td class="num">265,000</td><td class="num">444,712.64</td></tr>
+      <tr><td>NEW_008</td><td class="num">170,000</td><td class="num">285,287.36</td></tr></table></div>
+      <p>NEW_007 is secured on PORIG_07 only, yet its allocation includes part of PORIG_08's value. Group LTV 435,000 ÷ 730,000 = 0.5959.</p>
+    </div>
+    <div class="pane" data-pane="al4">
+      <p>NEW_001 was originated on 2019-03-15; the cut-off is 2024-06-30. That is 1,934 days, so seasoning = 1,934 ÷ 365.25 = 5.295 years, written to MILAN as <code>5.29500342231348</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="a9">
+  <div class="kicker">Step 9</div>
+  <h2>The flattened pool</h2>
+  <p class="lede">After step 8 the tool has one row per loan. This is the "Combined flattened pool" sheet of the workbook, and every MILAN column is read from it.</p>
+  <p>Each row holds:</p>
+  <ul>
+    <li>every field of the loans file, cleaned as in step 1, for the loan;</li>
+    <li>the main property's fields from the collaterals file: identifiers, <span class="esma">RREC5</span> Collateral Type, <span class="esma">RREC6</span> region, <span class="esma">RREC7</span> Occupancy Type, <span class="esma">RREC8</span> Lien, <span class="esma">RREC9</span> Property Type, <span class="esma">RREC10</span> and <span class="esma">RREC11</span> EPC, <span class="esma">RREC12</span> and <span class="esma">RREC16</span> LTVs, the four method and date fields, <span class="esma">RREC23</span> Guarantor Type, and so on. A loan in a multi-property group therefore reports its main property's attributes only;</li>
+    <li><code>final_valuation_method</code> and <code>final_valuation_date</code>: the method and date chosen in step 4 for the main property;</li>
+    <li>twelve computed fields:</li>
+  </ul>
+  <div class="tbl-wrap"><table><tr><th>Field</th><th>From</th><th>MILAN column</th></tr>
+  <tr><td><code>calc_loan_id</code></td><td>step 3</td><td>5 Loan Identifier, 144</td></tr>
+  <tr><td><code>calc_borrower_id</code></td><td>step 3</td><td>3 Borrower Identifier, 145</td></tr>
+  <tr><td><code>calc_main_property_id</code></td><td>step 7</td><td>4 Property Identifier, 146</td></tr>
+  <tr><td><code>calc_collateral_group_id</code></td><td>step 5</td><td>147</td></tr>
+  <tr><td><code>calc_nr_loans_in_group</code>, <code>calc_nr_properties_in_group</code></td><td>step 5</td><td>148, 149</td></tr>
+  <tr><td><code>calc_full_set</code>, <code>calc_cross_collateralized_set</code></td><td>step 5 (TRUE for type 4 / type 5)</td><td>150, 151</td></tr>
+  <tr><td><code>calc_structure_type</code></td><td>step 5</td><td>152</td></tr>
+  <tr><td><code>calc_aggregated_property_value</code></td><td>step 8</td><td>70 Property Value, 153</td></tr>
+  <tr><td><code>calc_original_LTV</code>, <code>calc_current_LTV</code></td><td>step 8</td><td>154, 155</td></tr>
+  <tr><td><code>calc_seasoning</code></td><td>step 8</td><td>156</td></tr></table></div>
+  <p>From here on there is no more group logic: each MILAN column is a function of the fields on its own row, with three exceptions (<span class="milan">Ranking</span>, <span class="milan">External Prior Ranks CB</span> and <span class="milan">Pari Passu Ranking Loans (Not In Pool)</span>) that look at the other loans sharing the same main property.</p>
+</section>
+
+<div class="part-head" id="partB">
+  <div class="kicker">Part B</div>
+  <h2>The 175 MILAN columns</h2>
+  <p>Every column of the "MILAN template pool" sheet, in output order. Start with the rules that apply to all of them, then use the index to look up a column by its MILAN header or by the ESMA field it comes from. The code maps and the derivations that need more than a sentence have their own sections.</p>
+</div>
+
+<section class="chapter" id="b1">
+  <div class="kicker">Part B · Rules</div>
+  <h2>Rules that apply to every column</h2>
+  <p class="lede">Five rules decide how a value is written, whatever the column. Read them once; the index assumes them.</p>
+  <ol class="steps">
+    <li><b>Every cell is text.</b> Numbers, dates and flags are all written as strings, so MILAN receives <code>180000</code>, <code>2019-03-15</code> and <code>TRUE</code> rather than typed Excel cells.</li>
+    <li><b>Missing is "ND".</b> A value that is missing on the flattened pool (empty, <code>NA</code>, <code>ND</code>, <code>ND1</code> to <code>ND5</code> in the ESMA file) is written as the literal <b>"ND"</b>. A column whose ESMA source is absent from the file altogether is filled with "ND" for every loan, and the run log carries the warning <em>MILAN mapping: the following source columns are missing and will be set to 'ND': …</em>.</li>
+    <li><b>Numbers keep up to 15 significant digits</b>, with no scientific notation, no thousands separators and no trailing zeros: <code>250980.392156863</code>, <code>0.69</code>, <code>0</code>. Percentages that ESMA reports as "69" (meaning 69%) are divided by 100 where the index says so, and arrive as <code>0.69</code>.</li>
+    <li><b>Dates are written <code>YYYY-MM-DD</code></b> and flags as <code>TRUE</code> / <code>FALSE</code>. A date that could not be read in step 1 is already missing by now and becomes "ND".</li>
+    <li><b>A code the tool does not know becomes "ND".</b> Every code-mapped column (Origination Channel, Property Type, Account Status and so on) translates an ESMA list code into a MILAN number through the tables in <a href="#b3">Code maps</a>. A code that is not in the table, including a mistyped one, is written as "ND" rather than guessed.</li>
+  </ol>
+  <h3>The five kinds of column</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th style="width:11em">Kind</th><th>Meaning</th><th style="width:9em">How many</th></tr>
+    <tr><td><span class="kind direct" style="margin:0">Direct</span></td><td>The ESMA value is copied as it stands (after step-1 cleaning). Dates and numbers are reformatted per the rules above, nothing else changes.</td><td>58</td></tr>
+    <tr><td><span class="kind code" style="margin:0">Code map</span></td><td>An ESMA list code is translated to a MILAN code through a fixed table.</td><td>17</td></tr>
+    <tr><td><span class="kind calc" style="margin:0">Calculated</span></td><td>Arithmetic on one or more ESMA fields: a division by 100, a difference, a day count, a rank.</td><td>12</td></tr>
+    <tr><td><span class="kind infer" style="margin:0">Inferred</span></td><td>A rule that reads one or more fields and chooses a category or label.</td><td>6</td></tr>
+    <tr><td><span class="kind fixed" style="margin:0">Fixed</span></td><td>The same value for every loan: "ND" for the 80 columns the ESMA templates have no source for, "0" for Retained Amount, and a placeholder text for Servicer Identifier.</td><td>82</td></tr>
+  </table></div>
+  <p class="small muted">The row order of the MILAN sheet is the row order of the flattened pool, which is the order of the loans file after filtering. There is one row per loan. If two loans end up with the same <code>calc_loan_id</code> the file is still written, with a warning naming the duplicates.</p>
+</section>
+
+<section class="chapter" id="b2">
+  <div class="kicker">Part B · Index</div>
+  <h2>Column index</h2>
+  <p class="lede">All 175 columns in output order. Type part of a MILAN header, an ESMA code such as <code>RREL31</code>, or a word from the rule. Click a row to open it.</p>
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="Search MILAN header, ESMA code or rule…" aria-label="Search columns" autocomplete="off">
+    <button class="chip active" data-kind="all" type="button">All</button>
+    <button class="chip" data-kind="direct" type="button">Direct</button>
+    <button class="chip" data-kind="code" type="button">Code map</button>
+    <button class="chip" data-kind="calc" type="button">Calculated</button>
+    <button class="chip" data-kind="infer" type="button">Inferred</button>
+    <button class="chip" data-kind="fixed" type="button">Fixed</button>
+    <button class="chip ghost" id="expandAll" type="button">Expand shown</button>
+    <button class="chip ghost" id="collapseAll" type="button">Collapse all</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div id="cols"></div>
+  <p class="nores" id="nores">No column matches. Try the MILAN header as it appears in the output, or the ESMA code of the source field.</p>
+</section>
+
+<section class="chapter" id="b3">
+  <div class="kicker">Part B · Code maps</div>
+  <h2>Code maps</h2>
+  <p class="lede">Each table translates the codes of one ESMA list field into MILAN codes. A code that is not in its table, or a missing value, is written as "ND". Several ESMA codes often share one MILAN code; the ESMA meaning is quoted in short form.</p>
+
+  <h3 id="cm-channel">Origination Channel (column 11) ← <span class="esma">RREL26</span> Origination Channel</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>BRAN</td><td>Office or branch network</td><td>1</td></tr><tr><td>DRCT</td><td>Central or direct</td><td>2</td></tr><tr><td>BROK</td><td>Broker</td><td>3</td></tr><tr><td>WEBI</td><td>Internet</td><td>4</td></tr><tr><td>TPAC</td><td>Package</td><td>5</td></tr><tr><td>TPTC</td><td>Third-party channel, underwriting by the originator</td><td>6</td></tr><tr><td>OTHR</td><td>Other</td><td>7</td></tr></table></div>
+
+  <h3 id="cm-purpose">Loan Purpose (12) ← <span class="esma">RREL27</span> Purpose</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>PURC</td><td>Purchase</td><td>1</td></tr><tr><td>RMRT</td><td>Remortgage</td><td>2</td></tr><tr><td>RENV</td><td>Renovation</td><td>3</td></tr><tr><td>EQRE</td><td>Equity release</td><td>4</td></tr><tr><td>CNST</td><td>Construction</td><td>5</td></tr><tr><td>DCON</td><td>Debt consolidation</td><td>6</td></tr><tr><td>RMEQ</td><td>Remortgage with equity release</td><td>7</td></tr><tr><td>BSFN, CMRT, IMRT, RGBY, GSPL, OTHR</td><td>Business funding, combination mortgage, investment mortgage, Right to Buy, government-sponsored loan, other</td><td>8</td></tr></table></div>
+  <p class="small muted">The Execution Summary's "Loan Purpose: Purchased, Remortgage and Renovation" is the share of balance with MILAN code 1, 2 or 3.</p>
+
+  <h3 id="cm-freq">Principal Payment Frequency (13) ← <span class="esma">RREL37</span>; Interest Payment Frequency (14) ← <span class="esma">RREL38</span></h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>MNTH</td><td>Monthly</td><td>1</td></tr><tr><td>QUTR</td><td>Quarterly</td><td>2</td></tr><tr><td>SEMI</td><td>Semi-annual</td><td>3</td></tr><tr><td>YEAR</td><td>Annual</td><td>4</td></tr><tr><td>OTHR</td><td>Other</td><td>5</td></tr></table></div>
+
+  <h3 id="cm-amort">Principal Payment Type (15) ← <span class="esma">RREL35</span> Amortisation Type</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>FRXX</td><td>French (constant instalment)</td><td>1</td></tr><tr><td>DEXX</td><td>German (interest-only first instalment, then constant)</td><td>2</td></tr><tr><td>FIXE</td><td>Fixed amortisation schedule (constant principal)</td><td>2</td></tr><tr><td>BLLT</td><td>Bullet</td><td>8</td></tr><tr><td>OTHR</td><td>Other</td><td>ND</td></tr></table></div>
+  <div class="box warn"><span class="t">Bullet loans count as interest-only</span><p>MILAN code 8 is what the Execution Summary's "Principal Payment Type: Initial IO &gt; 10 Years" counts. Every ESMA bullet loan lands there regardless of its term. ESMA has no code for a pure interest-only loan other than BLLT.</p></div>
+
+  <h3 id="cm-irtype">Interest Rate Type (28) ← <span class="esma">RREL42</span> Interest Rate Type</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>FLIF</td><td>Floating for life</td><td>1</td></tr><tr><td>FINX</td><td>Floating, reverting to another index</td><td>2</td></tr><tr><td>FXRL</td><td>Fixed for life</td><td>3</td></tr><tr><td>FXPR</td><td>Fixed with future periodic resets</td><td>4</td></tr><tr><td>FLCF</td><td>Fixed with compulsory future switch to floating</td><td>5</td></tr><tr><td>FLFL, CAPP, FLCA</td><td>Floating with floor, with cap, with both</td><td>6</td></tr><tr><td>DISC</td><td>Discount</td><td>7</td></tr><tr><td>SWIC, OBLS, MODE, OTHR</td><td>Switch optionality, obligor swapped, modular, other</td><td>8</td></tr></table></div>
+
+  <h3 id="cm-index">Base Index (29) ← <span class="esma">RREL44</span> Current Interest Rate Index and <span class="esma">RREL45</span> Current Interest Rate Index Tenor</h3>
+  <p>Two lookups. If the index is LIBOR or Euribor the tenor decides the code, and a tenor outside the four listed gives "ND". Any other index is looked up alone and the tenor is ignored.</p>
+  <div class="grid2">
+    <div><div class="tbl-wrap"><table><tr><th>RREL44</th><th>RREL45</th><th>MILAN</th></tr>
+    <tr><td>LIBO</td><td>MNTH (1 month)</td><td>1</td></tr><tr><td>EURI</td><td>MNTH (1 month)</td><td>2</td></tr><tr><td>LIBO</td><td>QUTR (3 month)</td><td>3</td></tr><tr><td>EURI</td><td>QUTR (3 month)</td><td>4</td></tr><tr><td>LIBO</td><td>SEMI (6 month)</td><td>5</td></tr><tr><td>EURI</td><td>SEMI (6 month)</td><td>6</td></tr><tr><td>LIBO</td><td>YEAR (12 month)</td><td>7</td></tr><tr><td>EURI</td><td>YEAR (12 month)</td><td>8</td></tr><tr><td>LIBO or EURI</td><td>any other tenor, or missing</td><td>ND</td></tr></table></div></div>
+    <div><div class="tbl-wrap"><table><tr><th>RREL44</th><th>Meaning</th><th>MILAN</th></tr>
+    <tr><td>BOER</td><td>Bank of England base rate</td><td>9</td></tr><tr><td>ECBR</td><td>European Central Bank base rate</td><td>10</td></tr><tr><td>LDOR</td><td>Lender's own rate</td><td>11</td></tr><tr><td>JIBA</td><td>JIBAR</td><td>16</td></tr><tr><td>TREA, MAAA, FUSW, LIBI, SWAP, PFAN, EONA, EONS, EUUS, EUCH, TIBO, ISDA, GCFR, STBO, BBSW, BUBO, CDOR, CIBO, MOSP, NIBO, PRBO, TLBO, WIBO, OTHR</td><td>Every other listed index, including "Other"</td><td>13</td></tr></table></div></div>
+  </div>
+  <p class="small muted">A fixed-rate loan normally reports no index, so its Base Index is "ND". In the synthetic pool NEW_001 (EURI, QUTR) gets 4; NEW_006 (EURI, MNTH) gets 2; NEW_005 (fixed for life, no index) gets "ND".</p>
+
+  <h3 id="cm-employment">Employment Type (45) ← <span class="esma">RREL13</span> Employment Status</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>EMRS, EMUK</td><td>Employed, private sector; employed, sector unknown</td><td>1</td></tr><tr><td>EMBL</td><td>Employed, public sector</td><td>2</td></tr><tr><td>SFEM</td><td>Self-employed</td><td>3</td></tr><tr><td>NOEM</td><td>No employment, obligor is a legal entity</td><td>4</td></tr><tr><td>PNNR</td><td>Pensioner</td><td>5</td></tr><tr><td>STNT, UNEM, OTHR</td><td>Student, unemployed, other</td><td>6</td></tr></table></div>
+  <p class="small muted"><span class="esma">RREL13</span> also drives <span class="milan">Borrower Type</span> (42); see the <a href="#dd-borrower">deep dive</a>.</p>
+
+  <h3 id="cm-income">Income Verification For Primary Income (51) ← <span class="esma">RREL19</span>; For Secondary Income (53) ← <span class="esma">RREL21</span></h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>VRFD</td><td>Verified</td><td>1</td></tr><tr><td>SCNF, SCRG</td><td>Self-certified with affordability confirmation; credit bureau information or scoring</td><td>2</td></tr><tr><td>NVRF</td><td>Non-verified income or fast track</td><td>3</td></tr><tr><td>SCRT</td><td>Self-certified, no checks</td><td>4</td></tr><tr><td>OTHR</td><td>Other</td><td>5</td></tr></table></div>
+
+  <h3 id="cm-proptype">Property Type (69) ← <span class="esma">RREC9</span> Property Type</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>RHOS, RBGL, RTHS</td><td>House (detached or semi-detached), bungalow, terraced house</td><td>1</td></tr><tr><td>RFLT</td><td>Flat or apartment</td><td>2</td></tr><tr><td>MULF</td><td>Multifamily house (more than four units)</td><td>5</td></tr><tr><td>PCMM</td><td>Partial commercial use</td><td>6</td></tr><tr><td>BIZZ</td><td>Commercial or business use</td><td>7</td></tr><tr><td>LAND</td><td>Land only</td><td>8</td></tr><tr><td>OTHR</td><td>Other</td><td>10</td></tr></table></div>
+  <p class="small muted">MILAN codes 3, 4 and 9 are never produced. The value comes from the loan's main property (step 7).</p>
+
+  <h3 id="cm-valtype">Property Valuation Type (73) ← the valuation method chosen in step 4 (<span class="esma">RREC14</span> or <span class="esma">RREC18</span>)</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>FIEI</td><td>Full, internal and external inspection</td><td>1</td></tr><tr><td>FOEI</td><td>Full, external inspection only</td><td>2</td></tr><tr><td>DRVB</td><td>Drive-by</td><td>3</td></tr><tr><td>AUVM</td><td>Automated valuation model</td><td>4</td></tr><tr><td>IDXD</td><td>Indexed</td><td>5</td></tr><tr><td>DKTP</td><td>Desktop</td><td>6</td></tr><tr><td>TXAT</td><td>Tax authority</td><td>8</td></tr><tr><td>MAEA</td><td>Managing agent or estate agent</td><td>9</td></tr><tr><td>OTHR</td><td>Other</td><td>11</td></tr></table></div>
+
+  <h3 id="cm-occupancy">Occupancy Type (78) ← <span class="esma">RREC7</span> Occupancy Type</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>FOWN</td><td>Owner occupied</td><td>1</td></tr><tr><td>HOLD</td><td>Holiday or second home</td><td>2</td></tr><tr><td>POWN, TLET</td><td>Partially owner occupied; non-owner occupied or buy-to-let</td><td>3</td></tr><tr><td>OTHR</td><td>Other</td><td>4</td></tr></table></div>
+
+  <h3 id="cm-epc">Energy Performance Certificate Value (122) ← <span class="esma">RREC10</span></h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>MILAN</th></tr>
+  <tr><td>EPCA, EPCB, EPCC, EPCD, EPCE, EPCF, EPCG</td><td>1, 2, 3, 4, 5, 6, 7 respectively (A = 1 … G = 7)</td></tr><tr><td>OTHR</td><td>8</td></tr></table></div>
+
+  <h3 id="cm-status">Account Status (127) ← <span class="esma">RREL69</span> Account Status</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>PERF</td><td>Performing</td><td>1</td></tr><tr><td>ARRE</td><td>Arrears</td><td>2</td></tr><tr><td>DFLT, NDFT, DTCR, DADB</td><td>Defaulted under Article 178, under another definition, under both, or only under another definition</td><td>3</td></tr><tr><td>RDMD</td><td>Redeemed</td><td>4</td></tr><tr><td>REBR</td><td>Repurchased, breach of representations and warranties</td><td>5</td></tr><tr><td>REDF</td><td>Repurchased, defaulted</td><td>6</td></tr><tr><td>RERE</td><td>Repurchased, restructured</td><td>7</td></tr><tr><td>RESS</td><td>Repurchased, special servicing</td><td>8</td></tr><tr><td>REOT</td><td>Repurchased, other reason</td><td>9</td></tr><tr><td>RNAR, RARR</td><td>Restructured, no arrears; restructured, arrears</td><td>10</td></tr><tr><td>OTHR</td><td>Other</td><td>ND</td></tr></table></div>
+  <p class="small muted">Account Status is a code map, not a derivation: a loan with 45 days in arrears but status PERF is written as 1. RNAR and RARR also set <span class="milan">Restructured Loan</span> to Y.</p>
+
+  <h3 id="cm-default">Reason for Default or Foreclosure (135) ← <span class="esma">RREL70</span></h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th></tr>
+  <tr><td>UPXX</td><td>Unlikely to pay</td><td>1</td></tr><tr><td>PDXX</td><td>More than 90/180 days past due</td><td>2</td></tr><tr><td>UPPD</td><td>Both</td><td>3</td></tr><tr><td>OTHR</td><td>Other</td><td>ND</td></tr></table></div>
+
+  <h3 id="cm-guarantor">Type of Guarantee Provider (140) ← <span class="esma">RREC23</span> Guarantor Type</h3>
+  <div class="tbl-wrap"><table><tr><th>ESMA</th><th>Meaning</th><th>MILAN</th><th>MIG Provider (139)</th></tr>
+  <tr><td>NGUA</td><td>No guarantor</td><td>1</td><td>No Guarantor</td></tr><tr><td>FAML</td><td>Individual, family relation</td><td>2</td><td>No Guarantor</td></tr><tr><td>IOTH</td><td>Individual, other</td><td>3</td><td>No Guarantor</td></tr><tr><td>GOVE</td><td>Government</td><td>4</td><td>No Guarantor</td></tr><tr><td>BANK</td><td>Bank</td><td>5</td><td>No Guarantor</td></tr><tr><td>INSU</td><td>Insurance product</td><td>6</td><td>No Guarantor</td></tr><tr><td>NHGX</td><td>Nationale Hypotheek Garantie</td><td>7</td><td>NHG / Waarborgfonds Eigen Woningen</td></tr><tr><td>FGAS</td><td>Fonds de Garantie de l'Accession Sociale</td><td>8</td><td>SGFGAS</td></tr><tr><td>CATN</td><td>Caution</td><td>9</td><td>Caution</td></tr><tr><td>OTHR</td><td>Other</td><td>10</td><td>Other</td></tr><tr><td>missing or unknown</td><td></td><td>ND</td><td>No Guarantor</td></tr></table></div>
+  <div class="box warn"><span class="t">Two columns, two defaults</span><p><span class="milan">Type of Guarantee Provider</span> is "ND" when <span class="esma">RREC23</span> is missing, but <span class="milan">MIG Provider</span> is "No Guarantor" in the same case, and also for a government, bank, insurance or individual guarantor. MIG Provider only names the three national schemes and "Other".</p></div>
+</section>
+
+<section class="chapter" id="b4">
+  <div class="kicker">Part B · Deep dives</div>
+  <h2>Deep dives</h2>
+  <p class="lede">The columns whose rule does not fit in one line of the index. Each one shows the rule, then what the synthetic pool produces.</p>
+
+  <h3 id="dd-ranking">Ranking, External Prior Ranks CB and Pari Passu (columns 17, 20, 21)</h3>
+  <p>These three columns look across the loans that share a main property (<code>calc_main_property_id</code>). They answer: where does this loan rank, how much senior debt sits outside the pool, and how much equal-ranking debt sits outside the pool.</p>
+  <div class="rule">
+    <span class="k">Inputs</span><span><span class="esma">RREL31</span> Prior Principal Balances (balance ranking ahead of this loan, in or out of the pool), <span class="esma">RREL32</span> Pari Passu Underlying Exposures (balance ranking equal to this loan, in or out of the pool), <span class="esma">RREL30</span> Current Principal Balance of every loan on the same main property. A missing RREL31 or RREL32 counts as 0 in the arithmetic.</span>
+    <span class="k">Ranking</span><span>Loans on the same main property are sorted by RREL31 ascending and given dense ranks 1, 2, 3 … Equal RREL31 gives equal rank. A loan alone on its property is rank 1.</span>
+    <span class="k">External Prior Ranks CB</span><span>RREL31 minus the pooled balance of all loans with a strictly lower rank on the same property, floored at 0. Written as "ND" when RREL31 itself is missing.</span>
+    <span class="k">Pari Passu (Not In Pool)</span><span>RREL32 minus the pooled balance of all loans at the same rank on the same property (including this loan), floored at 0. Written as "0" when RREL32 is missing.</span>
+    <span class="k">Total Prior Ranks CB</span><span>Column 18 is RREL31 copied unchanged, so the reader can see the input next to the derived columns.</span>
+  </div>
+  <div class="ex"><div class="ex-head">Worked example<span>property PORIG_04, two pooled loans</span></div>
+    <div class="tabs"><button class="tab active" data-pane="rk1" type="button">Inputs</button><button class="tab" data-pane="rk2" type="button">Ranking</button><button class="tab" data-pane="rk3" type="button">External prior</button><button class="tab" data-pane="rk4" type="button">Pari passu</button><button class="tab" data-pane="rk5" type="button">Missing input</button></div>
+    <div class="pane active" data-pane="rk1"><table><tr><th>Loan</th><th>RREL30 CB</th><th>RREL31 prior</th><th>RREL32 pari passu</th></tr><tr><td>NEW_003</td><td class="num">160,000</td><td class="num">50,000</td><td class="num">250,000</td></tr><tr><td>NEW_004</td><td class="num">95,000</td><td class="num">210,000</td><td class="num">95,000</td></tr></table><p>Both loans have PORIG_04 as their main property. NEW_003 reports 50,000 ranking ahead of it; NEW_004 reports 210,000 ranking ahead of it (the 50,000 plus NEW_003's 160,000).</p></div>
+    <div class="pane" data-pane="rk2"><p>Sorted by RREL31: NEW_003 (50,000) is rank <b>1</b>, NEW_004 (210,000) is rank <b>2</b>.</p></div>
+    <div class="pane" data-pane="rk3"><p>NEW_003: nothing ranks below rank 1 in the pool, so 50,000 − 0 = <b>50000</b>. All of it is outside the pool.</p><p>NEW_004: the pooled balance at rank 1 is 160,000, so 210,000 − 160,000 = <b>50000</b>. The same external senior loan, seen from the second-ranking loan.</p></div>
+    <div class="pane" data-pane="rk4"><p>NEW_003: pooled balance at rank 1 is its own 160,000, so 250,000 − 160,000 = <b>90000</b> of equal-ranking debt outside the pool.</p><p>NEW_004: pooled balance at rank 2 is its own 95,000, so 95,000 − 95,000 = <b>0</b>.</p><p>The Execution Summary's "External Prior Ranks" (100,000.00) and "External Equal Ranks" (90,000.00) are the sums of these two columns over the pool.</p></div>
+    <div class="pane" data-pane="rk5"><p>NEW_001 reports no RREL31 and no RREL32. It is alone on PORIG_01, so Ranking is 1. External Prior Ranks CB is written <b>"ND"</b> (missing RREL31) while Pari Passu is written <b>"0"</b> (missing RREL32). The two columns treat a missing input differently; the "ND" is excluded from the summary total and the "0" contributes nothing.</p></div>
+  </div>
+
+  <h3 id="dd-arrears">Months Current and Months In Arrears (34, 36)</h3>
+  <div class="rule">
+    <span class="k">Inputs</span><span><span class="esma">RREL68</span> Number Of Days In Arrears, <span class="esma">RREL66</span> Date Last In Arrears, the pool cut-off date.</span>
+    <span class="k">Months In Arrears</span><span>RREL68 ÷ 30.4375 (the average month of a 365.25-day year). "ND" when RREL68 is missing. Zero days gives "0".</span>
+    <span class="k">Months Current</span><span>Rules applied in order: days in arrears &gt; 0 → "0". Days = 0 and a readable RREL66 → (cut-off − RREL66) ÷ 30.4375. Days = 0 and RREL66 missing → the text <b>"Never in Arrears"</b>. Anything else, including a missing RREL68 → "ND".</span>
+  </div>
+  <div class="ex"><div class="ex-head">Worked example<span>three loans</span></div>
+    <div class="tabs"><button class="tab active" data-pane="ar1" type="button">NEW_008, in arrears</button><button class="tab" data-pane="ar2" type="button">NEW_005, cured</button><button class="tab" data-pane="ar3" type="button">NEW_001, never</button></div>
+    <div class="pane active" data-pane="ar1"><p>45 days in arrears, 2,150 arrears balance, status ARRE. Months In Arrears = 45 ÷ 30.4375 = <code>1.47843942505133</code>. Months Current = <code>0</code>. Account Status = 2. The Execution Summary's "Arrears: &gt; 3 Month" does not count this loan because 1.48 is under 3.</p></div>
+    <div class="pane" data-pane="ar2"><p>0 days in arrears, last in arrears 2023-06-15. Cut-off 2024-06-30 is 381 days later, so Months Current = 381 ÷ 30.4375 = <code>12.517453798768</code>. Months In Arrears = <code>0</code>.</p></div>
+    <div class="pane" data-pane="ar3"><p>0 days in arrears and no RREL66. Months Current = <code>Never in Arrears</code>, Months In Arrears = <code>0</code>.</p></div>
+  </div>
+
+  <h3 id="dd-rates">Interest Rate, Full Margin, Margin After Reset Date, Original LTV, Current LTV (30, 31, 32, 120, 121)</h3>
+  <p>ESMA reports percentages as whole numbers: a 2.5% coupon is <code>2.5</code>, a 69% LTV is <code>69</code>. MILAN wants fractions. These five columns divide by 100: <span class="esma">RREL43</span> 2.5 → <code>0.025</code>; <span class="esma">RREL46</span> 1.2 → <code>0.012</code>; <span class="esma">RREL50</span>; <span class="esma">RREC16</span> 69 → <code>0.69</code>; <span class="esma">RREC12</span> 56 → <code>0.56</code>. A missing input stays "ND". No other numeric column is rescaled; <span class="milan">DTI Ratio</span> (56) in particular is copied as reported.</p>
+  <div class="box warn"><span class="t">Two LTVs in the file</span><p>Columns 120 and 121 are the ESMA LTVs of the main property, divided by 100 and unchanged otherwise. The group-level LTVs the tool computes in step 8 (<code>calc_original_LTV</code>, <code>calc_current_LTV</code>) are in columns 154 and 155 and are what the Execution Summary's "WA Original LTV", "WA Current LTV" and "Current LTV ≥ x%" lines use. For NEW_001 the pair is 0.69 against 0.6875: the ESMA figure was reported, the calc figure is 220,000 ÷ 320,000.</p></div>
+
+  <h3 id="dd-flex">Flexible Loan Amount (24)</h3>
+  <div class="rule">
+    <span class="k">Inputs</span><span><span class="esma">RREL33</span> Total Credit Limit, <span class="esma">RREL30</span> Current Principal Balance.</span>
+    <span class="k">Rule</span><span>RREL33 − RREL30, floored at 0. If RREL33 is missing the column is "0", not "ND": an unreported limit is taken as no undrawn facility.</span>
+    <span class="k">Example</span><span>NEW_001: 220,000 − 180,000 = <code>40000</code>.</span>
+  </div>
+
+  <h3 id="dd-income">Total Income (55)</h3>
+  <p><span class="esma">RREL16</span> Primary Income plus <span class="esma">RREL20</span> Secondary Income. If only one is reported, that one is used; if neither, "ND". NEW_002: 78,000 + 22,000 = <code>100000</code>. NEW_001: 52,000 with no secondary income → <code>52000</code>. Columns 50 and 52 carry the two inputs unchanged (NEW_001's Income Borrower 2 is "ND").</p>
+
+  <h3 id="dd-borrower">Borrower Type, Borrower Residency, Recourse (42, 43, 72)</h3>
+  <div class="rule">
+    <span class="k">Borrower Type</span><span>"2" (company) when <span class="esma">RREL13</span> Employment Status is NOEM or <span class="esma">RREL17</span> Primary Income Type is CORP. Otherwise "1" (individual) when RREL13 is present. "ND" when RREL13 is missing and RREL17 is not CORP. The Execution Summary's "Employment Type: Companies" is the share of balance with Borrower Type 2.</span>
+    <span class="k">Borrower Residency</span><span><span class="esma">RREL10</span> Resident: the text <code>TRUE</code> → Y, <code>FALSE</code> → N, anything else (including <code>Y</code>, <code>true</code>, <code>1</code>) → "ND". The comparison is exact and case-sensitive.</span>
+    <span class="k">Recourse</span><span><span class="esma">RREL76</span> Recourse: <code>Y</code> or <code>N</code> copied as is; anything else → "ND".</span>
+  </div>
+  <div class="box warn"><span class="t">Check the spelling of the Y/N fields</span><p>The two Y/N fields use different conventions. RREL10 must be <code>TRUE</code>/<code>FALSE</code> and RREL76 must be <code>Y</code>/<code>N</code> for the value to survive. The synthetic pool reports RREL10 as <code>TRUE</code> and RREL76 as <code>Y</code>.</p></div>
+
+  <h3 id="dd-social">Social Programme Type (38)</h3>
+  <p><span class="esma">RREL22</span> Special Scheme is free text. The tool searches it, ignoring case, for these phrases in this order and stops at the first hit:</p>
+  <div class="tbl-wrap"><table><tr><th>RREL22 contains</th><th>MILAN</th></tr><tr><td>"RTB" or "Right to Buy"</td><td>1</td></tr><tr><td>"Tenant Purchase"</td><td>2</td></tr><tr><td>"HTB", "Help to Buy" or "Equity Loan"</td><td>3</td></tr><tr><td>"Shared Ownership" or "Part Buy Part Rent"</td><td>4</td></tr><tr><td>missing</td><td>6</td></tr><tr><td>any other text</td><td>5</td></tr></table></div>
+  <p class="small muted">A missing scheme gives 6, not "ND", and any text that matches none of the phrases gives 5 ("other scheme"). The whole synthetic pool reports no scheme, so every loan is 6.</p>
+
+  <h3 id="dd-restructured">Restructured Loan (129)</h3>
+  <div class="rule">
+    <span class="k">Inputs</span><span><span class="esma">RREL65</span> Date Of Restructuring, <span class="esma">RREL69</span> Account Status.</span>
+    <span class="k">Rule</span><span>Y when RREL65 is present. Y when RREL69 is RNAR or RARR. "ND" when both inputs are missing. N otherwise (a status reported, not restructured, no date).</span>
+    <span class="k">Also</span><span>Column 130 <span class="milan">Restructuring Date</span> is RREL65 copied; column 131 <span class="milan">Restructuring Type</span> is always "ND".</span>
+  </div>
+
+  <h3 id="dd-mig">MIG Provider (139)</h3>
+  <p>A label derived from <span class="esma">RREC23</span> Guarantor Type: NHGX → "NHG / Waarborgfonds Eigen Woningen", FGAS → "SGFGAS", CATN → "Caution", OTHR → "Other", and every other value, including a missing one and the bank, government, insurance and individual guarantors → "No Guarantor". The numeric <span class="milan">Type of Guarantee Provider</span> (140) sits next to it with the full code map. <span class="milan">MIG %</span>, <span class="milan">Initial MCI Coverage Amount</span> and <span class="milan">Current MCI Coverage Amount</span> are always "ND".</p>
+
+  <h3 id="dd-property">Property Value, Property Valuation Type, Property Valuation Date (70, 73, 74)</h3>
+  <p>These three come from Part A rather than from a single ESMA field. <span class="milan">Property Value</span> is <code>calc_aggregated_property_value</code>, the loan's share of its group's value under the aggregation convention (steps 6 and 8). <span class="milan">Property Valuation Type</span> and <span class="milan">Property Valuation Date</span> are the method and date of the valuation that step 4 trusted for the main property, the method translated through the <a href="#cm-valtype">valuation-type map</a>. So for NEW_002 the value is 410,000 (two properties, 230,000 + 180,000) while the type and date, 1 and 2020-06-01, describe the main property's original valuation, which step 4 preferred over its drive-by current valuation.</p>
+</section>
+
+<div class="part-head" id="partC">
+  <div class="kicker">Part C</div>
+  <h2>The Execution Summary</h2>
+  <p>Sheet 1 of the workbook is a two-column table, Metric and Value, that describes the pool the tool just built. Every figure is computed from the MILAN sheet (or, for the LTV lines, from the flattened pool), so it is also the quickest check that the mapping did what you expected.</p>
+</div>
+
+<section class="chapter" id="c1">
+  <div class="kicker">Part C · Metrics</div>
+  <h2>The 38 metrics</h2>
+  <p class="lede">In sheet order. "CB" is <span class="milan">Loan CB</span>, "OB" is <span class="milan">Loan OB</span>. Money is written <code>1,234,567.89</code>, shares <code>12.34%</code>, counts <code>1,234</code>; a metric that cannot be computed (an empty pool, a zero balance) is written <code>&lt;not available&gt;</code>. "ND" cells are left out of sums and averages.</p>
+  <div class="tbl-wrap"><table>
+    <tr><th style="width:17em">Metric</th><th>How it is computed</th><th style="width:9em">Synthetic pool</th></tr>
+    <tr><td>Deal Name</td><td>The deal name entered when the run was started. It also names the output file.</td><td>SYN</td></tr>
+    <tr><td>Pool Cut-off Date</td><td>The cut-off date read in step 1.</td><td>2024-06-30</td></tr>
+    <tr><td>Aggregation Method</td><td>The convention detected or forced in step 6: <code>by_loan</code> or <code>by_property</code>.</td><td>by_loan</td></tr>
+    <tr><td>Original Balance</td><td>Sum of OB.</td><td class="num">1,865,000.00</td></tr>
+    <tr><td>Current Balance</td><td>Sum of CB.</td><td class="num">1,550,000.00</td></tr>
+    <tr><td>External Prior Ranks</td><td>Sum of <span class="milan">External Prior Ranks CB</span>. Rows written "ND" (missing RREL31) are excluded.</td><td class="num">100,000.00</td></tr>
+    <tr><td>External Equal Ranks</td><td>Sum of <span class="milan">Pari Passu Ranking Loans (Not In Pool)</span>.</td><td class="num">90,000.00</td></tr>
+    <tr><td>Number Of Borrowers</td><td>Distinct <code>calc_borrower_id</code> among the loans kept after step 2.</td><td class="num">6</td></tr>
+    <tr><td>Number Of Complete Loans</td><td>Distinct <span class="milan">Property Identifier</span> in the MILAN sheet, that is, distinct main properties. Loans that share a main property count once.</td><td class="num">5</td></tr>
+    <tr><td>Number Of Loan Parts</td><td>Distinct <span class="milan">Loan Identifier</span>: the number of MILAN rows.</td><td class="num">8</td></tr>
+    <tr><td>Number Of Properties</td><td>Distinct <code>calc_property_id</code> among the collateral rows kept after step 2, whether or not they became a main property.</td><td class="num">8</td></tr>
+    <tr><td>Average Loan Per Borrower</td><td>Current Balance ÷ Number Of Borrowers.</td><td class="num">258,333.33</td></tr>
+    <tr><td>Average Total Loan</td><td>Current Balance ÷ Number Of Complete Loans.</td><td class="num">310,000.00</td></tr>
+    <tr><td>Average Loan Part</td><td>Current Balance ÷ Number Of Loan Parts.</td><td class="num">193,750.00</td></tr>
+    <tr><td>Top 20 Borrower Exposure</td><td>CB is summed per <span class="milan">Borrower Identifier</span>; the 20 largest totals, divided by Current Balance.</td><td class="num">100.00%</td></tr>
+    <tr><td>Effective Number of Borrowers</td><td>1 ÷ Σ (borrower share of CB)². Equals the borrower count when all borrowers are equal, and falls as concentration rises.</td><td class="num">5.55</td></tr>
+    <tr><td>WA Interest Rate</td><td>CB-weighted mean of <span class="milan">Interest Rate</span> (the ÷100 fraction).</td><td class="num">2.65%</td></tr>
+    <tr><td>Average Months To Reset For Reset Loans</td><td>Over loans whose <span class="milan">Interest Rate Type</span> is 3 or 4 and which have an <span class="milan">Interest Reset Date</span>: CB-weighted mean of (reset date − cut-off) ÷ 30.4375.</td><td class="num">9.58</td></tr>
+    <tr><td>Average Months To Reset For All Loans</td><td>The same weighted sum of months, divided by the Current Balance of the whole pool instead of the reset loans only. Floating loans dilute it towards zero.</td><td class="num">3.43</td></tr>
+    <tr><td>WA Seasoning (Yrs)</td><td>CB-weighted mean of (cut-off − <span class="milan">Origination Date</span>) ÷ 365.25.</td><td class="num">4.19</td></tr>
+    <tr><td>WA Yrs To Maturity</td><td>CB-weighted mean of (<span class="milan">Maturity Date</span> − cut-off) ÷ 365.25.</td><td class="num">25.81</td></tr>
+    <tr><td>Maximum Maturity Date</td><td>Latest <span class="milan">Maturity Date</span>.</td><td>2052-04-18</td></tr>
+    <tr><td>WA Original LTV</td><td>OB-weighted mean of <code>calc_original_LTV</code> (the group-level LTV of step 8, column 154), not of MILAN's <span class="milan">Original LTV</span>.</td><td class="num">74.39%</td></tr>
+    <tr><td>WA Current LTV</td><td>CB-weighted mean of <code>calc_current_LTV</code> (column 155).</td><td class="num">61.62%</td></tr>
+    <tr><td>Current LTV: ≥ 70% / 80% / 90% / 100% / 110%</td><td>Five lines: the share of CB on loans whose <code>calc_current_LTV</code> is at or above the threshold.</td><td class="num">18.71% then 0.00%</td></tr>
+    <tr><td>Interest Rate Type: Floating For Life / Fixed For Life / Fixed With Future Periodic Resets / Fixed With Future Switch To Floating</td><td>Four lines: share of CB with <span class="milan">Interest Rate Type</span> 1, 3, 4 and 5 respectively. Codes 2, 6, 7 and 8 appear in none of them.</td><td class="num">48.71% / 15.48% / 35.81% / 0.00%</td></tr>
+    <tr><td>Principal Payment Type: Initial IO &gt; 10 Years</td><td>Share of CB with <span class="milan">Principal Payment Type</span> 8 (ESMA bullet loans).</td><td class="num">9.68%</td></tr>
+    <tr><td>Loan Purpose: Purchased, Remortgage and Renovation</td><td>Share of CB with <span class="milan">Loan Purpose</span> 1, 2 or 3.</td><td class="num">100.00%</td></tr>
+    <tr><td>Employment Type: Self Employed</td><td>Share of CB with <span class="milan">Employment Type</span> 3.</td><td class="num">27.42%</td></tr>
+    <tr><td>Employment Type: Companies</td><td>Share of CB with <span class="milan">Borrower Type</span> 2.</td><td class="num">0.00%</td></tr>
+    <tr><td>Arrears: &gt; 3 Month</td><td>Share of CB with <span class="milan">Months In Arrears</span> greater than 3.</td><td class="num">0.00%</td></tr>
+    <tr><td>Loan Count: &lt;structure type&gt;</td><td>After the 38 metrics, one line per structure type present in the pool (sorted by type) with the number of loans in it.</td><td class="num">1, 1, 2, 2, 2</td></tr>
+  </table></div>
+  <div class="box"><span class="t">Reading the synthetic figures</span><p>Current Balance 1,550,000 over 5 main properties gives Average Total Loan 310,000.00. Only PORIG_04's two loans report any prior or pari passu balances, so External Prior Ranks is 50,000 + 50,000 and External Equal Ranks is 90,000 + 0. NEW_001's "ND" External Prior is not a zero in disguise; it is left out.</p></div>
+</section>
+
+<section class="chapter" id="c2">
+  <div class="kicker">Part C · Sheets</div>
+  <h2>The other sheets</h2>
+  <p class="lede">Sheets 2 to 9 are the audit trail. Use them to trace any MILAN cell back to the ESMA row it came from.</p>
+  <div class="tbl-wrap"><table>
+    <tr><th style="width:3em">#</th><th style="width:15em">Sheet</th><th>Contents</th></tr>
+    <tr><td>1</td><td>Execution Summary</td><td>The metrics above.</td></tr>
+    <tr><td>2</td><td>Loans to properties</td><td>One row per loan: <code>loan_id</code>, then <code>property_id_1</code>, <code>property_id_2</code> … for every property securing it, then the group number, <code>cross_collateralized_set</code>, <code>full_set</code> and <code>structure_type</code> from step 5. The widest row sets the number of columns; a loan with more than 50 properties triggers a warning.</td></tr>
+    <tr><td>3</td><td>Properties to loans</td><td>One row per property: <code>property_id</code>, then <code>loan_id_1</code>, <code>loan_id_2</code> … for every loan it secures.</td></tr>
+    <tr><td>4</td><td>Borrowers to loans</td><td>One row per borrower: <code>borrower_id</code>, then the loans.</td></tr>
+    <tr><td>5</td><td>Borrowers to properties</td><td>One row per borrower: <code>borrower_id</code>, then the properties securing any of their loans.</td></tr>
+    <tr><td>6</td><td>Cleaned ESMA loans</td><td>The loans file after steps 1 to 3 (renamed, typed, filtered, with <code>calc_loan_id</code> and <code>calc_borrower_id</code>), plus the group columns of step 5: <code>collateral_group_id</code>, <code>loans</code>, <code>collaterals</code>, <code>structure_type</code>, <code>cross_collateralized_set</code>, <code>full_set</code>. Dates are Excel dates here, not text.</td></tr>
+    <tr><td>7</td><td>Cleaned ESMA properties</td><td>The same for the collaterals file, with <code>calc_property_id</code> and the group columns.</td></tr>
+    <tr><td>8</td><td>Group classifications</td><td>One row per collateral group: its number, the counts of loans and collaterals, <code>is_full_set</code> and <code>structure_type</code>.</td></tr>
+    <tr><td>9</td><td>Combined flattened pool</td><td>The one-row-per-loan table of step 9: every loan field, the main property's fields, the chosen valuation and the twelve <code>calc_</code> fields. Every MILAN cell is a function of this sheet.</td></tr>
+    <tr><td>10</td><td>MILAN template pool</td><td>The 175 columns of Part B, all text.</td></tr>
+  </table></div>
+  <p class="small muted">Sheets 2 to 5 are built from the loans and properties kept after step 2, so a loan dropped by the filters appears in none of them. A sheet that would exceed Excel's limit of 1,048,576 rows stops the run before anything is written.</p>
+</section>
+
+<div class="part-head" id="partD">
+  <div class="kicker">Part D</div>
+  <h2>Before you submit a pool</h2>
+  <p>The tool never guesses. A problem it cannot resolve stops the run with a message naming the file, the field, the row and the value; a problem it can live with is logged as a warning and shows in the run's log. This chapter lists both, and the ESMA inputs whose absence silently becomes "ND".</p>
+</div>
+
+<section class="chapter" id="d1">
+  <div class="kicker">Part D · Checklist</div>
+  <h2>Data-quality checklist</h2>
+
+  <h3>What stops the run</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th style="width:16em">Condition</th><th>What to fix</th></tr>
+    <tr><td>A file is empty, or two columns have the same name after renaming</td><td>Export the template again. Duplicate names usually come from a header both as an ESMA code and as its long name.</td></tr>
+    <tr><td>A required column is missing</td><td>The loans file must carry <span class="esma">RREL2</span>, <span class="esma">RREL3</span>, <span class="esma">RREL5</span>, <span class="esma">RREL23</span>, <span class="esma">RREL30</span>, <span class="esma">RREL69</span> and the cut-off date; the collaterals file must carry <span class="esma">RREC2</span>, <span class="esma">RREC4</span>, <span class="esma">RREC5</span>, <span class="esma">RREC9</span> and <span class="esma">RREC13</span>. The message names the missing column.</td></tr>
+    <tr><td>No pool cut-off date</td><td>Every loan row needs the same <span class="esma">RREL6</span> Data Cut-Off Date (or a <code>Pool_Cutoff_Date</code> column from a repository export).</td></tr>
+    <tr><td>A non-numeric value in a monetary or percentage field</td><td>The message lists the row and the value (up to a few examples). Typical causes: thousands separators, currency symbols, a comma decimal, text such as "n/a" instead of an ND code.</td></tr>
+    <tr><td>Both loan-identifier columns unusable, or the chosen identifier is missing on some loans</td><td>See step 3. One of <span class="esma">RREL3</span> / <span class="esma">RREL2</span> must be unique across loans, and the collaterals file's <span class="esma">RREC2</span> must reference at least 85% of its values (the minimum coverage setting).</td></tr>
+    <tr><td>No collateral rows left after the filters, or no loans and properties in common</td><td>See step 2. Check that <span class="esma">RREC5</span> Collateral Type is a property code (not a guarantee, vehicle, equipment or financial-asset code), that <span class="esma">RREC9</span> and a valuation amount are present, and that the property rows reference loans that are still in the pool.</td></tr>
+    <tr><td>A collateral group cannot be classified</td><td>Should not happen with consistent files; the message names the group.</td></tr>
+    <tr><td>A sheet would exceed 1,048,576 rows</td><td>Split the pool.</td></tr>
+  </table></div>
+
+  <h3>What produces a warning</h3>
+  <ul>
+    <li>A date that could not be read as <code>YYYY-MM-DD</code> or as an Excel date. The value is set to missing and up to five examples are listed. The loan is kept.</li>
+    <li>The loan identifier is populated on fewer than 100% but at least 85% of loans, or both identifier columns have the same coverage (the new identifier wins). Loans without the chosen identifier are dropped and counted.</li>
+    <li>The aggregation convention could not be decided from the data (step 6): <code>by_loan</code> is used. Or the convention is <code>by_loan</code> but a group reports inconsistent amounts.</li>
+    <li>A group's loans have zero balance in total: its value is split equally.</li>
+    <li>A loan secured by more than 50 properties.</li>
+    <li>An ESMA column the mapping expects is absent: the MILAN column is filled with "ND" and the warning names the columns.</li>
+    <li>Two MILAN rows share a <span class="milan">Loan Identifier</span>.</li>
+  </ul>
+
+  <h3>ESMA fields that MILAN needs and the templates do not carry</h3>
+  <p>These MILAN columns are "ND" for every loan, whatever the input, because no ESMA Annex 2 field holds the information. If MILAN needs them, they are filled after the tool runs:</p>
+  <p class="small">Total Prior Ranks OB (19) · Further Advances (23) · Grace Period, Type of Payment Holiday, Length of Payment Holiday Allowed In Months (25–27) · FX Risk Mitigated, Inflation-Indexed Loan, Exchange Rate At Loan Origination (39–41) · Borrower Birth Year (44) · Internal Credit Score, Credit Score - Canada (46, 47) · Number of Borrowers (49) · Guarantor's Income (54) · Loan To Employee, Number of Properties Owned By Borrower (57, 58) · Regulated and the eight adverse-credit columns (59–67) · Purchase Price (71) · Confidence Interval For / Provider of Original AVM Valuation (75, 76) · Rental Income, Metro / Non Metro, Construction Year (79–81) · Mortgage Inscription and Mandate for Property 1 (82, 83) · all of Properties 2 to 5 (84–119) · Additional Collateral Type and Value (124, 126) · Restructuring Type (131) · MIG %, Initial and Current MCI Coverage Amount (141–143) · the six spare columns (170–175).</p>
+  <p class="small muted">Note that <span class="esma">RREL34</span> Purchase Price exists in ESMA as a percentage of the original balance, which is not what MILAN's Purchase Price column means, so it is not used.</p>
+
+  <h3>Checklist</h3>
+  <ol class="steps">
+    <li><b>Identifiers.</b> <span class="esma">RREL3</span> (or <span class="esma">RREL2</span>) populated on every loan; <span class="esma">RREC2</span> uses the same identifier; <span class="esma">RREC4</span> (or <span class="esma">RREC3</span>) populated on every property; borrower identifiers consistent across a borrower's loans.</li>
+    <li><b>Dates.</b> <code>YYYY-MM-DD</code> throughout; one cut-off date; origination and maturity on every loan (seasoning, years to maturity and WA metrics depend on them); <span class="esma">RREL66</span> populated on cured loans or <span class="milan">Months Current</span> will read "Never in Arrears".</li>
+    <li><b>Numbers.</b> No separators or symbols; percentages as whole numbers (2.5 for 2.5%); <span class="esma">RREL31</span> and <span class="esma">RREL32</span> reported as 0, not left blank, on loans with no senior or equal debt, or <span class="milan">External Prior Ranks CB</span> will be "ND".</li>
+    <li><b>Codes.</b> ESMA list codes exactly as in the taxonomy (upper case, four letters); <span class="esma">RREL10</span> as <code>TRUE</code>/<code>FALSE</code>, <span class="esma">RREL76</span> as <code>Y</code>/<code>N</code>; <span class="esma">RREL45</span> tenor reported whenever the index is LIBO or EURI.</li>
+    <li><b>Valuations.</b> Each collateral row with at least one plausible amount (over 10) and its method and date; a full inspection reported as FIEI or FOEI if it should be trusted over the original.</li>
+    <li><b>Collateral type.</b> <span class="esma">RREC5</span> a property code on every property row; guarantee, vehicle, equipment and financial-asset rows are filtered out, and a loan left with no collateral row is dropped in step 3.</li>
+    <li><b>Read the Execution Summary first</b>, then sheet 9, then the MILAN sheet. The warnings in the run log tell you which loans were dropped and why.</li>
+  </ol>
+</section>
+</main>
+</div>
+
+<footer class="foot">
+  <p>ESMA → MILAN mapping reference, version 1.0, describing the tool as of 22 October 2026. Hand-written; the version line changes whenever the mapping does. The figures quoted come from the tool's built-in synthetic test pool.</p>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Column index data -------------------------------------------------
+  // [number, MILAN header, kind, ESMA source, rule, when missing, synthetic example (NEW_001 unless stated), anchor]
+  // kind: direct | code | calc | infer | fixed
+  var E = function (c, n) { return '<span class="esma">' + c + '</span> ' + n; };
+  var ND_FIXED = 'Always "ND": the ESMA templates have no field for it.';
+  var C = [
+    [1, 'Originator Identifier', 'direct', E('RREL82', 'Originator Name'), 'Copied.', '"ND"', 'Example Dutch Bank N.V.', ''],
+    [2, 'Servicer Identifier', 'fixed', 'none', 'The text <code>ESMA template placeholder servicer</code> on every row. ESMA has no servicer field; replace it after the run if MILAN needs the real servicer.', 'n/a', 'ESMA template placeholder servicer', ''],
+    [3, 'Borrower Identifier', 'direct', E('RREL4', 'Original Obligor Identifier') + ' or ' + E('RREL5', 'New Obligor Identifier'), 'The borrower identifier chosen in step 3 (<code>calc_borrower_id</code>).', '"ND"', 'BORIG_01', 'a3'],
+    [4, 'Property Identifier', 'direct', E('RREC3', 'Original Collateral Identifier') + ' or ' + E('RREC4', 'New Collateral Identifier'), 'The identifier of the loan’s main property (<code>calc_main_property_id</code>, step 7). A loan in a multi-property group names one property here.', '"ND"', 'PORIG_01', 'a7'],
+    [5, 'Loan Identifier', 'direct', E('RREL2', 'Original Underlying Exposure Identifier') + ' or ' + E('RREL3', 'New Underlying Exposure Identifier'), 'The loan identifier chosen in step 3 (<code>calc_loan_id</code>).', 'Never missing: a loan without it was dropped in step 3.', 'NEW_001', 'a3'],
+    [6, 'Loan Currency', 'direct', '<code>RREL30_CURRENCY</code>, the currency companion of ' + E('RREL30', 'Current Principal Balance'), 'Copied. The only currency companion that is kept.', '"ND"', 'EUR', 'a1'],
+    [7, 'Loan OB', 'direct', E('RREL29', 'Original Principal Balance'), 'Copied.', '"ND"', '220000', ''],
+    [8, 'Loan CB', 'direct', E('RREL30', 'Current Principal Balance'), 'Copied. Always positive: step 2 drops zero and missing balances.', 'Never missing.', '180000', 'a2'],
+    [9, 'Origination Date', 'direct', E('RREL23', 'Origination Date'), 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', '2019-03-15', ''],
+    [10, 'Maturity Date', 'direct', E('RREL24', 'Maturity Date'), 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', '2049-03-15', ''],
+    [11, 'Origination Channel', 'code', E('RREL26', 'Origination Channel'), 'Code map: BRAN 1, DRCT 2, BROK 3, WEBI 4, TPAC 5, TPTC 6, OTHR 7.', '"ND"', 'BRAN → 1', 'cm-channel'],
+    [12, 'Loan Purpose', 'code', E('RREL27', 'Purpose'), 'Code map: PURC 1, RMRT 2, RENV 3, EQRE 4, CNST 5, DCON 6, RMEQ 7, all other codes 8.', '"ND"', 'PURC → 1', 'cm-purpose'],
+    [13, 'Principal Payment Frequency', 'code', E('RREL37', 'Scheduled Principal Payment Frequency'), 'Code map: MNTH 1, QUTR 2, SEMI 3, YEAR 4, OTHR 5.', '"ND"', 'MNTH → 1', 'cm-freq'],
+    [14, 'Interest Payment Frequency', 'code', E('RREL38', 'Scheduled Interest Payment Frequency'), 'Same code map as column 13.', '"ND"', 'MNTH → 1', 'cm-freq'],
+    [15, 'Principal Payment Type', 'code', E('RREL35', 'Amortisation Type'), 'Code map: FRXX 1, DEXX 2, FIXE 2, BLLT 8, OTHR "ND".', '"ND"', 'FRXX → 1 (NEW_006: BLLT → 8)', 'cm-amort'],
+    [16, 'Periodic Payment', 'direct', E('RREL39', 'Payment Due'), 'Copied.', '"ND"', '750', ''],
+    [17, 'Ranking', 'calc', E('RREL31', 'Prior Principal Balances') + ' of every loan on the same main property', 'Dense rank of RREL31, ascending, among the loans sharing the main property. A missing RREL31 ranks as 0.', 'Never "ND": a loan alone on its property is 1.', '1 (NEW_004: 2)', 'dd-ranking'],
+    [18, 'Total Prior Ranks CB', 'direct', E('RREL31', 'Prior Principal Balances'), 'Copied.', '"ND"', 'ND (NEW_004: 210000)', 'dd-ranking'],
+    [19, 'Total Prior Ranks OB', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [20, 'External Prior Ranks CB', 'calc', E('RREL31', 'Prior Principal Balances') + ', ' + E('RREL30', 'Current Principal Balance') + ' of lower-ranked loans on the same main property', 'max(0, RREL31 − pooled balance of loans ranked strictly below this one on the same property).', '"ND" when RREL31 is missing.', 'ND (NEW_004: 50000)', 'dd-ranking'],
+    [21, 'Pari Passu Ranking Loans (Not In Pool)', 'calc', E('RREL32', 'Pari Passu Underlying Exposures') + ', ' + E('RREL30', 'Current Principal Balance') + ' of equal-ranked loans on the same main property', 'max(0, RREL32 − pooled balance at the same rank on the same property, this loan included).', '"0" when RREL32 is missing.', '0 (NEW_003: 90000)', 'dd-ranking'],
+    [22, 'Retained Amount', 'fixed', 'none', 'Always "0".', 'n/a', '0', ''],
+    [23, 'Further Advances', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [24, 'Flexible Loan Amount', 'calc', E('RREL33', 'Total Credit Limit') + ', ' + E('RREL30', 'Current Principal Balance'), 'max(0, RREL33 − RREL30): the undrawn part of the facility.', '"0" when RREL33 is missing.', '40000', 'dd-flex'],
+    [25, 'Grace Period', 'fixed', 'none', ND_FIXED + ' (' + E('RREL36', 'Principal Grace Period End Date') + ' is not used.)', 'n/a', 'ND', ''],
+    [26, 'Type of Payment Holiday', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [27, 'Length of Payment Holiday Allowed In Months', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [28, 'Interest Rate Type', 'code', E('RREL42', 'Interest Rate Type'), 'Code map: FLIF 1, FINX 2, FXRL 3, FXPR 4, FLCF 5, FLFL/CAPP/FLCA 6, DISC 7, SWIC/OBLS/MODE/OTHR 8.', '"ND"', 'FLIF → 1', 'cm-irtype'],
+    [29, 'Base Index', 'code', E('RREL44', 'Current Interest Rate Index') + ' and ' + E('RREL45', 'Current Interest Rate Index Tenor'), 'LIBO and EURI are looked up with the tenor (1, 3, 6 or 12 months → 1–8); every other index alone (BOER 9, ECBR 10, LDOR 11, JIBA 16, all others 13).', '"ND" when the index is missing, or when LIBO/EURI has an unlisted or missing tenor.', 'EURI + QUTR → 4', 'cm-index'],
+    [30, 'Interest Rate', 'calc', E('RREL43', 'Current Interest Rate'), 'RREL43 ÷ 100.', '"ND"', '2.5 → 0.025', 'dd-rates'],
+    [31, 'Full Margin', 'calc', E('RREL46', 'Current Interest Rate Margin'), 'RREL46 ÷ 100.', '"ND"', '1.2 → 0.012', 'dd-rates'],
+    [32, 'Margin After Reset Date', 'calc', E('RREL50', 'Revision Margin 1'), 'RREL50 ÷ 100.', '"ND"', '1.2 → 0.012', 'dd-rates'],
+    [33, 'Interest Reset Date', 'direct', E('RREL51', 'Interest Revision Date 1'), 'Copied as <code>YYYY-MM-DD</code>. Drives the two "Months To Reset" summary lines.', '"ND"', '2024-09-15', ''],
+    [34, 'Months Current', 'calc', E('RREL68', 'Number Of Days In Arrears') + ', ' + E('RREL66', 'Date Last In Arrears') + ', cut-off date', 'Days &gt; 0 → "0"; days = 0 with a date → (cut-off − RREL66) ÷ 30.4375; days = 0 without a date → "Never in Arrears".', '"ND" when RREL68 is missing.', 'Never in Arrears (NEW_005: 12.517453798768)', 'dd-arrears'],
+    [35, 'Arrears Amount', 'direct', E('RREL67', 'Arrears Balance'), 'Copied.', '"ND"', '0 (NEW_008: 2150)', ''],
+    [36, 'Months In Arrears', 'calc', E('RREL68', 'Number Of Days In Arrears'), 'RREL68 ÷ 30.4375.', '"ND"', '0 (NEW_008: 1.47843942505133)', 'dd-arrears'],
+    [37, 'Number of Payments Before Securitisation', 'direct', E('RREL58', 'Number Of Payments Before Securitisation'), 'Copied.', '"ND"', '63', ''],
+    [38, 'Social Programme Type', 'infer', E('RREL22', 'Special Scheme'), 'Text search, case-insensitive, first match wins: Right to Buy / RTB 1, Tenant Purchase 2, Help to Buy / HTB / Equity Loan 3, Shared Ownership / Part Buy Part Rent 4, any other text 5.', '"6" when RREL22 is missing (not "ND").', '6', 'dd-social'],
+    [39, 'FX Risk Mitigated', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [40, 'Inflation-Indexed Loan', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [41, 'Exchange Rate At Loan Origination', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [42, 'Borrower Type', 'infer', E('RREL13', 'Employment Status') + ', ' + E('RREL17', 'Primary Income Type'), '"2" (company) when RREL13 is NOEM or RREL17 is CORP; otherwise "1" (individual) when RREL13 is present.', '"ND" when RREL13 is missing and RREL17 is not CORP.', 'EMRS → 1', 'dd-borrower'],
+    [43, 'Borrower Residency', 'infer', E('RREL10', 'Resident'), '<code>TRUE</code> → Y, <code>FALSE</code> → N, exact match.', '"ND" for anything else, including <code>Y</code>/<code>N</code> and lower case.', 'TRUE → Y', 'dd-borrower'],
+    [44, 'Borrower Birth Year', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [45, 'Employment Type', 'code', E('RREL13', 'Employment Status'), 'Code map: EMRS/EMUK 1, EMBL 2, SFEM 3, NOEM 4, PNNR 5, STNT/UNEM/OTHR 6.', '"ND"', 'EMRS → 1 (NEW_003: SFEM → 3)', 'cm-employment'],
+    [46, 'Internal Credit Score', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [47, 'Credit Score - Canada', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [48, 'Borrower Postal/Zip Code', 'direct', E('RREL11', 'Geographic Region - Obligor'), 'Copied. ESMA reports a NUTS region or postcode here; it is passed through unchanged.', '"ND"', '1012AB', ''],
+    [49, 'Number of Borrowers', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [50, 'Income Borrower 1', 'direct', E('RREL16', 'Primary Income'), 'Copied.', '"ND"', '52000', ''],
+    [51, 'Income Verification For Primary Income', 'code', E('RREL19', 'Primary Income Verification'), 'Code map: VRFD 1, SCNF/SCRG 2, NVRF 3, SCRT 4, OTHR 5.', '"ND"', 'VRFD → 1', 'cm-income'],
+    [52, 'Income Borrower 2', 'direct', E('RREL20', 'Secondary Income'), 'Copied.', '"ND"', 'ND (NEW_002: 22000)', ''],
+    [53, 'Income Verification For Secondary Income', 'code', E('RREL21', 'Secondary Income Verification'), 'Same code map as column 51.', '"ND"', 'ND (NEW_002: VRFD → 1)', 'cm-income'],
+    [54, 'Guarantor’s Income', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [55, 'Total Income', 'calc', E('RREL16', 'Primary Income') + ' + ' + E('RREL20', 'Secondary Income'), 'Sum of the two; if one is missing, the other alone.', '"ND" when both are missing.', '52000 (NEW_002: 100000)', 'dd-income'],
+    [56, 'DTI Ratio', 'direct', E('RREL40', 'Debt To Income Ratio'), 'Copied as reported. Not divided by 100.', '"ND"', '0.28', ''],
+    [57, 'Loan To Employee', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [58, 'Number of Properties Owned By Borrower', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [59, 'Regulated', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [60, 'Prior Missed On Previous Mortgage', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [61, 'Live Units of Adverse Credit', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [62, 'Satisfied Units of Adverse Credit', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [63, 'Total Amount of CCJs or Balance of Adverse Credit', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [64, 'Number of Other Adverse Credit Events', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [65, 'Prior Personally Bankruptcy Or IVA', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [66, 'Prior Repossessions On Previous Mortgage', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [67, 'Prior Litigation', 'fixed', 'none', ND_FIXED + ' (' + E('RREL75', 'Litigation') + ' is not used.)', 'n/a', 'ND', ''],
+    [68, 'Deposit Amount', 'direct', E('RREL77', 'Deposit Amount'), 'Copied.', '"ND"', '44000', ''],
+    [69, 'Property Type', 'code', E('RREC9', 'Property Type') + ' of the main property', 'Code map: RHOS/RBGL/RTHS 1, RFLT 2, MULF 5, PCMM 6, BIZZ 7, LAND 8, OTHR 10.', '"ND"', 'RHOS → 1', 'cm-proptype'],
+    [70, 'Property Value', 'direct', '<code>calc_aggregated_property_value</code> (step 8), from ' + E('RREC13', 'Current Valuation Amount') + ' or ' + E('RREC17', 'Original Valuation Amount') + ' of every property in the group', 'The loan’s allocated share of its collateral group’s value, under the aggregation convention of step 6.', '"ND" only if the group had no usable valuation, which step 2 prevents.', '320000 (NEW_003: 250980.392156863)', 'dd-property'],
+    [71, 'Purchase Price', 'fixed', 'none', ND_FIXED + ' (' + E('RREL34', 'Purchase Price') + ' is a percentage of balance, not a price, and is not used.)', 'n/a', 'ND', ''],
+    [72, 'Recourse', 'infer', E('RREL76', 'Recourse'), '<code>Y</code> or <code>N</code> copied.', '"ND" for anything else.', 'Y', 'dd-borrower'],
+    [73, 'Property Valuation Type', 'code', 'The method chosen in step 4 for the main property: ' + E('RREC14', 'Current Valuation Method') + ' or ' + E('RREC18', 'Original Valuation Method'), 'Code map: FIEI 1, FOEI 2, DRVB 3, AUVM 4, IDXD 5, DKTP 6, TXAT 8, MAEA 9, OTHR 11.', '"ND"', 'FIEI → 1', 'cm-valtype'],
+    [74, 'Property Valuation Date', 'direct', 'The date chosen in step 4 for the main property: ' + E('RREC15', 'Current Valuation Date') + ' or ' + E('RREC19', 'Original Valuation Date'), 'Copied as <code>YYYY-MM-DD</code>. Always the date of the same valuation as column 73.', '"ND"', '2024-01-15 (NEW_002: 2020-06-01)', 'dd-property'],
+    [75, 'Confidence Interval For Original AVM Valuation', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [76, 'Provider of Original AVM Valuation', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [77, 'Property Postal, Region code or Nuts code', 'direct', E('RREC6', 'Geographic Region - Collateral') + ' of the main property', 'Copied.', '"ND"', 'NL-NH', ''],
+    [78, 'Occupancy Type', 'code', E('RREC7', 'Occupancy Type') + ' of the main property', 'Code map: FOWN 1, HOLD 2, POWN/TLET 3, OTHR 4.', '"ND"', 'FOWN → 1', 'cm-occupancy'],
+    [79, 'Rental Income', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [80, 'Metro / Non Metro', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [81, 'Construction Year', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [82, 'Mortgage Inscription - Property 1', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [83, 'Mortgage Mandate - Property 1', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [120, 'Original LTV', 'calc', E('RREC16', 'Original Loan-To-Value') + ' of the main property', 'RREC16 ÷ 100. The reported per-property LTV; the group-level LTV the tool computes is in column 154.', '"ND"', '69 → 0.69', 'dd-rates'],
+    [121, 'Current LTV', 'calc', E('RREC12', 'Current Loan-To-Value') + ' of the main property', 'RREC12 ÷ 100. The computed group-level LTV is in column 155.', '"ND"', '56 → 0.56', 'dd-rates'],
+    [122, 'Energy Performance Certificate Value', 'code', E('RREC10', 'Energy Performance Certificate Value') + ' of the main property', 'Code map: EPCA–EPCG → 1–7, OTHR 8.', '"ND"', 'EPCA → 1', 'cm-epc'],
+    [123, 'Energy Performance Certificate Provider Name', 'direct', E('RREC11', 'Energy Performance Certificate Provider Name') + ' of the main property', 'Copied.', '"ND"', 'RVO', ''],
+    [124, 'Additional Collateral Type', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [125, 'Additional Collateral Provider', 'direct', E('RREL78', 'Insurance Or Investment Provider'), 'Copied.', '"ND"', 'ND', ''],
+    [126, 'Additional Collateral Value', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [127, 'Account Status', 'code', E('RREL69', 'Account Status'), 'Code map: PERF 1, ARRE 2, DFLT/NDFT/DTCR/DADB 3, RDMD 4, REBR 5, REDF 6, RERE 7, RESS 8, REOT 9, RNAR/RARR 10, OTHR "ND". Only PERF, ARRE, RNAR and RARR survive step 2, so a MILAN pool only shows 1, 2 and 10.', '"ND"', 'PERF → 1 (NEW_008: ARRE → 2)', 'cm-status'],
+    [128, 'Repurchase Date', 'direct', E('RREL8', 'Date Of Repurchase'), 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', 'ND', ''],
+    [129, 'Restructured Loan', 'infer', E('RREL65', 'Date Of Restructuring') + ', ' + E('RREL69', 'Account Status'), 'Y when RREL65 is present or RREL69 is RNAR/RARR; N when a status is present and neither holds.', '"ND" when both inputs are missing.', 'N', 'dd-restructured'],
+    [130, 'Restructuring Date', 'direct', E('RREL65', 'Date Of Restructuring'), 'Copied as <code>YYYY-MM-DD</code>; where ESMA lists several dates, the latest (step 1).', '"ND"', 'ND', ''],
+    [131, 'Restructuring Type', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [132, 'Redemption Date', 'direct', E('RREL9', 'Redemption Date'), 'Copied as <code>YYYY-MM-DD</code>. Redeemed loans are dropped in step 2, so this is normally "ND".', '"ND"', 'ND', ''],
+    [133, 'Default amount', 'direct', E('RREL71', 'Default Amount'), 'Copied.', '"ND"', 'ND', ''],
+    [134, 'Default date', 'direct', E('RREL72', 'Default Date'), 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', 'ND', ''],
+    [135, 'Reason for Default or Foreclosure', 'code', E('RREL70', 'Reason for Default or Foreclosure'), 'Code map: UPXX 1, PDXX 2, UPPD 3, OTHR "ND".', '"ND"', 'ND', 'cm-default'],
+    [136, 'Allocated Losses', 'direct', E('RREL73', 'Allocated Losses'), 'Copied.', '"ND"', 'ND', ''],
+    [137, 'Cumulative Recoveries', 'direct', E('RREL74', 'Cumulative Recoveries'), 'Copied.', '"ND"', 'ND', ''],
+    [138, 'Sale Price', 'direct', E('RREC21', 'Sale Price') + ' of the main property', 'Copied.', '"ND"', 'ND', ''],
+    [139, 'MIG Provider', 'infer', E('RREC23', 'Guarantor Type') + ' of the main property', 'NHGX → "NHG / Waarborgfonds Eigen Woningen", FGAS → "SGFGAS", CATN → "Caution", OTHR → "Other", everything else → "No Guarantor".', '"No Guarantor" (never "ND").', 'NHGX → NHG / Waarborgfonds Eigen Woningen', 'dd-mig'],
+    [140, 'Type of Guarantee Provider', 'code', E('RREC23', 'Guarantor Type') + ' of the main property', 'Code map: NGUA 1, FAML 2, IOTH 3, GOVE 4, BANK 5, INSU 6, NHGX 7, FGAS 8, CATN 9, OTHR 10.', '"ND"', 'NHGX → 7', 'cm-guarantor'],
+    [141, 'MIG %', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [142, 'Initial MCI Coverage Amount', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [143, 'Current MCI Coverage Amount', 'fixed', 'none', ND_FIXED, 'n/a', 'ND', ''],
+    [144, 'Additional data 1 - calc_loan_id', 'direct', '<code>calc_loan_id</code> (step 3)', 'Same value as column 5.', 'Never missing.', 'NEW_001', 'a3'],
+    [145, 'Additional data 2 - calc_borrower_id', 'direct', '<code>calc_borrower_id</code> (step 3)', 'Same value as column 3.', '"ND"', 'BORIG_01', 'a3'],
+    [146, 'Additional data 3 - calc_main_property_id', 'direct', '<code>calc_main_property_id</code> (step 7)', 'Same value as column 4.', '"ND"', 'PORIG_01', 'a7'],
+    [147, 'Additional data 4 - calc_collateral_group_id', 'direct', '<code>calc_collateral_group_id</code> (step 5)', 'The number of the loan’s collateral group. Loans with the same number share collateral, directly or through a chain.', 'Never missing.', '1 (NEW_003 and NEW_004: 3)', 'a5'],
+    [148, 'Additional data 5 - calc_nr_loans_in_group', 'direct', '<code>calc_nr_loans_in_group</code> (step 5)', 'Number of loans in the group.', 'Never missing.', '1', 'a5'],
+    [149, 'Additional data 6 - calc_nr_properties_in_group', 'direct', '<code>calc_nr_properties_in_group</code> (step 5)', 'Number of properties in the group.', 'Never missing.', '1 (NEW_002: 2)', 'a5'],
+    [150, 'Additional data 7 - calc_full_set', 'direct', '<code>calc_full_set</code> (step 5)', '<code>TRUE</code> when the group is structure type 4 (every loan secured by every property), else <code>FALSE</code>.', 'Never missing.', 'FALSE (NEW_005: TRUE)', 'a5'],
+    [151, 'Additional data 8 - calc_cross_collateralized_set', 'direct', '<code>calc_cross_collateralized_set</code> (step 5)', '<code>TRUE</code> when the group is structure type 5 (cross-collateralised, not a full set), else <code>FALSE</code>.', 'Never missing.', 'FALSE (NEW_007: TRUE)', 'a5'],
+    [152, 'Additional data 9 - calc_structure_type', 'direct', '<code>calc_structure_type</code> (step 5)', 'One of the five labels, for example <code>3: multiple loans → one property</code>. The Execution Summary counts loans per label.', 'Never missing.', '1: one loan → one property', 'a5'],
+    [153, 'Additional data 10 - calc_aggregated_property_value', 'direct', '<code>calc_aggregated_property_value</code> (step 8)', 'Same value as column 70.', 'see 70', '320000', 'a8'],
+    [154, 'Additional data 11 - calc_original_LTV', 'direct', '<code>calc_original_LTV</code> (step 8)', 'Group original balance ÷ group property value, the same for every loan in the group. Used by the summary’s WA Original LTV.', '"ND" if the group value is missing.', '0.6875', 'a8'],
+    [155, 'Additional data 12 - calc_current_LTV', 'direct', '<code>calc_current_LTV</code> (step 8)', 'Group current balance ÷ group property value. Used by the summary’s WA Current LTV and the LTV bands.', '"ND" if the group value is missing.', '0.5625', 'a8'],
+    [156, 'Additional data 13 - calc_seasoning', 'direct', '<code>calc_seasoning</code> (step 8)', '(cut-off − ' + E('RREL23', 'Origination Date') + ') ÷ 365.25, in years.', '"ND" when the origination date is missing.', '5.29500342231348', 'a8'],
+    [157, 'Additional data 14 - lien', 'direct', E('RREC8', 'Lien') + ' of the main property', 'Copied.', '"ND"', 'ND (NEW_004: 2)', ''],
+    [158, 'Additional data 15 - prior_principal_balances', 'direct', E('RREL31', 'Prior Principal Balances'), 'Copied (same as column 18).', '"ND"', 'ND', 'dd-ranking'],
+    [159, 'Additional data 16 - pari_passu_underlying_exposures', 'direct', E('RREL32', 'Pari Passu Underlying Exposures'), 'Copied.', '"ND"', 'ND (NEW_003: 250000)', 'dd-ranking'],
+    [160, 'Additional data 17 - original_valuation_method', 'direct', E('RREC18', 'Original Valuation Method') + ' of the main property', 'Copied, as the ESMA code. Columns 160–163 show both valuations so the step-4 choice can be checked.', '"ND"', 'FIEI', 'a4'],
+    [161, 'Additional data 18 - original_valuation_date', 'direct', E('RREC19', 'Original Valuation Date') + ' of the main property', 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', '2019-03-15', 'a4'],
+    [162, 'Additional data 19 - current_valuation_method', 'direct', E('RREC14', 'Current Valuation Method') + ' of the main property', 'Copied, as the ESMA code.', '"ND"', 'FIEI (NEW_002: DRVB)', 'a4'],
+    [163, 'Additional data 20 - current_valuation_date', 'direct', E('RREC15', 'Current Valuation Date') + ' of the main property', 'Copied as <code>YYYY-MM-DD</code>.', '"ND"', '2024-01-15', 'a4'],
+    [164, 'Additional data 21 - new_underlying_exposure_identifier', 'direct', E('RREL3', 'New Underlying Exposure Identifier'), 'Copied, whichever identifier was chosen.', '"ND"', 'NEW_001', 'a3'],
+    [165, 'Additional data 22 - original_underlying_exposure_identifier', 'direct', E('RREL2', 'Original Underlying Exposure Identifier'), 'Copied.', '"ND"', 'ORIG_001', 'a3'],
+    [166, 'Additional data 23 - new_obligor_identifier', 'direct', E('RREL5', 'New Obligor Identifier'), 'Copied.', '"ND"', 'BNEW_01', 'a3'],
+    [167, 'Additional data 24 - original_obligor_identifier', 'direct', E('RREL4', 'Original Obligor Identifier'), 'Copied.', '"ND"', 'BORIG_01', 'a3'],
+    [168, 'Additional data 25 - new_collateral_identifier', 'direct', E('RREC4', 'New Collateral Identifier') + ' of the main property', 'Copied.', '"ND"', 'PNEW_01', 'a3'],
+    [169, 'Additional data 26 - original_collateral_identifier', 'direct', E('RREC3', 'Original Collateral Identifier') + ' of the main property', 'Copied.', '"ND"', 'PORIG_01', 'a3']
+  ];
+  // Properties 2 to 5 (columns 84-119): nine columns each, all "ND".
+  var P2_NAMES = ['Property Identifier Property N', 'Property Type - Property N', 'Property Value Property N', 'Property Valuation Type - Property N', 'Property Valuation date Property N', 'Property Postcode Property N', 'Occupancy Type - Property N', 'Mortgage Inscription Property N', 'Mortgage mandate Property N'];
+  var n = 84;
+  for (var p = 2; p <= 5; p++) {
+    for (var k = 0; k < P2_NAMES.length; k++) {
+      C.push([n++, P2_NAMES[k].replace('N', p), 'fixed', 'none', 'Always "ND". MILAN carries up to five properties per loan; the tool reports the main property only (columns 68–83) and the group total in Property Value.', 'n/a', 'ND', 'a7']);
+    }
+  }
+  for (var s = 27; s <= 32; s++) {
+    C.push([170 + s - 27, 'column for additional data ' + s, 'fixed', 'none', ND_FIXED, 'n/a', 'ND', '']);
+  }
+  C.sort(function (a, b) { return a[0] - b[0]; });
+
+  var GROUPS = [
+    [1, 10, 'Identifiers, balances and dates'], [11, 16, 'Loan terms'], [17, 27, 'Ranking, prior ranks and flexible amount'],
+    [28, 33, 'Interest rate'], [34, 37, 'Arrears'], [38, 49, 'Borrower'], [50, 58, 'Income'],
+    [59, 67, 'Regulation and adverse credit'], [68, 83, 'Property 1 (the main property)'], [84, 119, 'Properties 2 to 5'],
+    [120, 126, 'LTV, energy certificate and additional collateral'], [127, 138, 'Account status, restructuring and default'],
+    [139, 143, 'Mortgage guarantee'], [144, 169, 'Additional data (the tool’s own fields)'], [170, 175, 'Spare columns']
+  ];
+  var KIND_LABEL = { direct: 'Direct', code: 'Code map', calc: 'Calculated', infer: 'Inferred', fixed: 'Fixed' };
+  var LINK_LABEL = function (id) {
+    if (!id) return '';
+    if (id.indexOf('cm-') === 0) return 'Code map';
+    if (id.indexOf('dd-') === 0) return 'Deep dive';
+    return 'Part A, step ' + id.slice(1);
+  };
+  var esc = function (t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+  var strip = function (h) { return String(h).replace(/<[^>]*>/g, ' '); };
+
+  var host = document.getElementById('cols');
+  var html = [];
+  GROUPS.forEach(function (g) {
+    html.push('<div class="grp" data-from="' + g[0] + '">' + g[0] + '–' + g[1] + ' · ' + esc(g[2]) + '</div>');
+    C.forEach(function (c) {
+      if (c[0] < g[0] || c[0] > g[1]) return;
+      var key = (c[1] + ' ' + strip(c[3]) + ' ' + strip(c[4]) + ' ' + strip(c[5]) + ' ' + c[6]).toLowerCase();
+      html.push('<details class="col" data-kind="' + c[2] + '" data-key="' + esc(key) + '" id="col-' + c[0] + '">' +
+        '<summary><span class="n">' + c[0] + '</span><span><span class="nm">' + esc(c[1]) + '</span><span class="kind ' + c[2] + '">' + KIND_LABEL[c[2]] + '</span>' +
+        '<span class="src">' + (c[3] === 'none' ? 'No ESMA source' : c[3]) + '</span></span></summary>' +
+        '<div class="body"><span class="lbl">Rule</span><p>' + c[4] + '</p>' +
+        '<span class="lbl">When the input is missing</span><p>' + c[5] + '</p>' +
+        '<span class="lbl">Synthetic pool</span><p><code>' + esc(c[6]) + '</code></p>' +
+        (c[7] ? '<span class="lbl">See also</span><p><a href="#' + c[7] + '">' + LINK_LABEL(c[7]) + '</a></p>' : '') +
+        '</div></details>');
+    });
+  });
+  host.innerHTML = html.join('');
+
+  // ---- Search and filters ------------------------------------------------
+  var q = document.getElementById('q');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.toolbar .chip[data-kind]'));
+  var count = document.getElementById('count');
+  var nores = document.getElementById('nores');
+  var kind = 'all';
+  var allCols = Array.prototype.slice.call(host.querySelectorAll('details.col'));
+  var allGrps = Array.prototype.slice.call(host.querySelectorAll('.grp'));
+
+  function apply() {
+    var terms = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+    var shown = 0;
+    allCols.forEach(function (d) {
+      var ok = (kind === 'all' || d.getAttribute('data-kind') === kind);
+      if (ok && terms.length) {
+        var key = d.getAttribute('data-key');
+        ok = terms.every(function (t) { return key.indexOf(t) !== -1; });
+      }
+      d.classList.toggle('hidden', !ok);
+      if (ok) shown++;
+    });
+    allGrps.forEach(function (g) {
+      var from = +g.getAttribute('data-from');
+      var any = allCols.some(function (d) {
+        var num = +d.id.slice(4);
+        var grp = GROUPS.filter(function (x) { return x[0] === from; })[0];
+        return num >= grp[0] && num <= grp[1] && !d.classList.contains('hidden');
+      });
+      g.style.display = any ? '' : 'none';
+    });
+    count.textContent = shown + ' of 175';
+    nores.style.display = shown ? 'none' : 'block';
+  }
+  q.addEventListener('input', apply);
+  chips.forEach(function (ch) {
+    ch.addEventListener('click', function () {
+      chips.forEach(function (x) { x.classList.remove('active'); });
+      ch.classList.add('active');
+      kind = ch.getAttribute('data-kind');
+      apply();
+    });
+  });
+  document.getElementById('expandAll').addEventListener('click', function () {
+    allCols.forEach(function (d) { if (!d.classList.contains('hidden')) d.open = true; });
+  });
+  document.getElementById('collapseAll').addEventListener('click', function () {
+    allCols.forEach(function (d) { d.open = false; });
+  });
+  apply();
+
+  // Open a column directly when the URL points at it (#col-17).
+  function openHashTarget() {
+    var h = location.hash;
+    if (h && h.indexOf('#col-') === 0) {
+      var d = document.getElementById(h.slice(1));
+      if (d) { d.open = true; }
+    }
+  }
+  window.addEventListener('hashchange', openHashTarget);
+  openHashTarget();
+
+  // ---- Worked-example tabs -------------------------------------------------
+  document.querySelectorAll('.ex').forEach(function (ex) {
+    ex.querySelectorAll('.tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var id = tab.getAttribute('data-pane');
+        ex.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t === tab); });
+        ex.querySelectorAll('.pane').forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-pane') === id); });
+      });
+    });
+  });
+
+  // ---- Table of contents: highlight the chapter in view, mobile toggle ----
+  var tocLinks = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  var chapters = tocLinks.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); }).filter(Boolean);
+  function setActive(id) {
+    tocLinks.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + id); });
+  }
+  if ('IntersectionObserver' in window) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+      for (var i = 0; i < chapters.length; i++) {
+        if (visible[chapters[i].id]) { setActive(chapters[i].id); break; }
+      }
+    }, { rootMargin: '-72px 0px -60% 0px', threshold: 0 });
+    chapters.forEach(function (c) { io.observe(c); });
+  }
+  var toc = document.getElementById('toc');
+  var menuBtn = document.getElementById('menuBtn');
+  menuBtn.addEventListener('click', function () {
+    var open = toc.classList.toggle('open');
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  toc.addEventListener('click', function (e) {
+    if (e.target.tagName === 'A' && toc.classList.contains('open')) {
+      toc.classList.remove('open');
+      menuBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+})();
+</script>
+</body>
+</html>
