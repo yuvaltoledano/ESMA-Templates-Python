@@ -54,7 +54,16 @@ component carries a short JSDoc comment stating what it renders and its
 props. Design tokens live in `src/lib/tokens.js` and reach the markup as
 Tailwind classes (`bg-brand-navy`, `text-ink-muted`, `rounded-card`,
 ...); no component spells a hex. Adding a page to the top bar is one
-entry in `TopBar.jsx`'s `NAV_ITEMS`.
+entry in `TopBar.jsx`'s `NAV_ITEMS`; an entry with `external: true`
+opens in a new tab.
+
+`public/mapping-reference.html` is the analyst-facing mapping reference
+(see the repository `README.md`, "Domain reference"). Vite copies
+`public/` into `dist/` unchanged, so the page is served next to the app at
+`/mapping-reference.html` with no build step and no React; the "Mapping
+reference" item in the top bar opens it. It is self-contained (inline
+CSS and script, no fonts or scripts fetched from any host) and is edited
+by hand.
 
 ## Job flow
 

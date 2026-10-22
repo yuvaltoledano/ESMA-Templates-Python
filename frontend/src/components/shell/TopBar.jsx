@@ -1,8 +1,13 @@
 import { HealthStatus } from './HealthStatus.jsx'
 
 // The nav slot. Adding a page later is one more entry here; `current`
-// marks the item underlined in the accent glow.
-const NAV_ITEMS = [{ label: 'Process', href: '#', current: true }]
+// marks the item underlined in the accent glow; `external` opens the
+// link in a new tab (used for the static mapping reference, which Vite
+// serves from public/ next to the app).
+const NAV_ITEMS = [
+  { label: 'Process', href: '#', current: true },
+  { label: 'Mapping reference', href: '/mapping-reference.html', external: true },
+]
 
 function LineChartIcon() {
   return (
@@ -44,6 +49,8 @@ export function TopBar({ health }) {
               key={item.label}
               href={item.href}
               aria-current={item.current ? 'page' : undefined}
+              target={item.external ? '_blank' : undefined}
+              rel={item.external ? 'noopener noreferrer' : undefined}
               className={`inline-flex min-h-[44px] items-center border-b-2 text-base md:min-h-[40px] ${
                 item.current
                   ? 'border-accent-glow text-brand-navyText'
