@@ -13,7 +13,10 @@ It is deployed on one 4 GB Hetzner server (Helsinki) behind Caddy with HTTPS
 and a single password, with a 2 GB swap file as a memory safety net. A
 300,000-loan pool is expected to take about 16 minutes and 2–3 GB; routine
 use at that size calls for the 8 GB tier. Open work is tracked as GitHub
-issues labelled `backlog`. Claude Code sessions follow `CLAUDE.md`.
+issues labelled `backlog`. Claude Code sessions follow `CLAUDE.md`. The
+analyst-facing description of the mapping is
+`frontend/public/mapping-reference.html` (version 1.0), served by the web
+UI; it is maintained by hand alongside any mapping change.
 
 ## Entries
 
@@ -111,3 +114,20 @@ them; deny rules in `.claude/settings.json` enforce the two that must never
 slip (`r_reference/` and `tests/fixtures/`). This file is the durable record
 of why, since squash merges drop the commit-level history. Open work moved
 from conversation notes to GitHub issues labelled `backlog`.
+
+### 2026-10-22 — The mapping reference is a hand-written page served by the web UI
+The analyst-facing documentation moved from the R repository's HTML guides
+to `frontend/public/mapping-reference.html`, written from the Python
+pipeline as it behaves and with no reference to R, since the reader is a
+user of this tool. It is one self-contained HTML file (inline CSS and
+script, nothing fetched from other hosts, consistent with the frontend's
+no-third-party rule) placed in Vite's `public/` directory so it ships in
+the web image and is linked from the top bar without a build step, a
+route or a React dependency. It is hand-written rather than generated
+from code: the reader order (pool steps, then columns, then summary, then
+checklist) is not the code order, and the worked examples are prose. The
+cost is that it can drift; the guard is the rule in `CLAUDE.md` that a
+mapping change updates the page and bumps its version line, and the
+reviewer checks that on every PR that touches the mapping. The synthetic
+fixture is the running example for now; a real-pool example is a later
+decision.
