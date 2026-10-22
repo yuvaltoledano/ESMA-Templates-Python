@@ -142,7 +142,7 @@ src/esma_milan/
 frontend/                  # React + Vite + Tailwind single-page GUI
 scripts/run_parity_check.py  # CLI wrapper around the parity diff library
 r_reference/               # READ-ONLY git submodule, pinned at v1.1-r-reference
-docs/                      # parity protocol, API, analysis and deployment references
+docs/                      # parity protocol, API, analysis, deployment and decisions references
 Dockerfile                 # app (Python) and web (Caddy + built frontend) images
 docker-compose.yml         # app + worker + web containers for the server deployment
 deploy/Caddyfile           # HTTPS, password, static frontend, /api proxy
@@ -210,6 +210,9 @@ docker build --target app . && docker build --target web .   # the two deploymen
 CI (`.github/workflows/ci.yml`) runs the Python checks with the locked
 dependency set (`uv sync --frozen`), the frontend lint and build on
 Node 22, and builds the `app` and `web` Docker images.
+
+Working rules for Claude Code sessions are in `CLAUDE.md`; the reasons
+behind the current design are in `docs/decisions.md`.
 
 ## License
 

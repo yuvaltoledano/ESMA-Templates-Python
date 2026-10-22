@@ -47,9 +47,9 @@ multipart fields. It is not an error.
 ### Background jobs: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/result`, `DELETE /api/jobs/{id}`
 
 `POST /api/process` runs the whole pipeline inside one request and
-refuses pools above about 30,000 loans. Larger pools (the writer alone
-takes about 16 minutes at 300,000 loans) go through a job: the request
-returns at once with an id, a separate worker process
+refuses pools above about 30,000 loans. Larger pools (a 300,000-loan job
+takes about 16 minutes, almost all of it writing the workbook) go through
+a job: the request returns at once with an id, a separate worker process
 (`esma-milan-worker`) runs the pipeline, and the client polls for
 progress and fetches the result when it is done. The frontend uses jobs
 for every pool.

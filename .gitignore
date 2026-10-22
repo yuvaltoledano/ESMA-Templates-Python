@@ -233,3 +233,6 @@ scripts/*.local.*
 
 # CLI default output root (`esma-milan run --output` defaults to data/clean)
 /data/
+
+# Claude Code per-user project settings (the shared .claude/settings.json is committed)
+.claude/settings.local.json

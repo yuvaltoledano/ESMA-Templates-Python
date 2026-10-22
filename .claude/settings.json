@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(/r_reference/**)",
+      "Edit(/tests/fixtures/**)"
+    ]
+  }
+}
