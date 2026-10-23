@@ -236,3 +236,6 @@ scripts/*.local.*
 
 # Claude Code per-user project settings (the shared .claude/settings.json is committed)
 .claude/settings.local.json
+
+# Working plan files for Claude Code tasks; see CLAUDE.md
+.plans/
