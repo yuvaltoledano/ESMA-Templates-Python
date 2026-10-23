@@ -4,7 +4,7 @@ Why the code is the way it is. One entry per decision that someone would
 otherwise re-argue; newest at the bottom. Add an entry when a PR changes one
 of these or makes a new one. Keep "Where things stand" current.
 
-## Where things stand (updated 2026-10-22)
+## Where things stand (updated 2026-10-23)
 
 The port is complete and verified cell for cell against the R reference on
 both fixtures. It runs as a CLI, as a synchronous API for pools up to
@@ -107,13 +107,19 @@ and originator names, LEIs and countries, and the EPC provider name
 pass-through strings) but is a fixture change and has not been decided.
 
 ### 2026-10-22 — Working rules for Claude Code; backlog in GitHub issues
-Every task runs as a brief from the reviewer, a Phase 1 plan from Claude
-Code with no edits, the owner's approval, then one PR squash-merged by the
-owner. The standing rules live in `CLAUDE.md` so briefs need not repeat
-them; deny rules in `.claude/settings.json` enforce the two that must never
-slip (`r_reference/` and `tests/fixtures/`). This file is the durable record
-of why, since squash merges drop the commit-level history. Open work moved
-from conversation notes to GitHub issues labelled `backlog`.
+Every task runs as a brief from the reviewer (or a GitHub issue for small
+tasks), a Phase 1 plan that Claude Code writes to a gitignored
+`.plans/<branch>.md` without touching code, revision rounds in which the owner
+and reviewer annotate that file inline, the owner's approval, then one PR
+squash-merged by the owner. The plan carries a todo list that Claude Code
+ticks during implementation. A file rather than Claude Code's built-in plan
+mode, because an annotated file can be reviewed whole, edited in place and
+passed between the owner, the reviewer and Claude Code. The standing rules
+live in `CLAUDE.md` so briefs need not repeat them; deny rules in
+`.claude/settings.json` enforce the two that must never slip (`r_reference/`
+and `tests/fixtures/`). This file is the durable record of why, since squash
+merges drop the commit-level history and plan files are not committed. Open
+work moved from conversation notes to GitHub issues labelled `backlog`.
 
 ### 2026-10-22 — The mapping reference is a hand-written page served by the web UI
 The analyst-facing documentation moved from the R repository's HTML guides

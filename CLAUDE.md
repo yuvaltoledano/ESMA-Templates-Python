@@ -27,13 +27,39 @@ background jobs (`docs/api.md`). Decisions that shaped the code and why are in
    `frontend/package-lock.json`), the bundled taxonomy under
    `src/esma_milan/data/`, `node_modules/`, build output, and `r_reference/`
    beyond the files that mirrored modules cite.
-2. **Plan, then wait.** Every task runs in two phases. Phase 1: make no
-   edits; verify the brief's claims against the code with file:line, write a
-   plan (files, changes, tests, risks, anything you would do differently),
-   and stop. Phase 2 starts only when the owner says the plan is approved.
-   Expect follow-up questions between the two.
+2. **Plan, then wait.** Every task runs in two phases. Phase 1: edit nothing
+   except the plan file (below); verify the brief's claims against the code
+   with file:line, write the plan, and stop. Phase 2 starts only when the
+   owner says the plan is approved. Expect revision rounds between the two.
 3. If a brief's claim is wrong, say so and say what it changes. Do not work
    around it silently.
+
+A task may arrive as a full brief or as a GitHub issue. The same two phases
+apply either way.
+
+## The plan file
+
+- Write the Phase 1 plan to `.plans/<branch-name>.md` (gitignored). It is the
+  review surface: the owner and the reviewer read it whole and annotate it.
+  Contents: verified claims with file:line (and any that are wrong), the
+  approach, files to change with reasons, code snippets for the non-obvious
+  changes, tests, risks, anything you would do differently, and a todo list
+  of checkbox items grouped by commit.
+- If the brief asks for a research round, first write
+  `.plans/<branch-name>-research.md` (how the relevant code works, what
+  depends on it, what pins its behaviour), stop, and write the plan only
+  after the owner confirms the research.
+- **Revision rounds.** The owner returns the file with inline notes, each a
+  blockquote beginning `NOTE:`. Address every note, update the plan, remove
+  the note, and add one line per note to a "Revisions" section at the end
+  (what was asked, what changed). Do not implement. Repeat until approved.
+- **Phase 2.** Work through the todo list in order and tick each item in the
+  plan file as it is done, so the file always shows where things stand. If
+  the approved plan proves wrong mid-way, stop and say so rather than
+  improvising. If the owner says the changes were reverted, start again
+  from the narrowed scope; do not try to recover the discarded approach.
+- If the owner cannot open files in your environment (a cloud session),
+  include the full plan file in your Phase 1 message as well.
 
 ## Never
 
