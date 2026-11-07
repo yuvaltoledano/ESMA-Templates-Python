@@ -9,11 +9,16 @@
 	# SITE_HOST=localhost it issues a certificate from its own internal CA
 	# instead (local testing; curl needs -k, browsers show a warning).
 
-	# One username and bcrypt hash (from `caddy hash-password`) on every
-	# path, /api/health included. The page's health poll is a same-origin
-	# request, so the browser sends the stored credentials with it.
+	# Every login listed here has the same access to every path,
+	# /api/health included (the page's health poll is a same-origin
+	# request, so the browser sends the stored credentials with it).
+	# Hashes come from `caddy hash-password`. The second pair is
+	# optional: unset or empty, both placeholders expand to nothing and
+	# the blank line is ignored.
 	basic_auth {
 		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+		# Optional second login (see .env.example).
+		{$BASIC_AUTH_USER_2} {$BASIC_AUTH_HASH_2}
 	}
 
 	# Background jobs accept up to ESMA_MILAN_MAX_UPLOAD_MB (600 in
