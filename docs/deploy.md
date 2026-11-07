@@ -177,6 +177,8 @@ Fill in each line:
 | `SITE_HOST=` | your hostname, e.g. `milan.example.com` (no `https://`) |
 | `BASIC_AUTH_USER=` | the username you will type in the browser |
 | `BASIC_AUTH_HASH=` | the `$2a$...` line from above, **inside single quotes**: `BASIC_AUTH_HASH='$2a$14$Q9...'`. The quotes matter: without them Docker misreads the `$` signs and the password is never accepted. |
+| `BASIC_AUTH_USER_2=` | optional: a second username with the same access as the first. Leave it empty for a single login. |
+| `BASIC_AUTH_HASH_2=` | optional: the second login's hash, **inside single quotes** like `BASIC_AUTH_HASH`; run the `caddy hash-password` command again to get it. Set both `_2` lines or neither: one without the other stops Caddy (section 8). |
 | `ESMA_MILAN_WORKERS=` | `2` for a 2-vCPU server (API request handlers; pools are processed by the `worker` container, one at a time, whatever this value) |
 | `ESMA_MILAN_RATE_LIMIT_PROCESS=` | leave `10/minute` unless you hit "Rate limit exceeded" |
 | `ESMA_MILAN_RATE_LIMIT_HEALTH=` | leave `60/minute` |
@@ -188,10 +190,11 @@ The remaining `ESMA_MILAN_*` settings (`HOST`, `PORT`, `TRUST_PROXY`,
 no entry in `.env`.
 
 Check that Docker reads the file the way you expect. The command prints
-the full configuration; find `BASIC_AUTH_HASH` in it. It should show
-your hash with every `$` doubled (`$$2a$$14$$...`), which is how Docker
-displays a literal `$`. If it shows a truncated hash or warnings such as
-`The "Q9" variable is not set`, the quotes are missing:
+the full configuration; find `BASIC_AUTH_HASH` (and `BASIC_AUTH_HASH_2`,
+if you set it) in it. It should show your hash with every `$` doubled
+(`$$2a$$14$$...`), which is how Docker displays a literal `$`. If it
+shows a truncated hash or warnings such as `The "Q9" variable is not
+set`, the quotes are missing:
 
 ```
 # docker compose config | grep BASIC_AUTH_HASH
@@ -279,6 +282,34 @@ with background jobs adds the `worker` container: `docker compose ps`
 shows three containers afterwards instead of two, and a `jobs` volume
 appears in `docker volume ls`.
 
+A version that changes `deploy/Caddyfile` needs this rebuild too,
+because the Caddyfile is copied into the `web` image:
+`docker compose up -d --force-recreate web` (section 7) restarts Caddy
+from the existing image and would not pick the change up. If a job is
+running, `docker compose up -d --build --no-deps web` rebuilds and
+restarts only `web` and leaves `app`, `worker` and the job alone. The
+first version with the optional second login (section 7) is such a
+change. To update to it and add the second login in one go:
+
+```
+# cd /opt/esma-milan
+# docker compose exec worker sh -c 'ls /jobs/*/running.* 2>/dev/null || echo "no job running"'
+# git pull --recurse-submodules
+# docker compose run --rm --no-deps web caddy hash-password
+# nano .env
+# docker compose config | grep BASIC_AUTH_
+# docker compose up -d --build --no-deps web
+# docker compose ps
+```
+
+In `nano`, add the two lines from section 4: `BASIC_AUTH_USER_2=` with
+the second username and `BASIC_AUTH_HASH_2=` with the hash just printed,
+inside single quotes. The `grep` must list all four `BASIC_AUTH_`
+variables (each once per container that reads `.env`), both hashes with
+every `$` doubled. After `docker compose ps` shows `web` as `Up`, open
+the site in two separate private browser windows and log in as each
+user; both see the same page.
+
 ## 7. Day-to-day
 
 All commands assume `cd /opt/esma-milan` first.
@@ -293,7 +324,9 @@ All commands assume `cd /opt/esma-milan` first.
 - **Stop everything:** `docker compose down`. Certificates and settings
   are kept; `docker compose up -d` brings it back.
 - **Change the password:** run `docker compose run --rm --no-deps web caddy hash-password`
-  again, put the new hash in `.env` (single quotes), then
+  again, put the new hash in `.env` (single quotes; `BASIC_AUTH_HASH` is
+  the `BASIC_AUTH_USER` login's hash, `BASIC_AUTH_HASH_2` the
+  `BASIC_AUTH_USER_2` login's), then
   `docker compose up -d --force-recreate web`. Caddy restarts in a
   second; browsers will ask for the new password on their next request.
   (`--force-recreate` matters: a plain `docker compose up -d` can miss
@@ -301,6 +334,15 @@ All commands assume `cd /opt/esma-milan` first.
 - **Change the username or hostname:** edit `.env`, then
   `docker compose up -d --force-recreate web`. A new hostname needs its
   DNS record first.
+- **Add or remove a second login:** run
+  `docker compose run --rm --no-deps web caddy hash-password` for the
+  new password, set `BASIC_AUTH_USER_2` and `BASIC_AUTH_HASH_2` in `.env`
+  (single quotes around the hash, as for `BASIC_AUTH_HASH`), then
+  `docker compose up -d --force-recreate web`. To remove it, set both
+  back to empty and run the same command. Both logins have the same
+  access to everything. Set both or neither: one without the other stops
+  Caddy (section 8). The first time, the version that supports the second
+  login must be built first (section 6).
 - **Change the rate limits, worker count or job retention:** edit
   `.env`, then `docker compose up -d --force-recreate` (`app` and
   `worker` both read these).
@@ -371,6 +413,12 @@ All commands assume `cd /opt/esma-milan` first.
   `--force-recreate web` for Caddy settings such as the password,
   username or hostname) and check that `docker compose ps` shows a fresh
   `CREATED` time for the container.
+- **`web` keeps restarting after you edited `.env`, and
+  `docker compose logs web` shows `parsing caddyfile tokens for
+  'basic_auth': username and password cannot be empty or missing`.** One
+  of `BASIC_AUTH_USER_2` / `BASIC_AUTH_HASH_2` is set and the other is
+  empty. Set both or empty both, then
+  `docker compose up -d --force-recreate web`.
 - **The password is never accepted, and `docker compose logs web` shows
   nothing useful.** Almost always the missing single quotes around
   `BASIC_AUTH_HASH` in `.env`; see section 4 and re-run
@@ -380,12 +428,16 @@ All commands assume `cd /opt/esma-milan` first.
 
 ## 9. Security notes
 
-- The password protects every page and API call. The browser sends it
-  with each request, but only inside the encrypted HTTPS connection, so
-  it cannot be read on the way. Plain `http://` requests are redirected
-  to HTTPS before any password is sent.
-- Use a long random password and keep it in a password manager. The
-  server stores a hash from which the password cannot be recovered.
+- A login (username and password) protects every page and API call.
+  Every login in `.env` has identical access: the same pages, API calls
+  and jobs, including jobs the other login submitted; there is no
+  per-user separation. The browser sends the password with each request,
+  but only inside the encrypted HTTPS connection, so it cannot be read on
+  the way. Plain `http://` requests are redirected to HTTPS before any
+  password is sent.
+- Use a long random password for each login and keep it in a password
+  manager. The server stores a hash from which the password cannot be
+  recovered.
 - The `app` container has no port open to the internet; the only way in
   is through Caddy, after the password check. SSH (port 22) is the only
   other open port, and it accepts your key, not a password.

@@ -4,13 +4,14 @@ Why the code is the way it is. One entry per decision that someone would
 otherwise re-argue; newest at the bottom. Add an entry when a PR changes one
 of these or makes a new one. Keep "Where things stand" current.
 
-## Where things stand (updated 2026-10-23)
+## Where things stand (updated 2026-11-07)
 
 The port is complete and verified cell for cell against the R reference on
 both fixtures. It runs as a CLI, as a synchronous API for pools up to
 ~30,000 loans, and as background jobs for larger pools through the web page.
 It is deployed on one 4 GB Hetzner server (Helsinki) behind Caddy with HTTPS
-and a single password, with a 2 GB swap file as a memory safety net. A
+and basic auth (one or two logins with identical access), with a 2 GB swap
+file as a memory safety net. A
 300,000-loan pool is expected to take about 16 minutes and 2–3 GB; routine
 use at that size calls for the 8 GB tier. Open work is tracked as GitHub
 issues labelled `backlog`. Claude Code sessions follow `CLAUDE.md`. The
@@ -137,3 +138,19 @@ mapping change updates the page and bumps its version line, and the
 reviewer checks that on every PR that touches the mapping. The synthetic
 fixture is the running example for now; a real-pool example is a later
 decision.
+
+### 2026-11-07 — A second login is an optional second `basic_auth` line
+The owner wanted a second login. It is a second
+`{$BASIC_AUTH_USER_2} {$BASIC_AUTH_HASH_2}` line in `deploy/Caddyfile`, fed
+by two optional `.env` variables; Caddy substitutes `{$VAR}` before parsing,
+so an unset pair becomes a blank line the parser ignores and single-login
+`.env` files keep working. Both logins have identical access, including
+each other's jobs, because basic auth has no per-user scope and none was
+added in the app (jobs are addressed by id only). Rejected: a users file
+imported into the Caddyfile (a second file to copy into the image and keep
+in sync, for two lines), a server-side compose override (state outside the
+repository and `.env`), and app-level authentication (a users model,
+sessions and UI for a two-person tool). Because the Caddyfile lives in the
+`web` image, the first version with this change needs an image rebuild
+(`docker compose up -d --build --no-deps web`), not only the
+`--force-recreate web` that `.env`-only changes need.

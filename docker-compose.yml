@@ -7,11 +7,13 @@
 #           run inside the request.
 #   worker  the background-job runner (esma-milan-worker), the same image
 #           as `app`. Drains the `jobs` volume one job at a time.
-#   web     Caddy. Terminates HTTPS, asks for the password, serves the
-#           built frontend and proxies /api/* to app:8000.
+#   web     Caddy. Terminates HTTPS, asks for one of the logins (one or
+#           two in .env), serves the built frontend and proxies /api/*
+#           to app:8000.
 #
-# Every per-deployment value (hostname, user, password hash, worker count,
-# rate limits, job retention) comes from a .env file next to this file.
+# Every per-deployment value (hostname, one or two logins and their
+# password hashes, worker count, rate limits, job retention) comes from a
+# .env file next to this file.
 # Nothing in the repository names a host or a secret.
 
 services:
