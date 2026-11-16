@@ -12,6 +12,8 @@ from collections.abc import Iterable
 
 import polars as pl
 
+from esma_milan.errors import PipelineDataError
+
 
 def validate_required_columns(
     df: pl.DataFrame,
@@ -36,6 +38,10 @@ def validate_required_columns(
     present = set(df.columns)
     missing = [c for c in required_cols if c not in present]
     if missing:
-        raise ValueError(
-            f"ERROR: {df_name} is missing required columns: {', '.join(missing)}"
+        raise PipelineDataError(
+            f"ERROR: {df_name} is missing required columns: {', '.join(missing)}",
+            stage="stage1",
+            reason="missing_required_columns",
+            items=tuple(missing),
+            context={"table": df_name},
         )

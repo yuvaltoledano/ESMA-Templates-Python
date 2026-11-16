@@ -24,6 +24,7 @@ import polars as pl
 import structlog
 
 from esma_milan.config import ACTIVE_LOAN_STATUSES, EXCLUDED_COLLATERAL_TYPES
+from esma_milan.errors import PipelineDataError
 
 log = structlog.get_logger(__name__)
 
@@ -132,6 +133,15 @@ def run_stage2(loans: pl.DataFrame, properties: pl.DataFrame) -> Stage2Output:
     )
 
     if properties_filtered.height == 0:
-        raise ValueError("ERROR: No properties remaining after filtering.")
+        raise PipelineDataError(
+            "ERROR: No properties remaining after filtering.",
+            stage="stage2",
+            reason="no_properties_after_filter",
+            context={
+                "n_loans": loans.height,
+                "n_loans_kept": loans_filtered.height,
+                "n_collateral": properties.height,
+            },
+        )
 
     return Stage2Output(loans=loans_filtered, properties=properties_filtered)

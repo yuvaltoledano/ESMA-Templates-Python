@@ -21,6 +21,7 @@ import polars as pl
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
+from esma_milan.errors import PipelineDataError
 from esma_milan.io_layer.write_workbook import (
     build_workbook_bytes,
     write_pipeline_workbook,
@@ -298,7 +299,11 @@ def run_pipeline(
     # carries it as a Date column; pluck the first non-null value.
     cutoff = _first_non_null_date(stage1.loans, "pool_cutoff_date")
     if cutoff is None:
-        raise ValueError("pool_cutoff_date is missing in loans file")
+        raise PipelineDataError(
+            "pool_cutoff_date is missing in loans file",
+            stage="runner",
+            reason="missing_pool_cutoff_date",
+        )
     cutoff_str = cutoff.isoformat()
     output_filename = f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 

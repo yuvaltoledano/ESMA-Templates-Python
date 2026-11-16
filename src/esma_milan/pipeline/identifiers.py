@@ -32,6 +32,7 @@ import polars as pl
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
+from esma_milan.errors import PipelineDataError
 
 log = structlog.get_logger(__name__)
 
@@ -53,6 +54,7 @@ class _Candidate:
     matched: int = 0
     coverage: float = 0.0
     unmatched_sample: str = ""
+    unmatched: tuple[str, ...] = ()
 
 
 def _sample_values(values: list[str], n: int = 10) -> str:
@@ -60,15 +62,25 @@ def _sample_values(values: list[str], n: int = 10) -> str:
     return ", ".join(str(v) for v in values[:n])
 
 
+def _duplicated_values(values: list[str | None]) -> list[str]:
+    """Every non-null value that occurs more than once, each listed once,
+    in the order its second occurrence is met."""
+    seen: set[str] = set()
+    listed: set[str] = set()
+    dups: list[str] = []
+    for v in values:
+        if v is None:
+            continue
+        if v in seen and v not in listed:
+            dups.append(v)
+            listed.add(v)
+        seen.add(v)
+    return dups
+
+
 def _duplicate_diagnostics(values: list[str | None]) -> tuple[int, str]:
     """Return (n_duplicated, sample_string) for the non-null portion."""
-    non_null = [v for v in values if v is not None]
-    seen: set[str] = set()
-    dups: list[str] = []
-    for v in non_null:
-        if v in seen and v not in dups:
-            dups.append(v)
-        seen.add(v)
+    dups = _duplicated_values(values)
     return len(dups), _sample_values(dups, 10)
 
 
@@ -168,11 +180,17 @@ def select_calc_loan_id(
             if new.all_na
             else f"{new_n_dups} duplicated values [{new_sample}]"
         )
-        raise ValueError(
+        raise PipelineDataError(
             f"select_calc_loan_id: neither candidate loan-ID column is usable. "
             f"{orig.name!r}: {orig_msg}. "
             f"{new.name!r}: {new_msg}. "
-            f"This is a data-quality problem that requires manual investigation."
+            f"This is a data-quality problem that requires manual investigation.",
+            stage="stage3",
+            reason="no_usable_loan_id_column",
+            items=tuple(
+                (c.name, v) for c in candidates for v in _duplicated_values(c.values)
+            ),
+            context={"all_missing": {c.name: c.all_na for c in candidates}},
         )
 
     # -- Gate 2: coverage measurement -------------------------------------
@@ -186,6 +204,7 @@ def select_calc_loan_id(
         c.coverage = c.matched / c.total if c.total > 0 else 0.0
         unmatched = sorted(unique_non_null - property_ids, key=str)
         c.unmatched_sample = _sample_values(unmatched, 10)
+        c.unmatched = tuple(unmatched)
 
     # -- Gate 3: selection -------------------------------------------------
     surviving_idx = [i for i, c in enumerate(candidates) if not c.disqualified]
@@ -233,11 +252,21 @@ def select_calc_loan_id(
 
     # -- min_coverage threshold check -------------------------------------
     if chosen.coverage < min_coverage:
-        raise ValueError(
+        raise PipelineDataError(
             f"select_calc_loan_id: chosen column {chosen.name!r} has coverage "
             f"{chosen.matched}/{chosen.total} = {_pct(chosen.coverage)}, "
             f"below min_coverage = {_pct(min_coverage)}. "
-            f"Unmatched sample: [{chosen.unmatched_sample}]."
+            f"Unmatched sample: [{chosen.unmatched_sample}].",
+            stage="stage3",
+            reason="loan_id_coverage_below_minimum",
+            items=chosen.unmatched,
+            context={
+                "column": chosen.name,
+                "matched": chosen.matched,
+                "total": chosen.total,
+                "coverage": chosen.coverage,
+                "min_coverage": float(min_coverage),
+            },
         )
 
     log.info(
@@ -301,8 +330,12 @@ def generate_id_column(
         ValueError: if either named column is missing from `df`.
     """
     if original_id_col not in df.columns:
-        raise ValueError(
-            f"generate_id_column: df is missing column {original_id_col!r}"
+        raise PipelineDataError(
+            f"generate_id_column: df is missing column {original_id_col!r}",
+            stage="stage3",
+            reason="missing_identifier_column",
+            items=(original_id_col,),
+            context={"output_column": output_col_name},
         )
     if new_id_col not in df.columns:
         raise ValueError(
@@ -415,7 +448,11 @@ def run_stage3(
     )
 
     if loans.height == 0:
-        raise ValueError("ERROR: No active loans remaining after filtering.")
+        raise PipelineDataError(
+            "ERROR: No active loans remaining after filtering.",
+            stage="stage3",
+            reason="no_loans_after_intersection",
+        )
     if properties.height == 0:
         raise ValueError("ERROR: No properties remaining after filtering.")
 
@@ -425,7 +462,7 @@ def run_stage3(
     missing_in_properties = sorted(calc_loan_ids - property_loan_ids, key=str)
     missing_in_loans = sorted(property_loan_ids - calc_loan_ids, key=str)
     if missing_in_properties or missing_in_loans:
-        raise ValueError(
+        raise PipelineDataError(
             "ERROR: Loan identifier mismatch between calc_loan_id and "
             "properties$underlying_exposure_identifier. "
             f"Missing in properties: {len(missing_in_properties)}"
@@ -436,7 +473,17 @@ def run_stage3(
             )
             + f"; missing in loans: {len(missing_in_loans)}"
             + (f" [{', '.join(missing_in_loans[:10])}]" if missing_in_loans else "")
-            + "."
+            + ".",
+            stage="stage3",
+            reason="loan_identifier_mismatch",
+            items=(
+                *(("missing_in_properties", v) for v in missing_in_properties),
+                *(("missing_in_loans", v) for v in missing_in_loans),
+            ),
+            context={
+                "n_missing_in_properties": len(missing_in_properties),
+                "n_missing_in_loans": len(missing_in_loans),
+            },
         )
 
     # Borrower and property IDs use the simpler generate_id_column.
