@@ -23,7 +23,9 @@ A data quality report on uploaded pools is being built in five PRs. The
 first is in: the parity diff compares every cell, and the stages report
 their own decisions as data (`PipelineResult` and the stage outputs) with a
 typed error for faults in the data. Nothing consumes that interface yet
-except tests; no workbook, API response, message or log event changed.
+except tests; no workbook, API response, message or log event changed. The
+agreed specification for the whole report is
+`docs/data-quality/specification.md`.
 
 ## Entries
 
@@ -218,3 +220,20 @@ catching Polars exceptions by type in one place (the same type means
 different things at different sites), and a per-group "valuation used"
 flag (one group can use the current valuation for one property and the
 original for another).
+
+### 2026-11-16 — The data quality report has one specification, kept in the repository
+The report's rules (every column against the ESMA taxonomy, consistency
+across columns, records and files, the acceptance policy and how the result
+is shown) were agreed with the owner in a planning round and signed as an
+18-item decision record. They live in `docs/data-quality/specification.md`,
+with `docs/data-quality/rre-source-mapping.csv` giving the source, type, ND
+options and published rule of each of the 107 fields and the two optional
+elements, transcribed from the ESMA disclosure templates package v1.3.1.
+Each implementation PR has a brief that names the sections it implements;
+where a PR resolves an ambiguity or departs from the specification, it
+corrects the specification in the same PR. Rejected: restating the rules in
+each brief (they would drift), and keeping them outside the repository (a
+session and a reviewer could then read different versions). The file
+describes agreed behaviour, not current behaviour: nothing in it is
+implemented until the PR that says so.
+
