@@ -161,9 +161,16 @@ class Assessed:
         return frame.to_dicts()
 
     def rules_on(self, field_code: str) -> set[tuple[str, str]]:
-        """(rule, result kind) of every row on one field."""
-        frame = self.assessment.results.filter(pl.col("field") == field_code)
+        """(rule, result kind) of every row on one field, apart from the
+        P9 context row of a constant column (the pair has two records, so
+        most of its columns are constant)."""
+        frame = self.assessment.results.filter(
+            (pl.col("field") == field_code) & (pl.col("rule_id") != "P9")
+        )
         return set(zip(frame["rule_id"].to_list(), frame["result_kind"].to_list(), strict=True))
+
+    def rows_beyond_cardinality(self) -> list[dict[str, object]]:
+        return self.assessment.results.filter(pl.col("rule_id") != "P9").to_dicts()
 
     def outcome(self, rule_id: str, field_code: str) -> tuple[int, int, int, int]:
         """(applicable, evaluated, failed, not evaluable) summed over the

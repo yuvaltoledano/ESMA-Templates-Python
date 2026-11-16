@@ -37,8 +37,15 @@ from esma_milan.quality.column_rules.context import (
     RuleOutput,
     cutoff_columns,
 )
+from esma_milan.quality.column_rules.currency import (
+    companion_rules,
+    currency_evidence,
+    layout_rows,
+)
+from esma_milan.quality.column_rules.domain import domain_rules
 from esma_milan.quality.column_rules.formats import format_rules
 from esma_milan.quality.column_rules.nd import nd_rules
+from esma_milan.quality.column_rules.plausibility import column_rows, plausibility_rules
 from esma_milan.quality.refdata import ReferenceData, load_reference_data
 from esma_milan.quality.result import (
     RESULT_SCHEMA,
@@ -52,9 +59,11 @@ from esma_milan.quality.states import Classified, classify
 
 Rule = Callable[[CellContext], RuleOutput]
 
-FIELD_RULES: tuple[Rule, ...] = (nd_rules, format_rules)
+FIELD_RULES: tuple[Rule, ...] = (
+    nd_rules, format_rules, domain_rules, currency_evidence, plausibility_rules,
+)
 """Run, in order, on every cell of a column resolved to a field."""
-COMPANION_RULES: tuple[Rule, ...] = ()
+COMPANION_RULES: tuple[Rule, ...] = (companion_rules,)
 """Run on every cell of a currency companion column."""
 
 # A currency companion is assessed as a {CURRENCYCODE_3} value.
@@ -258,8 +267,8 @@ def _evaluate(
 def column_level_rows(
     raw: RawFile, profiles: Sequence[ColumnProfile], pool: PoolFacts
 ) -> tuple[list[dict[str, object]], list[RuleOutcome]]:
-    """Results about a whole column (no record). P1: a template field
-    without a column."""
+    """Results about a whole column (no record): P1 (a template field
+    without a column), the currency layout note, P8, P9 and P12."""
     rows: list[dict[str, object]] = []
     outcomes: list[RuleOutcome] = []
     present = {p.entry.code for p in profiles}
@@ -280,6 +289,9 @@ def column_level_rows(
                 }
             )
         outcomes.append(outcome)
+    for more_rows, more_outcomes in (layout_rows(raw, profiles), column_rows(raw, profiles)):
+        rows.extend(more_rows)
+        outcomes.extend(more_outcomes)
     return rows, outcomes
 
 

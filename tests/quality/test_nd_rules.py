@@ -10,8 +10,8 @@ from tests.quality.builders import Pair, assess
 
 
 def test_the_compliant_pair_has_no_row(tmp_path: Path) -> None:
-    assert assess(Pair(), tmp_path, "loans").assessment.results.height == 0
-    assert assess(Pair(), tmp_path, "collateral").assessment.results.height == 0
+    assert assess(Pair(), tmp_path, "loans").rows_beyond_cardinality() == []
+    assert assess(Pair(), tmp_path, "collateral").rows_beyond_cardinality() == []
 
 
 def test_p1_absent_field(tmp_path: Path) -> None:
