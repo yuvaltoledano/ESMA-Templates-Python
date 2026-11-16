@@ -2,6 +2,10 @@
 
 Any change here is a deviation from the R reference and must be documented
 as such; the R reference is the contract.
+
+The block of `DQ_` constants at the end is the exception: it belongs to the
+data quality report (`esma_milan.quality`), mirrors nothing in R, and no
+pipeline stage reads it.
 """
 
 from __future__ import annotations
@@ -214,3 +218,91 @@ SHEETS_WITH_EXCEL_SERIAL_DATES: frozenset[str] = frozenset({
     "Cleaned ESMA properties",
     "Combined flattened pool",
 })
+
+
+# ---------------------------------------------------------------------------
+# Data quality report (esma_milan.quality). Mirrors nothing in the R
+# reference; the rules are in docs/data-quality/specification.md. Each
+# constant gives its basis (A acceptance policy, P plausibility, E a
+# reporting requirement) and its reason.
+# ---------------------------------------------------------------------------
+
+# Version of the rule set; printed in the report's provenance. Raise it
+# whenever a rule, a threshold or a reference list changes.
+DQ_RULESET_VERSION: str = "2026.11.1"
+
+# The ESMA disclosure templates package the catalogue was transcribed from.
+DQ_ESMA_PACKAGE_VERSION: str = (
+    "ESMA disclosure templates package v1.3.1 "
+    "(workbook DRAFT1auth.099.001.04, XSD v1.3.0)"
+)
+
+# (A) Fields whose defects count towards the acceptance rules of a later
+# release (specification 8.3). Nothing is enforced yet; the list is shown
+# in the inventory.
+DQ_CRITICAL_FIELDS: frozenset[str] = frozenset({
+    "RREL2", "RREL3", "RREL4", "RREL5", "RREL6", "RREL23", "RREL24", "RREL29",
+    "RREL30", "RREL42", "RREL43", "RREL66", "RREL67", "RREL68", "RREL69", "RREL82",
+    "RREC2", "RREC3", "RREC4", "RREC5", "RREC9", "RREC13", "RREC14", "RREC15",
+    "RREC17", "RREC18", "RREC19",
+})
+
+# (A) Per-column rules whose violations count on a critical field
+# (specification 8.3). P6(a) and P6(b) count only on the fields named there.
+DQ_CRITICAL_P_RULES: frozenset[str] = frozenset({
+    "P1", "P3a", "P3b", "P3c", "P3d", "P3e", "P4(d)", "P5", "P7(a)", "P11",
+})
+DQ_CRITICAL_P6A_FIELDS: frozenset[str] = frozenset({"RREL29", "RREL67", "RREC13", "RREC17"})
+DQ_CRITICAL_P6B_FIELDS: frozenset[str] = frozenset({"RREL23", "RREL66", "RREC15", "RREC19"})
+
+# (E) Text that stands for "no value" and is not an ND option (rule P3d).
+# Compared after trimming XML whitespace and without regard to case, in
+# typed fields only, and only when the value is not valid for the field
+# ("NA" is Namibia in a country field). DQ_INVALID_MISSING_MARKER_PATTERN
+# adds "ND" followed by an optional space and one digit ("nd5", "ND 5",
+# "ND6") and a padded dated ND4.
+DQ_INVALID_MISSING_MARKERS: frozenset[str] = frozenset({
+    "NA", "N/A", "#N/A", "NULL", "NONE", "-", "ND",
+})
+DQ_INVALID_MISSING_MARKER_PATTERN: str = r"(?i)^ND ?[0-9]$|^ND4-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+# (P) Values that often stand for "not applicable" and can also be real
+# measurements (rule P8). "cells": the value in any cell of the field.
+# "all_zero_columns": every present value of the column is 0 (for RREC21,
+# also no sale date anywhere in RREC20). "single_token_columns": one token
+# without a space on every record. RREL20 and RREL59 are deliberately
+# absent: a zero there is a measurement (specification 6.3).
+DQ_POSSIBLE_PLACEHOLDERS: dict[str, dict[str, tuple[str, ...]] | tuple[str, ...]] = {
+    "cells": {
+        "RREL16": ("0",), "RREL34": ("0",), "RREC13": ("0",), "RREC17": ("0",),
+        "RREL25": ("9999",), "RREL47": ("9999",), "RREL58": ("9999",),
+        "RREL68": ("9999",), "RREC8": ("9999",),
+        "RREC12": ("999.99999",), "RREC16": ("999.99999",),
+    },
+    "all_zero_columns": ("RREL33", "RREC21"),
+    "single_token_columns": ("RREL22",),
+}
+
+# (P) Dates before this year, or more than this many years after the data
+# cut-off, are unusual (rule P12).
+DQ_DATE_MIN_YEAR: int = 1950
+DQ_DATE_MAX_YEARS_AFTER_CUTOFF: int = 60
+
+# (P) Rule P12 asks whether a percentage column whose values are all below 1
+# was exported as a fraction. Margins are normally below 1 and RREL59 is
+# normally 0, so they are excluded.
+DQ_PERCENT_SCALE_EXCLUDED_FIELDS: frozenset[str] = frozenset({
+    "RREL46", "RREL50", "RREL52", "RREL54", "RREL59",
+})
+
+# Sample values shown per column in the actual-column inventory.
+DQ_SAMPLE_VALUES: int = 5
+DQ_SAMPLE_VALUE_MAX_CHARS: int = 100
+
+# Header names (after clean_names) that recognise the two optional XSD
+# elements in a collateral file. The names are this application's
+# convention; the package defines the XML report only.
+DQ_OPTIONAL_ELEMENT_HEADERS: dict[str, str] = {
+    "current_gross_annual_rental_income": "OPT_RENT_CURRENT",
+    "original_gross_annual_rental_income": "OPT_RENT_ORIGINAL",
+}

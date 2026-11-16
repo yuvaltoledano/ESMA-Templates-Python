@@ -59,6 +59,18 @@ The output file is named `<pool_cutoff_date> <deal> Flattened loans and
 collaterals.xlsx` under `<output>/<deal>/`. `--output` defaults to
 `data/clean` (git-ignored).
 
+Beside it the command writes `<pool_cutoff_date> <deal> Flattened loans and
+collaterals data quality summary.json`: the data quality report's summary
+of the two input files (every column of every record against the
+per-column rules of `docs/data-quality/specification.md`, the two
+inventories, the population of every loan record, and the provenance). It
+is written on a `--dry-run` and when the pipeline fails as well; with no
+cut-off date established, `unknown-cutoff` takes its place in the name. The
+report is additive: the workbook, the exit status and the messages are
+what they are without it, and it states no accept or reject decision. Its
+row-level detail, the checks across columns, records and files, and the
+web page arrive in later releases; the API does not produce it yet.
+
 The ESMA taxonomy that renames and types the CSV columns is not an
 input. It is a fixed ESMA artefact bundled with the package
 (`src/esma_milan/data/esma_rre_taxonomy.xlsx`), so the CLI runs from any
@@ -129,6 +141,17 @@ src/esma_milan/
 │   ├── mapping_tables.py  # the four ID-mapping sheets
 │   ├── milan_map.py       # Stage 9: 175-column MILAN template
 │   └── exec_summary.py    # Stage 10: Execution Summary sheet
+├── quality/               # data quality report on the two uploaded files (additive; see docs/data-quality/)
+│   ├── catalogue.py       # the 107 fields and every rule, as reviewed data
+│   ├── refdata/           # ISO 3166-1, ISO 4217, NUTS level 3 lists and their manifest
+│   ├── audit_read.py      # the audit's own read of each file; header resolution
+│   ├── states.py          # value states (empty, ND options, markers, present) and parsing
+│   ├── column_rules/      # per-column rules P1 to P13 and the engine that runs them
+│   ├── populations.py     # population, identity-confidence and lifecycle labels per record
+│   ├── inventories.py     # expected-field and actual-column inventories
+│   ├── result.py          # result rows and coverage counts
+│   ├── assess.py          # assess_files(), complete_report() and the report object
+│   └── export.py          # the summary file
 ├── analysis/              # pool stratifications for the GUI (11 cuts)
 ├── parity/                # cell-by-cell workbook diff library
 ├── api/
@@ -153,6 +176,7 @@ tests/
 ├── fixtures/              # synthetic + real_anonymised inputs and R outputs
 ├── unit/                  # per-module unit tests
 ├── integration/           # per-stage tests on the synthetic fixture
+├── quality/               # data quality report: rules on constructed data, reviewed results on both fixtures
 └── parity/                # Layer-1 cell-by-cell parity, both fixtures
 ```
 

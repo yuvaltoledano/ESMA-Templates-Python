@@ -19,12 +19,19 @@ analyst-facing description of the mapping is
 `frontend/public/mapping-reference.html` (version 1.0), served by the web
 UI; it is maintained by hand alongside any mapping change.
 
-A data quality report on uploaded pools is being built in five PRs. The
+A data quality report on uploaded pools is being built in several PRs. The
 first is in: the parity diff compares every cell, and the stages report
 their own decisions as data (`PipelineResult` and the stage outputs) with a
-typed error for faults in the data. Nothing consumes that interface yet
-except tests; no workbook, API response, message or log event changed. The
-agreed specification for the whole report is
+typed error for faults in the data. The second is in: `esma_milan.quality`
+reads the two files itself, assesses every column of every record against
+the per-column rules of the specification, labels every loan record with
+its population, and the command line writes a summary file beside the
+workbook, also on a dry run and when the pipeline fails. The report is
+additive: no workbook, API response, pipeline message or pipeline log
+event changed, nothing is blocked or rejected, and the API and the web
+page do not show the report yet. Still to come: the checks across columns,
+records and files, the row-level detail files, the acceptance rules and
+the page. The agreed specification for the whole report is
 `docs/data-quality/specification.md`.
 
 ## Entries
@@ -203,7 +210,8 @@ from the positions each stage that drops rows reports. Nothing in the data
 identifies a collateral row (a fully duplicated row is legal input), and a
 key column would have reached the "Cleaned ESMA" sheets, so no frame
 carries it. The loader drops no record after the header, so the position
-is the row a person counts in the file.
+is the row a person counts in the file, minus one: the first record after
+the header has position 0.
 
 The eleven places where a fault in the data halts the run raise
 `PipelineDataError` (`src/esma_milan/errors.py`), a `ValueError` with the
@@ -237,3 +245,48 @@ session and a reviewer could then read different versions). The file
 describes agreed behaviour, not current behaviour: nothing in it is
 implemented until the PR that says so.
 
+
+### 2026-11-16 — The data quality audit reads the files itself and runs before the pipeline
+The report must list every problem in both files even when the first bad
+value stops the loader, so it cannot be built from the pipeline's frames:
+they do not exist after a failure, and they have already lost what the
+report is about (the loader turns `NA` and the ND tokens into missing, and
+types the columns). `esma_milan.quality` therefore reads each file itself:
+the header with the `csv` module and the body as text with the parser the
+loader uses, so record n of the audit is the pipeline's record index n − 1
+on every file the loader can read. No audit frame reaches a stage and no
+pipeline input is replaced. The rules live in one catalogue
+(`quality/catalogue.py`) that a test keeps equal to the taxonomy and to
+`docs/data-quality/rre-source-mapping.csv`; a rule yields its results once
+per distinct combination of values and an engine joins them back, so every
+affected record has its row and nothing is sampled.
+
+The command line assesses the files first, one at a time, freeing each
+file's text before the next, and only then runs the pipeline, so the two
+never hold their frames at once; it completes the report from the
+pipeline's result or from the exception it raised, and writes
+`<workbook name> data quality summary.json` beside the workbook. The
+pipeline's exception leaves the command unchanged. A fault in the
+assessment itself is caught, logged once and written into the summary; the
+tests call the assessment without that guard, so a bug in a rule fails a
+test. `runner.py` is not edited, which has one cost: when the pipeline
+raises it returns nothing, so the population labels are then predicted from
+the Stage 2 predicate and not confirmed against the stage's output.
+Rejected: carrying the report on `PipelineResult` (it would not exist on a
+failure), running the audit after the pipeline (the peaks would add), and
+one summary per finding row (the row-level detail is a file of its own, in
+the next PR).
+
+Until every family of checks is implemented, each report shows assessment
+completeness as partial and lists the rules it did not run, so a report
+from an intermediate release cannot read as a complete assessment. No
+policy outcome is stated.
+
+The reference lists are bundled copies of published standards with a
+manifest of their sources: ISO 4217 from the maintenance agency's two
+lists, NUTS level 3 for five classification years from Eurostat's GISCO
+service, and the 249 ISO 3166-1 codes from Debian `iso-codes` 4.20.1,
+which is LGPL-2.1-or-later; the owner accepted bundling that list of codes
+with its notice beside it. A classification year that is not bundled, or a
+country a bundled year does not cover, is a limited assessment and never
+"invalid".

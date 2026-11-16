@@ -1,0 +1,12 @@
+iso3166_1_alpha2.txt holds the 249 two-letter country codes of ISO 3166-1,
+one per line, and nothing else (no names, no translations).
+
+Source:  the Debian "iso-codes" package, version 4.20.1,
+         file data/iso_3166-1.json, taken from the source archive
+         https://archive.ubuntu.com/ubuntu/pool/main/i/iso-codes/iso-codes_4.20.1.orig.tar.xz
+Licence: iso-codes is distributed under the GNU Lesser General Public
+         License, version 2.1 or (at your option) any later version.
+         https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+The rest of this repository is under its own licence (see LICENSE); this
+notice applies to iso3166_1_alpha2.txt only.
