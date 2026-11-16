@@ -257,6 +257,10 @@ def classify(entry: FieldEntry, raw: str | None, ref: ReferenceData) -> Classifi
         nd4_date = real_date(dated.group(1))
         if nd4_date is not None:
             return Classified("nd4_dated", nd4_date=nd4_date)
+    if entry.code == "RREL65" and ("," in raw or ";" in raw):
+        # Several elements in one cell: the RREL65 validator takes each
+        # element in turn (column_rules.formats), before any ND4 prefix test.
+        return Classified("present", reason="several_elements")
     if raw.startswith("ND4"):
         trimmed = _DATED_ND4.match(raw.strip(XML_WHITESPACE))
         if trimmed is not None and real_date(trimmed.group(1)) is not None:
