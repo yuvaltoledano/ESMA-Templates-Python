@@ -191,3 +191,16 @@ def test_rrel65_single_values_take_the_generic_path(tmp_path: Path) -> None:
     assessed = assess(Pair().set("RREL65", "2020-01-01;bad", record=1), tmp_path, "loans")
     row = assessed.found("P3g", "RREL65")[0]
     assert "keeps 2020-01-01" in str(row["expected"])  # the fragment disappears from the pipeline's value
+
+
+def test_rrel65_pipeline_selection_is_what_stage1_keeps(tmp_path: Path) -> None:
+    from esma_milan.io_layer.date_parsing import collapse_multi_date_restructuring
+
+    for cell in ("2020-01-01;2021-02-02", "2020-01-01; bad", "bad;worse", "2020-01-01,20210315", "ND5;2019-12-31"):
+        assessed = assess(Pair().set("RREL65", cell, record=1), tmp_path, "loans")
+        kept = collapse_multi_date_restructuring([cell])[0]
+        expected = f"keeps {kept}" if kept else "keeps no date"
+        assert expected in str(assessed.found("P3g", "RREL65")[0]["expected"]), cell
+    # 20210315 is not YYYY-MM-DD: P5 reports the fragment although the pipeline reads it.
+    basic = assess(Pair().set("RREL65", "2020-01-01,20210315", record=1), tmp_path, "loans")
+    assert ("P5", "violation") in basic.rules_on("RREL65")

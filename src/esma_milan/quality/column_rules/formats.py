@@ -6,6 +6,7 @@ Mirrors nothing in the R reference (specification 6.2).
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from esma_milan.quality.catalogue import WHITESPACE_COLLAPSING_KINDS
 from esma_milan.quality.column_rules.context import CellContext, RuleOutput
@@ -75,6 +76,22 @@ def _text_rules(c: CellContext) -> RuleOutput:
                           expected="the first 20 characters are an LEI with valid check digits")
 
 
+def _pipeline_selection(raw: str) -> date | None:
+    """The date Stage 1 keeps from a multi-element RREL65 cell: the latest
+    token `date.fromisoformat` accepts after a plain strip, exactly as
+    `io_layer.date_parsing.collapse_multi_date_restructuring` does. That
+    function is not called here because it logs an event. Python's parser
+    accepts more than YYYY-MM-DD (`20200131`), so the pipeline can keep a
+    token that P5 reports as an invalid fragment."""
+    parsed: list[date] = []
+    for token in _ELEMENT_SEPARATOR.split(raw):
+        try:
+            parsed.append(date.fromisoformat(token.strip()))
+        except ValueError:
+            continue
+    return max(parsed) if parsed else None
+
+
 def _restructuring_dates(c: CellContext) -> RuleOutput:
     """RREL65 holding several elements in one cell (specification 6.3).
 
@@ -128,7 +145,8 @@ def _restructuring_dates(c: CellContext) -> RuleOutput:
             if any(d is not None and d <= c.cutoff for d in nd_dates):
                 yield Finding("P3e", "violation", "nd4_date_not_after_cutoff",
                               expected=f"a date after {c.cutoff.isoformat()}", note=c.cutoff_note)
-    selected = max(dates).isoformat() if dates else "no date (the cell is read as missing)"
+    kept = _pipeline_selection(c.raw)
+    selected = kept.isoformat() if kept else "no date (the cell is read as missing)"
     yield Finding("P3g", "context", "pipeline_selects_latest_date",
                   expected=f"the pipeline splits the cell and keeps {selected}; "
                            "other elements disappear from its value")
