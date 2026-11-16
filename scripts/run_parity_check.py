@@ -23,7 +23,11 @@ def main(argv: list[str] | None = None) -> int:
         "--max-diffs-per-sheet",
         type=int,
         default=50,
-        help="Truncate per-sheet cell-diff lists at this many entries (default 50).",
+        help=(
+            "Keep at most this many example cell diffs per sheet (default 50). "
+            "Every cell is compared whatever this value; it does not affect "
+            "PASS/FAIL or the exit code."
+        ),
     )
     parser.add_argument(
         "--max-shown",

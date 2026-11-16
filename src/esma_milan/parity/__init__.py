@@ -9,6 +9,7 @@ from esma_milan.parity.diff import (
     CellDiff,
     DiffReport,
     SheetDiff,
+    StringFloatTolerance,
     diff_workbooks,
     format_report,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "CellDiff",
     "DiffReport",
     "SheetDiff",
+    "StringFloatTolerance",
     "diff_workbooks",
     "format_report",
 ]

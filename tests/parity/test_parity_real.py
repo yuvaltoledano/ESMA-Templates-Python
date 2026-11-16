@@ -28,7 +28,8 @@ parity is where they emerge.
 
 The drift is accepted rather than chased in the formatter or the upstream
 computations. This file documents the acceptance via a per-column float
-tolerance for the 6 known-drifting columns; everything else continues to
+tolerance for the 6 known-drifting columns, passed to `diff_workbooks`
+and applied there to string cells only; everything else continues to
 compare byte-equal.
 
 Tolerance choice (rel_tol=1e-13)
@@ -62,14 +63,12 @@ that produced this exception in the first place.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from esma_milan.config import OUTPUT_SHEET_ORDER
-from esma_milan.parity import diff_workbooks, format_report
+from esma_milan.parity import StringFloatTolerance, diff_workbooks, format_report
 from esma_milan.runner import run_pipeline
 
 from .conftest import FIXTURES_ROOT, ParityFixture
@@ -90,9 +89,10 @@ def _real_fixture_present() -> bool:
 
 # MILAN-pool columns that carry IEEE-754 last-digit drift on real-data
 # parity. Documented at module level above; values agree to ~14
-# significant digits but diverge in the 15th. Membership is checked at
-# diff post-processing time; non-listed columns continue to require
-# byte-equal string comparison.
+# significant digits but diverge in the 15th. The tolerance is applied
+# inside diff_workbooks, to string cells of these columns on the MILAN
+# sheet only; non-listed columns continue to require byte-equal string
+# comparison.
 MILAN_IEEE754_TOLERANT_COLUMNS: frozenset[str] = frozenset({
     "Additional data 13 - calc_seasoning",
     "Months In Arrears",
@@ -104,21 +104,6 @@ MILAN_IEEE754_TOLERANT_COLUMNS: frozenset[str] = frozenset({
 
 MILAN_SHEET_NAME: str = "MILAN template pool"
 MILAN_IEEE754_REL_TOL: float = 1e-13
-
-
-def _strings_close_as_floats(actual: Any, expected: Any, *, rel_tol: float) -> bool:
-    """Return True when actual and expected both parse as floats and
-    `math.isclose` agrees within `rel_tol`. Anything that doesn't parse
-    (None, non-numeric strings, NaN-vs-non-NaN) returns False so the
-    caller treats it as a real diff."""
-    try:
-        a = float(actual) if not isinstance(actual, bool) else float("nan")
-        e = float(expected) if not isinstance(expected, bool) else float("nan")
-    except (TypeError, ValueError):
-        return False
-    if math.isnan(a) or math.isnan(e):
-        return False
-    return math.isclose(a, e, rel_tol=rel_tol, abs_tol=0.0)
 
 
 @pytest.fixture(scope="module")
@@ -151,22 +136,20 @@ def test_real_sheet_parity(
     real_run_output: Path,
     real_fixture: ParityFixture,
 ) -> None:
-    report = diff_workbooks(real_run_output, real_fixture.expected_output)
+    # The documented IEEE-754 last-digit drift in the 6 MILAN columns listed
+    # above is tolerated inside the comparison, on that sheet only. Every
+    # cell of every sheet is compared.
+    report = diff_workbooks(
+        real_run_output,
+        real_fixture.expected_output,
+        string_float_tolerances={
+            MILAN_SHEET_NAME: StringFloatTolerance(
+                columns=MILAN_IEEE754_TOLERANT_COLUMNS,
+                rel_tol=MILAN_IEEE754_REL_TOL,
+            )
+        },
+    )
     sheet_diff = next((s for s in report.sheet_diffs if s.sheet == sheet_name), None)
     assert sheet_diff is not None
-
-    # MILAN-only: filter out the documented IEEE-754 last-digit drift in
-    # the 6 columns listed above. All other sheets compare byte-equal.
-    if sheet_name == MILAN_SHEET_NAME:
-        sheet_diff.cell_diffs[:] = [
-            d
-            for d in sheet_diff.cell_diffs
-            if not (
-                d.column_name in MILAN_IEEE754_TOLERANT_COLUMNS
-                and _strings_close_as_floats(
-                    d.actual, d.expected, rel_tol=MILAN_IEEE754_REL_TOL
-                )
-            )
-        ]
 
     assert sheet_diff.passed, f"\n{format_report(report)}\n"
