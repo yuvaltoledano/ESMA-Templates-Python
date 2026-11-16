@@ -540,6 +540,128 @@ RULES: dict[str, RuleEntry] = {r.rule_id: r for r in _P_RULES} | {
     for rule_id in ids
 }
 
+# What a finding group says, one full clause per rule and result kind
+# (specification 3.2). The wording follows the result kind first and the
+# basis second: only a violation of a reporting requirement (basis E)
+# "does not comply with" something; a violation with basis X
+# "contradicts"; a pipeline-constraint row (basis L) says what the pipeline
+# does with the value; a question asks for confirmation and a plausibility
+# result never asserts an error; a limitation says what was not assessed.
+# The summary prints "<field>: <clause>."
+SENTENCES: dict[tuple[str, str], str] = {
+    ("P1", "violation"):
+        "does not comply with the requirement to report every template field: the file has "
+        "no column for this field",
+    ("P3a", "violation"):
+        "does not comply with Annex 2: the cell holds ND1, ND2, ND3 or ND4, which the field "
+        "does not allow",
+    ("P3b", "violation"):
+        "does not comply with Annex 2: the cell holds ND5, which the field does not allow",
+    ("P3c", "violation"):
+        "does not comply with the requirement to report a value or a permitted ND option: "
+        "the cell is empty",
+    ("P3d", "violation"):
+        "does not comply with the requirement to report a value or a permitted ND option: "
+        "the cell holds a missing-value marker that is not one of ND1 to ND5",
+    ("P3e", "violation"):
+        "does not comply with Article 9(3): the ND4 is not written ND4-YYYY-MM-DD with a real "
+        "date after the data cut-off date",
+    ("P3f", "violation"):
+        "does not comply with the field definition: the collateral is not property, so ND5 "
+        "is the prescribed entry, and the cell holds a value",
+    ("P3f", "question"):
+        "may not comply; please confirm: the cell holds an ND option beside a date and the "
+        "mixture is not explained",
+    ("P3f", "limitation"):
+        "could not be assessed: whether ND5 is the right entry depends on the collateral type "
+        "or on the lifecycle of the loan, which this release does not establish for the record",
+    ("P3g", "violation"):
+        "the pipeline cannot read the file as it is: its loader does not recognise "
+        "ND4-YYYY-MM-DD in a numeric field and stops at this value",
+    ("P3g", "context"):
+        "the pipeline's loader reads the cell differently from what the file states; the "
+        "reason on each row says how",
+    ("P4(a)", "accepted alternative"):
+        "the value is valid with the whitespace around it, which the XSD type collapses; this "
+        "application's CSV convention is the value without it",
+    ("P4(c)", "violation"):
+        "does not comply with the format prescribed for the field: the value holds a control "
+        "character or a line break",
+    ("P4(d)", "violation"):
+        "the pipeline compares this code exactly and does not recognise the value as written; "
+        "it is a code of the list only after trimming or upper-casing",
+    ("P5", "violation"):
+        "does not comply with the format prescribed for the field; the reason on each row says "
+        "how",
+    ("P5", "accepted alternative"):
+        "the value is a valid XML boolean (true, false, 1 or 0); the template form is Y or N",
+    ("P6(a)", "violation"):
+        "does not comply with the published rule that the amount is not below 0",
+    ("P6(b)", "violation"):
+        "contradicts the published rule that the date is not later than the data cut-off date",
+    ("P6(c)", "violation"):
+        "does not comply with the published rule that the value is between 0 and 100",
+    ("P6(d)", "violation"):
+        "does not comply with the published rule that the year is greater than 1980 and less "
+        "than 2100",
+    ("P6(e)", "violation"):
+        "does not comply with the published rule that the data cut-off date is in the past",
+    ("P7(a)", "violation"):
+        "does not comply with the maximum length of the field",
+    ("P7(b)", "violation"):
+        "does not comply with the text format of the technical standard: the value has a "
+        "lower-case letter or a character outside ASCII (the XSD itself would accept it)",
+    ("P7(c)", "violation"):
+        "does not comply with Article 11(1): the value is not the reporting entity's LEI, the "
+        "letter N, a four-digit year and a two-digit number",
+    ("P8", "question"):
+        "possible placeholder; confirm whether this is a measurement",
+    ("P9", "context"):
+        "the column holds one value on every record that reports a value",
+    ("P11", "violation"):
+        "does not comply with the requirement of a valid code: the value is not in its "
+        "reference list (ISO 3166-1, ISO 4217, or NUTS level 3 of the classification year)",
+    ("P11", "limitation"):
+        "could not be assessed in full: the code has the right form, and its membership was "
+        "not tested because the classification year is not established or not bundled, or "
+        "the bundled year does not cover the country",
+    ("P12", "question"):
+        "unusual; please confirm: the value is outside the plausibility window given on each "
+        "row",
+    ("P13", "violation"):
+        "does not comply with the requirement that the currency of every amount is stated: "
+        "neither the companion column nor the dedicated field gives a valid ISO 4217 code",
+    ("P13", "context"):
+        "the file has no currency column for this amount, so the currency is taken from the "
+        "other permitted evidence; this is a note about this application's CSV layout",
+}
+
+
+def sentence_clause(rule_id: str, kind: str) -> str:
+    """The clause for a finding group. Every (rule, kind) an implemented
+    rule can emit is in `SENTENCES` (a test requires it); the fallbacks
+    serve the rules of later releases, which emit nothing yet."""
+    clause = SENTENCES.get((rule_id, kind))
+    if clause is not None:
+        return clause
+    rule = RULES[rule_id]
+    if kind == "violation":
+        if rule.basis == "E":
+            return f"does not comply with a reporting requirement (rule {rule_id})"
+        if rule.basis == "X":
+            return f"contradicts another supplied value (rule {rule_id})"
+        return f"the pipeline cannot use the value as written (rule {rule_id})"
+    if kind == "question":
+        if rule.basis == "P":
+            return f"unusual; please confirm (rule {rule_id})"
+        return f"may not comply; please confirm (rule {rule_id})"
+    if kind == "limitation":
+        return f"could not be assessed (rule {rule_id})"
+    if kind == "accepted alternative":
+        return f"the value is valid in a form other than the template's (rule {rule_id})"
+    return f"an observation of rule {rule_id}"
+
+
 # Statements about what two current-period files cannot show (specification
 # 4.1). Printed once on every report; they never lower completeness.
 SCOPE_STATEMENTS: tuple[str, ...] = (

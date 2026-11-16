@@ -15,7 +15,7 @@ from esma_milan.errors import PipelineDataError
 from esma_milan.quality import assess_files, complete_report
 from esma_milan.quality import summary_dict as _summary_dict
 from esma_milan.quality.assess import QualityReport
-from esma_milan.quality.catalogue import RESULT_KINDS, RULES
+from esma_milan.quality.catalogue import RESULT_KINDS, RULES, SENTENCES
 from esma_milan.quality.export import NOT_IMPLEMENTED, finding_sentence, render_json
 from esma_milan.runner import run_pipeline
 from tests.quality.builders import Pair
@@ -66,7 +66,8 @@ def test_the_compliant_pair(tmp_path: Path) -> None:
 def test_wording_follows_the_result_kind_then_the_basis() -> None:
     for rule in RULES.values():
         for kind in RESULT_KINDS:
-            sentence = finding_sentence(rule, kind, "RRELn Field")
+            sentence = finding_sentence(rule.rule_id, kind, "RRELn Field")
+            assert sentence.startswith("RRELn Field: ") and sentence.endswith(".")
             complies = "does not comply with" in sentence
             assert complies is (kind == "violation" and rule.basis == "E"), (rule.rule_id, kind)
             assert ("contradicts" in sentence) is (kind == "violation" and rule.basis == "X")
@@ -75,11 +76,49 @@ def test_wording_follows_the_result_kind_then_the_basis() -> None:
             if kind == "question":
                 assert "confirm" in sentence
             if kind == "limitation":
-                assert "not assessed" in sentence
+                assert "could not be assessed" in sentence
             if kind == "violation" and rule.basis == "L":
                 assert "the pipeline" in sentence
-    assert finding_sentence(RULES["P8"], "question", "X") == (
+            # No kind name in brackets, and no rule label where a clause belongs.
+            assert not re.search(r"\((context|question|violation|limitation)\)", sentence)
+    assert finding_sentence("P8", "question", "X") == (
         "X: possible placeholder; confirm whether this is a measurement."
+    )
+
+
+def test_every_rule_and_kind_that_can_be_emitted_has_its_own_clause() -> None:
+    for rule in RULES.values():
+        if rule.status == "not_implemented" or rule.rule_id == "P2":
+            continue
+        for emitted in rule.result_kinds:
+            assert (rule.rule_id, emitted) in SENTENCES, (rule.rule_id, emitted)
+    for (rule_id, result_kind), clause in SENTENCES.items():
+        assert result_kind in RULES[rule_id].result_kinds, (rule_id, result_kind)
+        assert clause[0].islower() and not clause.endswith(".")
+        assert " (context)" not in clause and "plausibility window)" not in clause
+
+
+def test_sentences_in_a_summary_read_as_sentences(tmp_path: Path) -> None:
+    pair = Pair().set("RREL43", "N/A", record=1).set("RREL30", "", record=1).drop("RREL31_CURRENCY")
+    pair.set("RREL40", "0.3").set("RREL81", "NA", record=1)
+    sentences = {f["finding_id"]: f["sentence"] for f in summary_dict(_report(pair, tmp_path))["findings"]}
+    assert sentences["P3d:violation:loans:RREL43"] == (
+        "RREL43 Current Interest Rate: does not comply with the requirement to report a value or a "
+        "permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
+    )
+    assert sentences["P3c:violation:loans:RREL30"].endswith("the cell is empty.")
+    assert sentences["P13:context:loans:RREL31"] == (
+        "RREL31 Prior Principal Balances: the file has no currency column for this amount, so the "
+        "currency is taken from the other permitted evidence; this is a note about this "
+        "application's CSV layout."
+    )
+    assert sentences["P12:question:loans:RREL40"].startswith("RREL40 Debt To Income Ratio: unusual; please confirm")
+    assert sentences["P3g:context:loans:RREL81"] == (
+        "RREL81 Original Lender Establishment Country: the pipeline's loader reads the cell "
+        "differently from what the file states; the reason on each row says how."
+    )
+    assert sentences["P9:context:loans:RREL82"] == (
+        "RREL82 Originator Name: the column holds one value on every record that reports a value."
     )
 
 
@@ -186,6 +225,21 @@ def test_a_failed_run_is_reported_as_a_fact_and_never_as_an_outcome(tmp_path: Pa
     assert block["statement"] == "the pipeline failed; no MILAN workbook was produced by this run"
 
 
+def test_a_failure_that_is_not_a_typed_data_error_says_so_in_words(tmp_path: Path) -> None:
+    # A status column of numbers only: Stage 2 raises a Polars error, with no reason code.
+    report = _report(Pair().set("RREL69", "12345"), tmp_path)
+    assert not report.pipeline.completed and report.pipeline.reason is None
+    block = summary_dict(report)["pipeline"]
+    assert block == {
+        "completed": False,
+        "statement": "the pipeline failed with an error that carries no reason code "
+                     f"({report.pipeline.error_type}); no MILAN workbook was produced by this run",
+        "error_type": report.pipeline.error_type,
+    }
+    assert report.pipeline.error_type != "PipelineDataError"
+    assert "12345" not in json.dumps(block)  # no message text from the data
+
+
 def test_a_file_that_cannot_be_split_into_records(tmp_path: Path) -> None:
     pair = Pair().set("RREL30", "-1", record=1)
     loans, collaterals = pair.write(tmp_path)
@@ -211,7 +265,8 @@ def test_a_file_that_cannot_be_split_into_records(tmp_path: Path) -> None:
     assert assessment.loans.results.filter(pl.col("rule_id") == "P5").height == 0
     assert _rule(summary, "P3c")["applicable"] == 2 * 84
     assert summary["pipeline"]["error_type"] == "ComputeError"
-    assert summary["pipeline"]["reason_code"] is None
+    assert "carries no reason code (ComputeError)" in summary["pipeline"]["statement"]
+    assert "reason_code" not in summary["pipeline"] and "message" not in summary["pipeline"]
 
 
 def test_complete_report_needs_exactly_one_of_result_and_error(tmp_path: Path) -> None:

@@ -544,7 +544,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC1 Unique Identifier: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC1 Unique Identifier: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC10",
@@ -559,7 +559,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC10 Energy Performance Certificate Value: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC10 Energy Performance Certificate Value: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC11",
@@ -574,7 +574,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC11 Energy Performance Certificate Provider Name: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC11 Energy Performance Certificate Provider Name: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC12",
@@ -589,7 +589,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC12 Current Loan-To-Value: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC12 Current Loan-To-Value: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P13:context:collateral:RREC13",
@@ -604,7 +604,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREC13 Current Valuation Amount: the currency of the amount is stated (context)."
+      "sentence": "RREC13 Current Valuation Amount: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:collateral:RREC13",
@@ -619,7 +619,7 @@
       "rows": 12,
       "records": 12,
       "reasons": {"currency_not_stated": 12},
-      "sentence": "RREC13 Current Valuation Amount: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREC13 Current Valuation Amount: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P1:violation:collateral:RREC16",
@@ -634,7 +634,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC16 Original Loan-To-Value: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC16 Original Loan-To-Value: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P13:context:collateral:RREC17",
@@ -649,7 +649,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREC17 Original Valuation Amount: the currency of the amount is stated (context)."
+      "sentence": "RREC17 Original Valuation Amount: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:collateral:RREC17",
@@ -664,7 +664,7 @@
       "rows": 12,
       "records": 12,
       "reasons": {"currency_not_stated": 12},
-      "sentence": "RREC17 Original Valuation Amount: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREC17 Original Valuation Amount: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P1:violation:collateral:RREC20",
@@ -679,7 +679,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC20 Date Of Sale: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC20 Date Of Sale: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC21",
@@ -694,7 +694,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC21 Sale Price: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC21 Sale Price: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC22",
@@ -709,7 +709,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC22 Collateral Currency: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC22 Collateral Currency: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:collateral:RREC23",
@@ -724,7 +724,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC23 Guarantor Type: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC23 Guarantor Type: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P9:context:collateral:RREC5",
@@ -739,7 +739,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREC5 Collateral Type: cardinality: a column with one value on every record (context)."
+      "sentence": "RREC5 Collateral Type: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P5:violation:collateral:RREC6",
@@ -754,7 +754,7 @@
       "rows": 12,
       "records": 12,
       "reasons": {"shape": 12},
-      "sentence": "RREC6 Geographic Region - Collateral: does not comply with the requirement that the value has the format prescribed for the field."
+      "sentence": "RREC6 Geographic Region - Collateral: does not comply with the format prescribed for the field; the reason on each row says how."
     },
     {
       "finding_id": "P1:violation:collateral:RREC8",
@@ -769,7 +769,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREC8 Lien: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREC8 Lien: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL1",
@@ -784,7 +784,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL1 Unique Identifier: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL1 Unique Identifier: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P5:violation:loans:RREL10",
@@ -799,7 +799,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"boolean_spelling": 8},
-      "sentence": "RREL10 Resident: does not comply with the requirement that the value has the format prescribed for the field."
+      "sentence": "RREL10 Resident: does not comply with the format prescribed for the field; the reason on each row says how."
     },
     {
       "finding_id": "P9:context:loans:RREL10",
@@ -814,7 +814,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL10 Resident: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL10 Resident: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P5:violation:loans:RREL11",
@@ -829,7 +829,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"shape": 8},
-      "sentence": "RREL11 Geographic Region - Obligor: does not comply with the requirement that the value has the format prescribed for the field."
+      "sentence": "RREL11 Geographic Region - Obligor: does not comply with the format prescribed for the field; the reason on each row says how."
     },
     {
       "finding_id": "P1:violation:loans:RREL12",
@@ -844,7 +844,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL12 Geographic Region Classification: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL12 Geographic Region Classification: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL14",
@@ -859,7 +859,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL14 Credit Impaired Obligor: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL14 Credit Impaired Obligor: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL15",
@@ -874,7 +874,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL15 Customer Type: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL15 Customer Type: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P13:context:loans:RREL16",
@@ -889,7 +889,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL16 Primary Income: the currency of the amount is stated (context)."
+      "sentence": "RREL16 Primary Income: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL16",
@@ -904,7 +904,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL16 Primary Income: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL16 Primary Income: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P9:context:loans:RREL17",
@@ -919,7 +919,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL17 Primary Income Type: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL17 Primary Income Type: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P1:violation:loans:RREL18",
@@ -934,7 +934,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL18 Primary Income Currency: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL18 Primary Income Currency: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P9:context:loans:RREL19",
@@ -949,7 +949,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL19 Primary Income Verification: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL19 Primary Income Verification: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P13:context:loans:RREL20",
@@ -964,7 +964,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL20 Secondary Income: the currency of the amount is stated (context)."
+      "sentence": "RREL20 Secondary Income: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL20",
@@ -979,7 +979,7 @@
       "rows": 2,
       "records": 2,
       "reasons": {"currency_not_stated": 2},
-      "sentence": "RREL20 Secondary Income: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL20 Secondary Income: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P3d:violation:loans:RREL20",
@@ -994,7 +994,7 @@
       "rows": 6,
       "records": 6,
       "reasons": {"invalid_missing_marker": 6},
-      "sentence": "RREL20 Secondary Income: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL20 Secondary Income: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P3d:violation:loans:RREL21",
@@ -1009,7 +1009,7 @@
       "rows": 6,
       "records": 6,
       "reasons": {"invalid_missing_marker": 6},
-      "sentence": "RREL21 Secondary Income Verification: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL21 Secondary Income Verification: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P9:context:loans:RREL21",
@@ -1024,7 +1024,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL21 Secondary Income Verification: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL21 Secondary Income Verification: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P3g:context:loans:RREL22",
@@ -1039,7 +1039,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"valid_value_read_as_missing": 8},
-      "sentence": "RREL22 Special Scheme: what the pipeline's loader does with the value."
+      "sentence": "RREL22 Special Scheme: the pipeline's loader reads the cell differently from what the file states; the reason on each row says how."
     },
     {
       "finding_id": "P8:question:loans:RREL22",
@@ -1069,7 +1069,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL22 Special Scheme: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL22 Special Scheme: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P1:violation:loans:RREL25",
@@ -1084,7 +1084,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL25 Original Term: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL25 Original Term: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL28",
@@ -1099,7 +1099,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL28 Currency Denomination: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL28 Currency Denomination: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P13:context:loans:RREL29",
@@ -1114,7 +1114,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL29 Original Principal Balance: the currency of the amount is stated (context)."
+      "sentence": "RREL29 Original Principal Balance: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL29",
@@ -1129,7 +1129,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL29 Original Principal Balance: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL29 Original Principal Balance: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P13:context:loans:RREL31",
@@ -1144,7 +1144,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL31 Prior Principal Balances: the currency of the amount is stated (context)."
+      "sentence": "RREL31 Prior Principal Balances: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL31",
@@ -1159,7 +1159,7 @@
       "rows": 7,
       "records": 7,
       "reasons": {"currency_not_stated": 7},
-      "sentence": "RREL31 Prior Principal Balances: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL31 Prior Principal Balances: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P3d:violation:loans:RREL31",
@@ -1174,7 +1174,7 @@
       "rows": 1,
       "records": 1,
       "reasons": {"invalid_missing_marker": 1},
-      "sentence": "RREL31 Prior Principal Balances: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL31 Prior Principal Balances: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL32",
@@ -1189,7 +1189,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL32 Pari Passu Underlying Exposures: the currency of the amount is stated (context)."
+      "sentence": "RREL32 Pari Passu Underlying Exposures: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL32",
@@ -1204,7 +1204,7 @@
       "rows": 7,
       "records": 7,
       "reasons": {"currency_not_stated": 7},
-      "sentence": "RREL32 Pari Passu Underlying Exposures: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL32 Pari Passu Underlying Exposures: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P3d:violation:loans:RREL32",
@@ -1219,7 +1219,7 @@
       "rows": 1,
       "records": 1,
       "reasons": {"invalid_missing_marker": 1},
-      "sentence": "RREL32 Pari Passu Underlying Exposures: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL32 Pari Passu Underlying Exposures: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL33",
@@ -1234,7 +1234,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL33 Total Credit Limit: the currency of the amount is stated (context)."
+      "sentence": "RREL33 Total Credit Limit: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL33",
@@ -1249,7 +1249,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL33 Total Credit Limit: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL33 Total Credit Limit: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P1:violation:loans:RREL34",
@@ -1264,7 +1264,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL34 Purchase Price: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL34 Purchase Price: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL36",
@@ -1279,7 +1279,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL36 Principal Grace Period End Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL36 Principal Grace Period End Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P9:context:loans:RREL37",
@@ -1294,7 +1294,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL37 Scheduled Principal Payment Frequency: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL37 Scheduled Principal Payment Frequency: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P9:context:loans:RREL38",
@@ -1309,7 +1309,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL38 Scheduled Interest Payment Frequency: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL38 Scheduled Interest Payment Frequency: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P13:context:loans:RREL39",
@@ -1324,7 +1324,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL39 Payment Due: the currency of the amount is stated (context)."
+      "sentence": "RREL39 Payment Due: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL39",
@@ -1339,7 +1339,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL39 Payment Due: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL39 Payment Due: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P12:question:loans:RREL40",
@@ -1354,7 +1354,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"percentage_values_all_below_1": 1},
-      "sentence": "RREL40 Debt To Income Ratio: unusual; please confirm (plausibility window)."
+      "sentence": "RREL40 Debt To Income Ratio: unusual; please confirm: the value is outside the plausibility window given on each row."
     },
     {
       "finding_id": "P1:violation:loans:RREL41",
@@ -1369,7 +1369,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL41 Balloon Amount: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL41 Balloon Amount: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL44",
@@ -1384,7 +1384,7 @@
       "rows": 3,
       "records": 3,
       "reasons": {"invalid_missing_marker": 3},
-      "sentence": "RREL44 Current Interest Rate Index: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL44 Current Interest Rate Index: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P9:context:loans:RREL44",
@@ -1399,7 +1399,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL44 Current Interest Rate Index: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL44 Current Interest Rate Index: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P3d:violation:loans:RREL45",
@@ -1414,7 +1414,7 @@
       "rows": 3,
       "records": 3,
       "reasons": {"invalid_missing_marker": 3},
-      "sentence": "RREL45 Current Interest Rate Index Tenor: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL45 Current Interest Rate Index Tenor: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P3d:violation:loans:RREL46",
@@ -1429,7 +1429,7 @@
       "rows": 3,
       "records": 3,
       "reasons": {"invalid_missing_marker": 3},
-      "sentence": "RREL46 Current Interest Rate Margin: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL46 Current Interest Rate Margin: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P1:violation:loans:RREL47",
@@ -1444,7 +1444,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL47 Interest Rate Reset Interval: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL47 Interest Rate Reset Interval: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL48",
@@ -1459,7 +1459,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL48 Interest Rate Cap: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL48 Interest Rate Cap: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL49",
@@ -1474,7 +1474,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL49 Interest Rate Floor: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL49 Interest Rate Floor: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL50",
@@ -1489,7 +1489,7 @@
       "rows": 1,
       "records": 1,
       "reasons": {"invalid_missing_marker": 1},
-      "sentence": "RREL50 Revision Margin 1: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL50 Revision Margin 1: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P3d:violation:loans:RREL51",
@@ -1504,7 +1504,7 @@
       "rows": 1,
       "records": 1,
       "reasons": {"invalid_missing_marker": 1},
-      "sentence": "RREL51 Interest Revision Date 1: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL51 Interest Revision Date 1: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P1:violation:loans:RREL52",
@@ -1519,7 +1519,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL52 Revision Margin 2: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL52 Revision Margin 2: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL53",
@@ -1534,7 +1534,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL53 Interest Revision Date 2: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL53 Interest Revision Date 2: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL54",
@@ -1549,7 +1549,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL54 Revision Margin 3: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL54 Revision Margin 3: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL55",
@@ -1564,7 +1564,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL55 Interest Revision Date 3: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL55 Interest Revision Date 3: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL56",
@@ -1579,7 +1579,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL56 Revised Interest Rate Index: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL56 Revised Interest Rate Index: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL57",
@@ -1594,7 +1594,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL57 Revised Interest Rate Index Tenor: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL57 Revised Interest Rate Index Tenor: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL59",
@@ -1609,7 +1609,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL59 Percentage Of Prepayments Allowed Per Year: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL59 Percentage Of Prepayments Allowed Per Year: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL6",
@@ -1624,7 +1624,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL6 Data Cut-Off Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL6 Data Cut-Off Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL60",
@@ -1639,7 +1639,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL60 Prepayment Lock-Out End Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL60 Prepayment Lock-Out End Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL61",
@@ -1654,7 +1654,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL61 Prepayment Fee: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL61 Prepayment Fee: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL62",
@@ -1669,7 +1669,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL62 Prepayment Fee End Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL62 Prepayment Fee End Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL63",
@@ -1684,7 +1684,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL63 Prepayment Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL63 Prepayment Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL64",
@@ -1699,7 +1699,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL64 Cumulative Prepayments: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL64 Cumulative Prepayments: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL65",
@@ -1714,7 +1714,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL65 Date Of Restructuring: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL65 Date Of Restructuring: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P3d:violation:loans:RREL66",
@@ -1729,7 +1729,7 @@
       "rows": 6,
       "records": 6,
       "reasons": {"invalid_missing_marker": 6},
-      "sentence": "RREL66 Date Last In Arrears: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL66 Date Last In Arrears: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL67",
@@ -1744,7 +1744,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL67 Arrears Balance: the currency of the amount is stated (context)."
+      "sentence": "RREL67 Arrears Balance: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL67",
@@ -1759,7 +1759,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL67 Arrears Balance: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL67 Arrears Balance: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P1:violation:loans:RREL7",
@@ -1774,7 +1774,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL7 Pool Addition Date: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL7 Pool Addition Date: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL70",
@@ -1789,7 +1789,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL70 Reason for Default or Foreclosure: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL70 Reason for Default or Foreclosure: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL71",
@@ -1804,7 +1804,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL71 Default Amount: the currency of the amount is stated (context)."
+      "sentence": "RREL71 Default Amount: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P3d:violation:loans:RREL71",
@@ -1819,7 +1819,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL71 Default Amount: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL71 Default Amount: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P3d:violation:loans:RREL72",
@@ -1834,7 +1834,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL72 Default Date: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL72 Default Date: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL73",
@@ -1849,7 +1849,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL73 Allocated Losses: the currency of the amount is stated (context)."
+      "sentence": "RREL73 Allocated Losses: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P3d:violation:loans:RREL73",
@@ -1864,7 +1864,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL73 Allocated Losses: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL73 Allocated Losses: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P13:context:loans:RREL74",
@@ -1879,7 +1879,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL74 Cumulative Recoveries: the currency of the amount is stated (context)."
+      "sentence": "RREL74 Cumulative Recoveries: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P3d:violation:loans:RREL74",
@@ -1894,7 +1894,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL74 Cumulative Recoveries: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL74 Cumulative Recoveries: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P1:violation:loans:RREL75",
@@ -1909,7 +1909,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL75 Litigation: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL75 Litigation: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P9:context:loans:RREL76",
@@ -1924,7 +1924,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL76 Recourse: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL76 Recourse: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P13:context:loans:RREL77",
@@ -1939,7 +1939,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"companion_column_absent": 1},
-      "sentence": "RREL77 Deposit Amount: the currency of the amount is stated (context)."
+      "sentence": "RREL77 Deposit Amount: the file has no currency column for this amount, so the currency is taken from the other permitted evidence; this is a note about this application's CSV layout."
     },
     {
       "finding_id": "P13:violation:loans:RREL77",
@@ -1954,7 +1954,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"currency_not_stated": 8},
-      "sentence": "RREL77 Deposit Amount: does not comply with the requirement that the currency of the amount is stated."
+      "sentence": "RREL77 Deposit Amount: does not comply with the requirement that the currency of every amount is stated: neither the companion column nor the dedicated field gives a valid ISO 4217 code."
     },
     {
       "finding_id": "P3g:context:loans:RREL78",
@@ -1969,7 +1969,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"valid_value_read_as_missing": 8},
-      "sentence": "RREL78 Insurance Or Investment Provider: what the pipeline's loader does with the value."
+      "sentence": "RREL78 Insurance Or Investment Provider: the pipeline's loader reads the cell differently from what the file states; the reason on each row says how."
     },
     {
       "finding_id": "P9:context:loans:RREL78",
@@ -1984,7 +1984,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL78 Insurance Or Investment Provider: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL78 Insurance Or Investment Provider: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P1:violation:loans:RREL79",
@@ -1999,7 +1999,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL79 Original Lender Name: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL79 Original Lender Name: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL8",
@@ -2014,7 +2014,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL8 Date Of Repurchase: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL8 Date Of Repurchase: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     },
     {
       "finding_id": "P1:violation:loans:RREL80",
@@ -2029,7 +2029,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL80 Original Lender Legal Entity Identifier: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL80 Original Lender Legal Entity Identifier: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL81",
@@ -2044,7 +2044,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL81 Original Lender Establishment Country: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL81 Original Lender Establishment Country: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P7(b):violation:loans:RREL82",
@@ -2059,7 +2059,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"not_ascii_capitals": 8},
-      "sentence": "RREL82 Originator Name: does not comply with the requirement that the text is ASCII without lower-case letters."
+      "sentence": "RREL82 Originator Name: does not comply with the text format of the technical standard: the value has a lower-case letter or a character outside ASCII (the XSD itself would accept it)."
     },
     {
       "finding_id": "P9:context:loans:RREL82",
@@ -2074,7 +2074,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"constant_column": 1},
-      "sentence": "RREL82 Originator Name: cardinality: a column with one value on every record (context)."
+      "sentence": "RREL82 Originator Name: the column holds one value on every record that reports a value."
     },
     {
       "finding_id": "P1:violation:loans:RREL83",
@@ -2089,7 +2089,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL83 Originator Legal Entity Identifier: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL83 Originator Legal Entity Identifier: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P1:violation:loans:RREL84",
@@ -2104,7 +2104,7 @@
       "rows": 1,
       "records": null,
       "reasons": {"field_absent": 1},
-      "sentence": "RREL84 Originator Establishment Country: does not comply with the requirement that every template field is reported (the field has a column in the file)."
+      "sentence": "RREL84 Originator Establishment Country: does not comply with the requirement to report every template field: the file has no column for this field."
     },
     {
       "finding_id": "P3d:violation:loans:RREL9",
@@ -2119,7 +2119,7 @@
       "rows": 8,
       "records": 8,
       "reasons": {"invalid_missing_marker": 8},
-      "sentence": "RREL9 Redemption Date: does not comply with the requirement that no missing-value marker other than the ND options."
+      "sentence": "RREL9 Redemption Date: does not comply with the requirement to report a value or a permitted ND option: the cell holds a missing-value marker that is not one of ND1 to ND5."
     }
   ],
   "expected_fields": [

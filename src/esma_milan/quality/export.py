@@ -37,7 +37,7 @@ from esma_milan.quality.assess import (
     QualityReport,
     inventory_of_expected_fields,
 )
-from esma_milan.quality.catalogue import FIELDS, RULES, SCOPE_STATEMENTS, RuleEntry
+from esma_milan.quality.catalogue import FIELDS, RULES, SCOPE_STATEMENTS, sentence_clause
 from esma_milan.quality.populations import LIFECYCLES, POPULATIONS
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome
@@ -69,28 +69,10 @@ def summary_filename(deal_name: str, cutoff: str | None) -> str:
     return f"{cutoff or UNKNOWN_CUTOFF} {deal_name} Flattened loans and collaterals{SUMMARY_SUFFIX}"
 
 
-def finding_sentence(rule: RuleEntry, kind: str, label: str) -> str:
-    """One sentence for a finding group: the result kind decides the
-    wording, then the basis."""
-    if kind == "violation":
-        if rule.basis == "E":
-            return f"{label}: does not comply with the requirement that {rule.title}."
-        if rule.basis == "X":
-            return f"{label}: contradicts the rule that {rule.title}."
-        return f"{label}: the pipeline cannot use the value as written ({rule.title})."
-    if kind == "accepted alternative":
-        return f"{label}: a valid alternative to the template form ({rule.title})."
-    if kind == "question":
-        if rule.rule_id == "P8":
-            return f"{label}: possible placeholder; confirm whether this is a measurement."
-        if rule.basis == "P":
-            return f"{label}: unusual; please confirm ({rule.title})."
-        return f"{label}: may not comply; please confirm ({rule.title})."
-    if kind == "limitation":
-        return f"{label}: not assessed in full ({rule.title}); see the reason on each row."
-    if rule.basis == "L":
-        return f"{label}: {rule.title}."
-    return f"{label}: {rule.title} (context)."
+def finding_sentence(rule_id: str, kind: str, label: str) -> str:
+    """One sentence for a finding group: the field, then the clause the
+    catalogue holds for the rule and the result kind."""
+    return f"{label}: {sentence_clause(rule_id, kind)}."
 
 
 def _field_label(field_code: str | None) -> str:
@@ -182,7 +164,9 @@ def _findings(results: pl.DataFrame) -> list[dict[str, object]]:
             "reasons": dict(
                 sorted(((r["reason"], r["count"]) for r in row["reasons"]), key=lambda x: (-x[1], x[0]))
             ),
-            "sentence": finding_sentence(rule, row["result_kind"], _field_label(row["field"])),
+            "sentence": finding_sentence(
+                row["rule_id"], row["result_kind"], _field_label(row["field"])
+            ),
         })
     return out
 
@@ -271,11 +255,20 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
 
     pipeline = report.pipeline
     pipeline_block: dict[str, object] = {"completed": pipeline.completed}
-    if not pipeline.completed:
+    if not pipeline.completed and pipeline.reason is not None:
         pipeline_block.update(
             statement="the pipeline failed; no MILAN workbook was produced by this run",
             error_type=pipeline.error_type, message=pipeline.error_message,
             stage=pipeline.stage, reason_code=pipeline.reason,
+        )
+    elif not pipeline.completed:
+        # Not a typed data error: there is no reason code, and the message
+        # of an arbitrary exception can quote cells of the file, so only
+        # the exception's type is given.
+        pipeline_block.update(
+            statement="the pipeline failed with an error that carries no reason code "
+                      f"({pipeline.error_type}); no MILAN workbook was produced by this run",
+            error_type=pipeline.error_type,
         )
     workbook = pipeline.workbook_path
     if workbook is not None:

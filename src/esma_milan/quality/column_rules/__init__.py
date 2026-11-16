@@ -225,9 +225,11 @@ def _evaluate(
         failed: set[str] = set()
         for rule in rules:
             for item in rule(context):
-                outcome = outcomes.setdefault(
-                    item.rule_id, RuleOutcome(item.rule_id, raw.file, entry.code)
-                )
+                outcome = outcomes.get(item.rule_id)
+                if outcome is None:
+                    outcome = outcomes[item.rule_id] = RuleOutcome(
+                        item.rule_id, raw.file, entry.code
+                    )
                 if isinstance(item, Mark):
                     if item.rule_id in marked:
                         continue
