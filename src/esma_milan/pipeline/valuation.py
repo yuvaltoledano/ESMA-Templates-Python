@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypedDict
 
 import polars as pl
 import structlog
@@ -39,6 +39,16 @@ _INSPECTION_METHODS: list[str] = list(VALUATION_METHODS_FULL_INSPECTION)
 
 DetectedMethod = Literal["by_loan", "by_group", "ambiguous"]
 
+Stage6Branch = Literal[
+    "no_multi_loan_groups",
+    "no_property_loan_matches",
+    "no_test_candidates",
+    "no_evidence",
+    "by_loan",
+    "by_group",
+    "mixed_signals",
+]
+
 # Strict greater-than threshold (matches R's `n_by_loan / total > 0.9`).
 # 9/10 = 0.9 -> ambiguous (not strictly greater); 10/10 -> by_loan.
 DECISION_THRESHOLD: float = 0.9
@@ -50,10 +60,48 @@ class Stage6Output:
 
     `detected_method` is one of "by_loan" / "by_group" / "ambiguous".
     `message` mirrors the human-readable string R returns alongside.
+
+    The remaining fields are the evidence the detection computed. R
+    returns only the two fields above; these are reported so a caller
+    need not repeat the detection to explain its result.
     """
 
     detected_method: DetectedMethod
     message: str
+
+    branch: Stage6Branch | None = None
+    """Which of the seven ways the detection ended."""
+
+    n_by_loan: int | None = None
+    """Properties whose amounts are identical across their loans. None
+    when the detection ended before counting (the first three branches)."""
+
+    n_by_group: int | None = None
+    """Properties whose amounts differ across their loans. None as above."""
+
+    total_evidence: int | None = None
+    """n_by_loan + n_by_group. None as above."""
+
+    threshold: float = DECISION_THRESHOLD
+    """A method is detected when its share of the evidence is strictly
+    above this."""
+
+    evidence: pl.DataFrame | None = None
+    """One row per test candidate, a (collateral_group_id,
+    calc_property_id) linked to more than one loan with differing
+    balances, sorted by those two columns: `values_distinct_count`
+    (distinct non-missing valuation amounts across its records),
+    `non_na_observations` (records with an amount) and `implied_method`
+    ("by_loan" / "by_group"; null where there are fewer than two
+    observations, which the detection does not count). None when the
+    detection ended before building it."""
+
+
+class _EvidenceCounts(TypedDict):
+    n_by_loan: int
+    n_by_group: int
+    total_evidence: int
+    evidence: pl.DataFrame
 
 
 def _add_selection_columns(properties: pl.DataFrame) -> pl.DataFrame:
@@ -106,6 +154,96 @@ def _drop_selection_columns(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _selected_field_exprs() -> dict[str, pl.Expr]:
+    """The three fields of the valuation finally chosen, taken from the
+    current valuation when `_final_use_current` is true and from the
+    original otherwise (a null `_final_use_current` is "otherwise"). The
+    one definition used by `select_valuation_amount`,
+    `select_valuation_fields` and `valuation_selection`."""
+    use_current = pl.col("_final_use_current")
+    return {
+        "valuation_method": pl.when(use_current)
+        .then(pl.col("current_valuation_method"))
+        .otherwise(pl.col("original_valuation_method")),
+        "valuation_date": pl.when(use_current)
+        .then(pl.col("current_valuation_date"))
+        .otherwise(pl.col("original_valuation_date")),
+        "valuation_amount": pl.when(use_current)
+        .then(pl.col("current_valuation_amount"))
+        .otherwise(pl.col("original_valuation_amount")),
+    }
+
+
+_RECORD_ID_COLUMNS: tuple[str, ...] = (
+    "collateral_group_id",
+    "calc_property_id",
+    "underlying_exposure_identifier",
+)
+
+
+def valuation_selection(properties: pl.DataFrame) -> pl.DataFrame:
+    """Which valuation was used for each collateral record, and why.
+
+    One row per row of `properties`, in order. Built from the same
+    working columns as `select_valuation_fields`, before they are dropped:
+
+      record              position of the row in `properties` (UInt32)
+      collateral_group_id, calc_property_id,
+      underlying_exposure_identifier
+                          copied where `properties` has them
+      preferred           the first choice: "current" when
+                          current_valuation_method is FIEI or FOEI,
+                          "original" when it is any other code,
+                          "method_missing" when it is missing
+      initial_amount_bad  the first choice's amount is missing or at most
+                          MIN_VALID_PROPERTY_VALUE
+      flipped             the valuation used is not the first choice
+      source              the valuation used: "current" or "original"
+      valuation_method, valuation_date, valuation_amount
+                          the fields of the valuation used
+
+    "method_missing" is its own state because it behaves differently: the
+    original valuation is taken and the flip never applies, even when the
+    original amount is bad (`is_in` is null for a missing method, and the
+    negation of null is null, which selects the original again). R treats
+    a missing method as "not a full inspection" and does flip to the
+    current valuation (r_reference/R/property_flattening_function.R:88-92).
+    Reported as it is; not corrected here.
+
+    When both amounts are bad the flip still applies and returns the other
+    bad amount: there is no second check, here or in R.
+
+    Needs the six valuation columns `select_valuation_fields` needs.
+    """
+    initial_current = pl.col("_initial_use_current")
+    final_current = pl.col("_final_use_current").fill_null(False)
+    id_columns = [c for c in _RECORD_ID_COLUMNS if c in properties.columns]
+    return (
+        _add_selection_columns(properties)
+        .with_columns(**_selected_field_exprs())
+        .with_row_index("record")
+        .select(
+            pl.col("record"),
+            *[pl.col(c) for c in id_columns],
+            pl.when(initial_current.is_null())
+            .then(pl.lit("method_missing"))
+            .when(initial_current)
+            .then(pl.lit("current"))
+            .otherwise(pl.lit("original"))
+            .alias("preferred"),
+            pl.col("_is_bad_value").alias("initial_amount_bad"),
+            (final_current != initial_current.fill_null(False)).alias("flipped"),
+            pl.when(final_current)
+            .then(pl.lit("current"))
+            .otherwise(pl.lit("original"))
+            .alias("source"),
+            pl.col("valuation_method"),
+            pl.col("valuation_date"),
+            pl.col("valuation_amount"),
+        )
+    )
+
+
 def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
     """Add a `valuation_amount` column per the Stage-1/Stage-2 selection rule.
 
@@ -124,9 +262,7 @@ def select_valuation_amount(properties: pl.DataFrame) -> pl.DataFrame:
     """
     return _drop_selection_columns(
         _add_selection_columns(properties).with_columns(
-            valuation_amount=pl.when(pl.col("_final_use_current"))
-            .then(pl.col("current_valuation_amount"))
-            .otherwise(pl.col("original_valuation_amount")),
+            valuation_amount=_selected_field_exprs()["valuation_amount"],
         )
     )
 
@@ -180,17 +316,7 @@ def select_valuation_fields(properties: pl.DataFrame) -> pl.DataFrame:
     `valuation_amount` appended.
     """
     return _drop_selection_columns(
-        _add_selection_columns(properties).with_columns(
-            valuation_method=pl.when(pl.col("_final_use_current"))
-            .then(pl.col("current_valuation_method"))
-            .otherwise(pl.col("original_valuation_method")),
-            valuation_date=pl.when(pl.col("_final_use_current"))
-            .then(pl.col("current_valuation_date"))
-            .otherwise(pl.col("original_valuation_date")),
-            valuation_amount=pl.when(pl.col("_final_use_current"))
-            .then(pl.col("current_valuation_amount"))
-            .otherwise(pl.col("original_valuation_amount")),
-        )
+        _add_selection_columns(properties).with_columns(**_selected_field_exprs())
     )
 
 
@@ -216,6 +342,7 @@ def detect_aggregation_method(
         return Stage6Output(
             detected_method="ambiguous",
             message="No multi-loan groups found. Cannot infer aggregation method.",
+            branch="no_multi_loan_groups",
         )
 
     multi_loan_loans = (
@@ -249,6 +376,7 @@ def detect_aggregation_method(
         return Stage6Output(
             detected_method="ambiguous",
             message="No property-loan matches found for analysis.",
+            branch="no_property_loan_matches",
         )
 
     # Step 4: filter to candidate (group, property) with >=2 distinct
@@ -276,27 +404,33 @@ def detect_aggregation_method(
                 "No suitable test candidates (properties linked to loans "
                 "with differing balances) found."
             ),
+            branch="no_test_candidates",
         )
 
     # Step 5: per (group, property) count distinct non-NA valuations
     # and total non-NA observations. Drop properties with <2 non-NA
     # observations (single observation carries no signal). Mirrors
     # r_reference/R/utils.R:524-528.
-    evaluation = (
-        test_candidates.group_by(["collateral_group_id", "calc_property_id"])
-        .agg(
-            values_distinct_count=pl.col("valuation_amount")
-            .drop_nulls()
-            .n_unique(),
-            non_na_observations=pl.col("valuation_amount").is_not_null().sum(),
-        )
-        .filter(pl.col("non_na_observations") >= 2)
-        .with_columns(
-            implied_method=pl.when(pl.col("values_distinct_count") == 1)
-            .then(pl.lit("by_loan"))
-            .otherwise(pl.lit("by_group"))
-        )
+    candidate_counts = test_candidates.group_by(
+        ["collateral_group_id", "calc_property_id"]
+    ).agg(
+        values_distinct_count=pl.col("valuation_amount").drop_nulls().n_unique(),
+        non_na_observations=pl.col("valuation_amount").is_not_null().sum(),
     )
+    counted = pl.col("non_na_observations") >= 2
+    implied_method = (
+        pl.when(pl.col("values_distinct_count") == 1)
+        .then(pl.lit("by_loan"))
+        .otherwise(pl.lit("by_group"))
+    )
+    evaluation = candidate_counts.filter(counted).with_columns(
+        implied_method=implied_method
+    )
+    # The same table before the filter, for the caller: every candidate,
+    # with no implied method where it was not counted.
+    evidence = candidate_counts.with_columns(
+        implied_method=pl.when(counted).then(implied_method)
+    ).sort(["collateral_group_id", "calc_property_id"])
 
     n_by_loan = evaluation.filter(pl.col("implied_method") == "by_loan").height
     n_by_group = evaluation.filter(pl.col("implied_method") == "by_group").height
@@ -309,10 +443,19 @@ def detect_aggregation_method(
         total_evidence=total_evidence,
     )
 
+    counts: _EvidenceCounts = {
+        "n_by_loan": n_by_loan,
+        "n_by_group": n_by_group,
+        "total_evidence": total_evidence,
+        "evidence": evidence,
+    }
+
     if total_evidence == 0:
         return Stage6Output(
             detected_method="ambiguous",
             message="No evidence found to infer aggregation method.",
+            branch="no_evidence",
+            **counts,
         )
 
     # Strict > 0.9 threshold (matches R's `n_by_loan / total > 0.9`).
@@ -323,6 +466,8 @@ def detect_aggregation_method(
                 f"Strong evidence ({n_by_loan}/{total_evidence} "
                 f"properties) suggests 'by_loan' duplication."
             ),
+            branch="by_loan",
+            **counts,
         )
     if n_by_group / total_evidence > DECISION_THRESHOLD:
         return Stage6Output(
@@ -331,6 +476,8 @@ def detect_aggregation_method(
                 f"Strong evidence ({n_by_group}/{total_evidence} "
                 f"properties) suggests 'by_group' splitting."
             ),
+            branch="by_group",
+            **counts,
         )
     return Stage6Output(
         detected_method="ambiguous",
@@ -338,6 +485,8 @@ def detect_aggregation_method(
             f"Mixed signals: {n_by_loan} properties suggest 'by_loan', "
             f"{n_by_group} suggest 'by_group'."
         ),
+        branch="mixed_signals",
+        **counts,
     )
 
 
@@ -358,13 +507,54 @@ def run_stage6(
 AggregationMethod = Literal["by_loan", "by_group"]
 
 
+_PROPERTY_KEYS: list[str] = ["collateral_group_id", "calc_property_id"]
+
+
 def calculate_unique_property_values(
     properties_with_vals: pl.DataFrame,
     aggregation_method: AggregationMethod,
 ) -> pl.DataFrame:
     """Reduce to one (`collateral_group_id`, `calc_property_id`,
+    `property_value`) row per unique property. See
+    `_unique_property_values` for the rule; this returns its first frame
+    and discards the per-property detail."""
+    values, _ = _unique_property_values(
+        properties_with_vals, aggregation_method, _stacklevel=3
+    )
+    return values
+
+
+def _unique_property_values(
+    properties_with_vals: pl.DataFrame,
+    aggregation_method: AggregationMethod,
+    *,
+    _stacklevel: int = 2,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Reduce to one (`collateral_group_id`, `calc_property_id`,
     `property_value`) row per unique property, applying the chosen
     aggregation rule.
+
+    The body of `calculate_unique_property_values`. It returns that frame
+    and, beside it, one row per property saying which records were
+    reduced into it:
+
+      collateral_group_id, calc_property_id
+      records             positions in `properties_with_vals` of the
+                          property's records, ascending (list of UInt32)
+      property_value      as in the first frame
+      value_record        by_loan: the position of the record whose amount
+                          was taken (the first with an amount); null when
+                          none has one. by_group: always null, because
+                          every record's amount is summed.
+      n_amounts           records with an amount
+      n_distinct_amounts  distinct amounts among them (more than one is
+                          what the by_loan warning reports)
+
+    Under by_group a property whose records all lack an amount has
+    `property_value` 0, as `sum(..., na.rm = TRUE)` gives in R.
+
+    `_stacklevel` is the `stacklevel` of the warning, so it is attributed
+    to the same caller whichever way this is reached.
 
     Mirrors `calculate_unique_property_values()` in
     r_reference/R/property_flattening_function.R:9-54:
@@ -433,13 +623,34 @@ def calculate_unique_property_values(
             f"(got {aggregation_method!r})"
         )
 
+    detail_aggs = {
+        "records": pl.col("_row_idx").sort(),
+        "n_amounts": pl.col("valuation_amount").is_not_null().sum(),
+        "n_distinct_amounts": pl.col("valuation_amount").drop_nulls().n_unique(),
+    }
+    detail_columns = [
+        *_PROPERTY_KEYS,
+        "records",
+        "property_value",
+        "value_record",
+        "n_amounts",
+        "n_distinct_amounts",
+    ]
+
     if aggregation_method == "by_group":
-        return (
-            properties_with_vals.group_by(
-                ["collateral_group_id", "calc_property_id"], maintain_order=True
+        reduced = (
+            properties_with_vals.with_row_index("_row_idx")
+            .group_by(_PROPERTY_KEYS, maintain_order=True)
+            .agg(
+                property_value=pl.col("valuation_amount").sum(),
+                value_record=pl.lit(None, dtype=pl.UInt32),
+                **detail_aggs,
             )
-            .agg(property_value=pl.col("valuation_amount").sum())
-            .sort(["collateral_group_id", "calc_property_id"])
+            .sort(_PROPERTY_KEYS)
+        )
+        return (
+            reduced.select(*_PROPERTY_KEYS, "property_value"),
+            reduced.select(detail_columns),
         )
 
     # by_loan branch.
@@ -467,14 +678,14 @@ def calculate_unique_property_values(
             f"amounts across linked loans. Using first non-missing value. "
             f"Property IDs: {', '.join(str(p) for p in sample_ids)}...",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel,
         )
 
     # First non-null by input row order. _row_idx pins the order at
     # call time; sort_by inside agg makes "first" deterministic
     # regardless of Polars' internal group_by ordering.
     df = properties_with_vals.with_row_index("_row_idx")
-    return (
+    reduced = (
         df.group_by(
             ["collateral_group_id", "calc_property_id"], maintain_order=True
         )
@@ -482,7 +693,17 @@ def calculate_unique_property_values(
             property_value=pl.col("valuation_amount")
             .sort_by("_row_idx")
             .drop_nulls()
-            .first()
+            .first(),
+            # The record that value came from: the lowest row index among
+            # the records with an amount.
+            value_record=pl.col("_row_idx")
+            .filter(pl.col("valuation_amount").is_not_null())
+            .min(),
+            **detail_aggs,
         )
         .sort(["collateral_group_id", "calc_property_id"])
+    )
+    return (
+        reduced.select(*_PROPERTY_KEYS, "property_value"),
+        reduced.select(detail_columns),
     )

@@ -1365,3 +1365,195 @@ def test_apply_derived_fields_full_pipeline_matches_fixture_column_order() -> No
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Valuation provenance
+# ---------------------------------------------------------------------------
+
+from esma_milan.pipeline.flatten import (  # noqa: E402
+    ValuationProvenance,
+    _flatten_loan_collateral,
+    run_stage7,
+)
+
+
+def _provenance_properties(
+    rows: Sequence[tuple[str, str, int, str | None, float | None, float | None, str]],
+) -> pl.DataFrame:
+    """(loan_ref, property_id, group_id, current_method, current_amount,
+    original_amount, occupancy_type) per record."""
+    n = len(rows)
+    return pl.DataFrame(
+        {
+            "underlying_exposure_identifier": pl.Series([r[0] for r in rows], dtype=pl.String),
+            "calc_property_id": pl.Series([r[1] for r in rows], dtype=pl.String),
+            "collateral_group_id": pl.Series([r[2] for r in rows], dtype=pl.Int64),
+            "current_valuation_method": pl.Series([r[3] for r in rows], dtype=pl.String),
+            "current_valuation_amount": pl.Series([r[4] for r in rows], dtype=pl.Float64),
+            "current_valuation_date": pl.Series([date(2024, 1, 1)] * n, dtype=pl.Date),
+            "original_valuation_method": pl.Series(["AUVM"] * n, dtype=pl.String),
+            "original_valuation_amount": pl.Series([r[5] for r in rows], dtype=pl.Float64),
+            "original_valuation_date": pl.Series([date(2019, 6, 15)] * n, dtype=pl.Date),
+            "occupancy_type": pl.Series([r[6] for r in rows], dtype=pl.String),
+        }
+    )
+
+
+def test_wrapper_returns_the_same_frame_as_the_private_function() -> None:
+    loans = _loans_enriched([("L1", 1, 100.0), ("L2", 1, 300.0)])
+    props = _properties_enriched(
+        [("L1", "P1", 1, "FIEI", 400.0), ("L2", "P1", 1, "FIEI", 400.0)]
+    )
+    cls = _classification([(1, TYPE_3)])
+    frame, provenance = _flatten_loan_collateral(loans, props, cls, "by_loan")
+    assert isinstance(provenance, ValuationProvenance)
+    assert frame.equals(flatten_loan_collateral(loans, props, cls, "by_loan"))
+    assert not any(c.startswith("_") for c in frame.columns)
+    assert provenance.aggregation_method == "by_loan"
+
+
+def test_provenance_group_mixing_current_and_original() -> None:
+    """One loan, two properties: P_A uses its current valuation, P_B its
+    original (current is a drive-by). A single flag per group could not
+    say this."""
+    loans = _loans_enriched([("L1", 1, 150.0)])
+    props = _provenance_properties(
+        [
+            ("L1", "P_A", 1, "FIEI", 300.0, 100.0, "FOWN"),
+            ("L1", "P_B", 1, "DRVB", 999.0, 125.0, "FOWN"),
+        ]
+    )
+    frame, provenance = _flatten_loan_collateral(
+        loans, props, _classification([(1, TYPE_2)]), "by_loan"
+    )
+    records = provenance.records
+    assert records["source"].to_list() == ["current", "original"]
+    assert records["preferred"].to_list() == ["current", "original"]
+    assert records["flipped"].to_list() == [False, False]
+    assert records["valuation_amount"].to_list() == [300.0, 125.0]
+    assert provenance.properties.select(
+        "calc_property_id", "records", "property_value", "value_record"
+    ).rows() == [("P_A", [0], 300.0, 0), ("P_B", [1], 125.0, 1)]
+    assert provenance.groups.to_dicts() == [
+        {
+            "collateral_group_id": 1,
+            "main_property_id": "P_A",
+            "metadata_record": 0,
+            "total_property_value": 425.0,
+            "total_loan_balance": 150.0,
+            "n_loans": 1,
+            "allocation": "pro_rata",
+        }
+    ]
+    assert provenance.loans.to_dicts() == [
+        {
+            "calc_loan_id": "L1",
+            "collateral_group_id": 1,
+            "current_principal_balance": 150.0,
+            "aggregated_property_value": 425.0,
+        }
+    ]
+    row = frame.row(0, named=True)
+    assert row["aggregated_property_value"] == 425.0
+    assert row["final_valuation_method"] == "FIEI"
+
+
+def test_provenance_flip_and_missing_method() -> None:
+    """Record 0 flips from a bad current amount to the original. Record 1
+    has no current method and a bad original: no flip, the bad original
+    is used (R would flip to current)."""
+    loans = _loans_enriched([("L1", 1, 100.0), ("L2", 2, 100.0)])
+    props = _provenance_properties(
+        [
+            ("L1", "P1", 1, "FIEI", 5.0, 320000.0, "FOWN"),
+            ("L2", "P2", 2, None, 250000.0, 5.0, "FOWN"),
+        ]
+    )
+    frame, provenance = _flatten_loan_collateral(
+        loans, props, _classification([(1, TYPE_1), (2, TYPE_1)]), "by_loan"
+    )
+    assert provenance.records.select(
+        "preferred", "initial_amount_bad", "flipped", "source", "valuation_amount"
+    ).rows() == [
+        ("current", True, True, "original", 320000.0),
+        ("method_missing", True, False, "original", 5.0),
+    ]
+    assert frame["aggregated_property_value"].to_list() == [320000.0, 5.0]
+
+
+def test_provenance_metadata_record_is_the_first_record_not_the_value_record() -> None:
+    """Property P1 has two records (one per loan). The first has no
+    amount at all; the second carries 400. The value comes from record 1,
+    but the method and date that reach the flattened pool come from
+    record 0, the first in file order."""
+    loans = _loans_enriched([("L1", 1, 100.0), ("L2", 1, 300.0)])
+    props = _provenance_properties(
+        [
+            ("L1", "P1", 1, "DRVB", None, None, "FOWN"),
+            ("L2", "P1", 1, "FIEI", 400.0, 380.0, "FOWN"),
+        ]
+    )
+    frame, provenance = _flatten_loan_collateral(
+        loans, props, _classification([(1, TYPE_3)]), "by_loan"
+    )
+    prop = provenance.properties.row(0, named=True)
+    group = provenance.groups.row(0, named=True)
+    assert prop["records"] == [0, 1]
+    assert prop["value_record"] == 1
+    assert prop["property_value"] == 400.0
+    assert group["metadata_record"] == 0
+    assert group["metadata_record"] != prop["value_record"]
+    # The flattened pool carries record 0's valuation metadata...
+    meta = provenance.records.row(group["metadata_record"], named=True)
+    assert meta["source"] == "current"  # DRVB prefers original; it is missing, so it flips
+    for row in frame.iter_rows(named=True):
+        assert row["final_valuation_method"] == meta["valuation_method"] == "DRVB"
+        assert row["final_valuation_date"] == meta["valuation_date"]
+    # ...while the value allocated comes from record 1.
+    assert frame["aggregated_property_value"].to_list() == [100.0, 300.0]
+
+
+def test_provenance_by_group_sums_the_records_of_a_property() -> None:
+    loans = _loans_enriched([("L1", 1, 100.0), ("L2", 1, 100.0)])
+    props = _provenance_properties(
+        [
+            ("L1", "P1", 1, "FIEI", 120.0, 100.0, "FOWN"),
+            ("L2", "P1", 1, "FIEI", 80.0, 100.0, "FOWN"),
+        ]
+    )
+    frame, provenance = _flatten_loan_collateral(
+        loans, props, _classification([(1, TYPE_3)]), "by_group"
+    )
+    assert provenance.aggregation_method == "by_group"
+    prop = provenance.properties.row(0, named=True)
+    assert prop["records"] == [0, 1]
+    assert prop["property_value"] == 200.0
+    assert prop["value_record"] is None
+    assert prop["n_distinct_amounts"] == 2
+    assert frame["aggregated_property_value"].to_list() == [100.0, 100.0]
+
+
+def test_provenance_equal_split_is_reported() -> None:
+    loans = _loans_enriched([("L1", 1, 0.0), ("L2", 1, 0.0)])
+    props = _provenance_properties([("L1", "P1", 1, "FIEI", 1000.0, 900.0, "FOWN")])
+    with pytest.warns(UserWarning, match="zero total balance"):
+        _, provenance = _flatten_loan_collateral(
+            loans, props, _classification([(1, TYPE_3)]), "by_loan"
+        )
+    group = provenance.groups.row(0, named=True)
+    assert group["allocation"] == "equal_split"
+    assert group["n_loans"] == 2
+    assert provenance.loans["aggregated_property_value"].to_list() == [500.0, 500.0]
+
+
+def test_run_stage7_returns_the_provenance() -> None:
+    loans = _loans_enriched([("L1", 1, 100.0)]).with_columns(
+        pl.Series("original_principal_balance", [100.0], dtype=pl.Float64),
+        pl.Series("pool_cutoff_date", [date(2024, 6, 30)], dtype=pl.Date),
+        pl.Series("origination_date", [date(2020, 1, 1)], dtype=pl.Date),
+    )
+    props = _properties_enriched([("L1", "P1", 1, "FIEI", 200.0)])
+    out = run_stage7(loans, props, _classification([(1, TYPE_1)]), aggregation_method="by_loan")
+    assert out.provenance is not None
+    assert out.provenance.loans["aggregated_property_value"].to_list() == [200.0]
+    assert out.combined_flattened["calc_aggregated_property_value"].to_list() == [200.0]

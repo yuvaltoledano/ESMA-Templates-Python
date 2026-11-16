@@ -339,3 +339,244 @@ def test_record_index_skips_records_stage2_dropped(tmp_path: Path) -> None:
     assert result.collateral_record_index.to_list() == [
         i for i, loan in enumerate(collateral_loans) if loan != dropped_loan
     ]
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 evidence and the aggregation route
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_stage6_counts_equal_the_log_event(fixture_dir: Path) -> None:
+    import structlog
+
+    from esma_milan.pipeline.enriched import (
+        compose_loans_enriched,
+        compose_properties_enriched,
+    )
+    from esma_milan.pipeline.valuation import run_stage6
+
+    result = _run(fixture_dir)
+    assert result.stage3 is not None and result.stage4 is not None
+    assert result.stage5 is not None and result.stage6 is not None
+    loans_enriched = compose_loans_enriched(
+        result.stage3.loans, result.stage4.loan_groups, result.stage5.classifications
+    )
+    properties_enriched = compose_properties_enriched(
+        result.stage3.properties, result.stage4.collateral_groups, result.stage5.classifications
+    )
+    with structlog.testing.capture_logs() as logs:
+        again = run_stage6(loans_enriched, properties_enriched)
+    (event,) = [e for e in logs if e["event"] == "detect_aggregation_method"]
+    stage6 = result.stage6
+    assert (stage6.n_by_loan, stage6.n_by_group, stage6.total_evidence) == (
+        event["n_by_loan"], event["n_by_group"], event["total_evidence"],
+    )
+    assert stage6.branch == "by_loan" == again.branch
+    assert stage6.evidence is not None and again.evidence is not None
+    assert stage6.evidence.equals(again.evidence)
+    counted = stage6.evidence.filter(pl.col("implied_method").is_not_null())
+    assert counted.height == stage6.total_evidence
+    assert stage6.message == (
+        f"Strong evidence ({stage6.n_by_loan}/{stage6.total_evidence} "
+        "properties) suggests 'by_loan' duplication."
+    )
+
+
+def _subset_pool(tmp_path: Path, loan_ids: set[str]) -> tuple[Path, Path]:
+    """The synthetic pool restricted to the given new loan identifiers."""
+    import csv
+
+    paths = []
+    for name, column in (
+        ("loans.csv", "new_underlying_exposure_identifier"),
+        ("collaterals.csv", "underlying_exposure_identifier"),
+    ):
+        with (SYNTHETIC / name).open(newline="") as fh:
+            reader = csv.DictReader(fh)
+            assert reader.fieldnames is not None
+            header = list(reader.fieldnames)
+            rows = [r for r in reader if r[column] in loan_ids]
+        out = tmp_path / name
+        with out.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        paths.append(out)
+    return paths[0], paths[1]
+
+
+def test_aggregation_source_detected_argument_and_fallback(tmp_path: Path) -> None:
+    detected = _run(SYNTHETIC)
+    assert detected.aggregation_source == "detected"
+    assert detected.chosen_aggregation_method == "by_loan"
+
+    explicit = run_pipeline(
+        loans_file_path=SYNTHETIC / "loans.csv",
+        collaterals_file_path=SYNTHETIC / "collaterals.csv",
+        deal_name="INTERFACE",
+        aggregation_method="by_group",
+        dry_run=True,
+        verbose=False,
+    )
+    assert explicit.aggregation_source == "argument"
+    assert explicit.chosen_aggregation_method == "by_group"
+    assert explicit.stage6 is not None and explicit.stage6.branch == "by_loan"
+    assert explicit.stage7 is not None and explicit.stage7.provenance is not None
+    assert explicit.stage7.provenance.aggregation_method == "by_group"
+
+    # No group with more than one loan: nothing to detect, by_loan is used.
+    loans, collaterals = _subset_pool(tmp_path, {"NEW_001", "NEW_002"})
+    fallback = run_pipeline(
+        loans_file_path=loans,
+        collaterals_file_path=collaterals,
+        deal_name="INTERFACE",
+        dry_run=True,
+        verbose=False,
+    )
+    assert fallback.aggregation_source == "ambiguous_fallback"
+    assert fallback.chosen_aggregation_method == "by_loan"
+    assert fallback.stage6 is not None
+    assert fallback.stage6.branch == "no_multi_loan_groups"
+
+
+# ---------------------------------------------------------------------------
+# Valuation provenance
+# ---------------------------------------------------------------------------
+
+
+def _properties_enriched(result: PipelineResult) -> pl.DataFrame:
+    from esma_milan.pipeline.enriched import compose_properties_enriched
+
+    assert result.stage3 is not None and result.stage4 is not None
+    assert result.stage5 is not None
+    return compose_properties_enriched(
+        result.stage3.properties, result.stage4.collateral_groups, result.stage5.classifications
+    )
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_provenance_records_agree_with_the_selection_functions(fixture_dir: Path) -> None:
+    from esma_milan.pipeline.valuation import (
+        select_valuation_amount,
+        select_valuation_fields,
+    )
+
+    result = _run(fixture_dir)
+    assert result.stage3 is not None and result.stage7 is not None
+    provenance = result.stage7.provenance
+    assert provenance is not None
+    enriched = _properties_enriched(result)
+    records = provenance.records
+
+    assert records.height == result.stage3.properties.height
+    assert records["record"].to_list() == list(range(records.height))
+    # A record is a row of stage3.properties.
+    for column in ("calc_property_id", "underlying_exposure_identifier"):
+        assert records[column].to_list() == result.stage3.properties[column].to_list()
+    # Stage 7 (method, date, amount) and Stage 6 (amount) made the same
+    # choice per record: both use this selection on this frame.
+    fields = select_valuation_fields(enriched)
+    for column in ("valuation_method", "valuation_date", "valuation_amount"):
+        assert records[column].to_list() == fields[column].to_list()
+    assert (
+        records["valuation_amount"].to_list()
+        == select_valuation_amount(enriched)["valuation_amount"].to_list()
+    )
+
+
+def test_fixture_selection_counts() -> None:
+    """Synthetic: one of twelve records flips (a full inspection with an
+    amount of 5). Real: all 1,664 prefer current and none flips."""
+    synthetic = _run(SYNTHETIC).stage7
+    assert synthetic is not None and synthetic.provenance is not None
+    records = synthetic.provenance.records
+    assert records.height == 12
+    assert records["flipped"].sum() == 1
+    assert records.filter(pl.col("flipped")).select("preferred", "source").row(0) == (
+        "current", "original",
+    )
+    assert synthetic.provenance.properties.filter(pl.col("records").list.len() > 1).height == 4
+    if (REAL / "loans.csv").exists():
+        real = _run(REAL).stage7
+        assert real is not None and real.provenance is not None
+        records = real.provenance.records
+        assert records.height == 1664
+        assert records["preferred"].unique().to_list() == ["current"]
+        assert records["flipped"].sum() == 0
+        assert real.provenance.properties.filter(pl.col("records").list.len() > 1).height == 472
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_milan_property_value_is_reproduced_from_the_provenance(fixture_dir: Path) -> None:
+    """Record -> property -> group -> loan, using only the provenance
+    frames, gives every cell of MILAN "Property Value"."""
+    import math
+
+    from esma_milan.pipeline.milan_map import compose_milan_pool
+
+    result = _run(fixture_dir)
+    assert result.stage7 is not None and result.stage7.provenance is not None
+    provenance = result.stage7.provenance
+    assert provenance.aggregation_method == "by_loan"
+    amounts = provenance.records["valuation_amount"].to_list()
+
+    # Property value: the amount on the record named.
+    property_values: dict[int, list[float]] = {}
+    seen_records: list[int] = []
+    for prop in provenance.properties.to_dicts():
+        seen_records.extend(prop["records"])
+        if prop["value_record"] is None:
+            assert prop["property_value"] is None
+            continue
+        assert prop["value_record"] in prop["records"]
+        assert prop["value_record"] == min(
+            r for r in prop["records"] if amounts[r] is not None
+        )
+        assert amounts[prop["value_record"]] == prop["property_value"]
+        property_values.setdefault(prop["collateral_group_id"], []).append(
+            prop["property_value"]
+        )
+    assert sorted(seen_records) == list(range(len(amounts)))  # every record, once
+
+    # Group total: the sum of its property values. The stored total is
+    # used below; a Python sum and a Polars sum may differ in the last bit.
+    groups = {g["collateral_group_id"]: g for g in provenance.groups.to_dicts()}
+    for gid, group in groups.items():
+        assert math.isclose(
+            group["total_property_value"], sum(property_values[gid]), rel_tol=1e-12
+        )
+        assert group["metadata_record"] is not None
+        meta = provenance.records.row(group["metadata_record"], named=True)
+        assert meta["calc_property_id"] == group["main_property_id"]
+        assert meta["collateral_group_id"] == gid
+
+    # Allocation, formatted as the MILAN mapping formats a number.
+    expected: list[str] = []
+    for loan in provenance.loans.to_dicts():
+        group = groups[loan["collateral_group_id"]]
+        if group["allocation"] == "equal_split":
+            value = group["total_property_value"] / group["n_loans"]
+        else:
+            value = (
+                loan["current_principal_balance"] / group["total_loan_balance"]
+            ) * group["total_property_value"]
+        assert value == loan["aggregated_property_value"]
+        expected.append(f"{value:.15g}")
+    milan = compose_milan_pool(result.stage7.combined_flattened)
+    assert milan["Property Value"].to_list() == expected
+    assert milan["Loan Identifier"].to_list() == provenance.loans["calc_loan_id"].to_list()
+
+    # The main property and its valuation metadata, as the flattened pool has them.
+    flattened = result.stage7.combined_flattened
+    for row in flattened.select(
+        "calc_collateral_group_id",
+        "calc_main_property_id",
+        "final_valuation_method",
+        "final_valuation_date",
+    ).to_dicts():
+        group = groups[row["calc_collateral_group_id"]]
+        meta = provenance.records.row(group["metadata_record"], named=True)
+        assert row["calc_main_property_id"] == group["main_property_id"]
+        assert row["final_valuation_method"] == meta["valuation_method"]
+        assert row["final_valuation_date"] == meta["valuation_date"]

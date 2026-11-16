@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import polars as pl
 import structlog
@@ -67,6 +67,10 @@ PIPELINE_STAGE_LABELS: tuple[str, ...] = (
 
 ProgressCallback = Callable[[int, int, str], None]
 """Called with (stage_index, stage_total, label) at each stage boundary."""
+
+
+AggregationSource = Literal["argument", "detected", "ambiguous_fallback"]
+"""How the aggregation method used was arrived at."""
 
 
 class OutputTooLargeError(ValueError):
@@ -133,6 +137,12 @@ class PipelineResult:
     otherwise equals `stage6.detected_method` when that's "by_loan" or
     "by_group", with a fallback to "by_loan" on "ambiguous" + non-
     interactive (matches r_reference/R/pipeline.R:469-485)."""
+
+    aggregation_source: AggregationSource | None = None
+    """Which of the three routes produced `chosen_aggregation_method`:
+    "argument" (the caller passed one), "detected" (Stage 6 found by_loan
+    or by_group) or "ambiguous_fallback" (Stage 6 could not decide and
+    by_loan was used)."""
 
     workbook_bytes: bytes | None = None
     """The 10-sheet workbook as in-memory XLSX bytes. Populated only
@@ -304,13 +314,17 @@ def run_pipeline(
     #   - explicit argument wins when supplied
     #   - else use stage6.detected_method when it's by_loan / by_group
     #   - else (ambiguous + non-interactive) fall back to "by_loan"
+    aggregation_source: AggregationSource
     if aggregation_method is not None:
         chosen_aggregation = aggregation_method
+        aggregation_source = "argument"
     elif stage6.detected_method in ("by_loan", "by_group"):
         chosen_aggregation = stage6.detected_method
+        aggregation_source = "detected"
     else:
         # Ambiguous + non-interactive: R defaults to by_loan with a warning.
         chosen_aggregation = "by_loan"
+        aggregation_source = "ambiguous_fallback"
         log.warning(
             "aggregation_method_ambiguous_defaulting_to_by_loan",
             stage6_message=stage6.message,
@@ -375,6 +389,7 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            aggregation_source=aggregation_source,
             loan_record_index=loan_record_index,
             collateral_record_index=collateral_record_index,
             execution_summary=execution_summary,
@@ -427,6 +442,7 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            aggregation_source=aggregation_source,
             loan_record_index=loan_record_index,
             collateral_record_index=collateral_record_index,
             workbook_bytes=workbook_bytes,
@@ -453,6 +469,7 @@ def run_pipeline(
         stage6=stage6,
         stage7=stage7,
         chosen_aggregation_method=chosen_aggregation,
+        aggregation_source=aggregation_source,
         loan_record_index=loan_record_index,
         collateral_record_index=collateral_record_index,
         execution_summary=execution_summary,

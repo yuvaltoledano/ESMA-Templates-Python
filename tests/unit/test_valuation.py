@@ -810,3 +810,277 @@ def test_calculate_unique_output_sorted_by_group_then_property() -> None:
     out = calculate_unique_property_values(df, "by_group")
     keys = [(row[0], row[1]) for row in out.iter_rows()]
     assert keys == sorted(keys)
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: the evidence and the branch taken
+# ---------------------------------------------------------------------------
+
+
+def _two_loan_group(
+    amounts: Sequence[float | None], *, loan_refs: Sequence[str] = ("L1", "L2")
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    loans = _loans([1, 1], ["L1", "L2"], [100000.0, 80000.0])
+    properties = _props(
+        [1, 1], list(loan_refs), ["P1", "P1"], ["FIEI", "FIEI"], list(amounts), list(amounts)
+    )
+    return loans, properties
+
+
+def test_stage6_branch_no_multi_loan_groups() -> None:
+    loans = _loans([1, 2], ["L1", "L2"], [1.0, 2.0])
+    properties = _props([1, 2], ["L1", "L2"], ["P1", "P2"], ["FIEI"] * 2, [5e5] * 2, [5e5] * 2)
+    out = detect_aggregation_method(loans, properties)
+    assert out.branch == "no_multi_loan_groups"
+    assert (out.n_by_loan, out.n_by_group, out.total_evidence) == (None, None, None)
+    assert out.evidence is None
+    assert out.threshold == 0.9
+
+
+def test_stage6_branch_no_property_loan_matches() -> None:
+    out = detect_aggregation_method(*_two_loan_group([2e5, 2e5], loan_refs=("L98", "L99")))
+    assert out.branch == "no_property_loan_matches"
+    assert out.evidence is None and out.total_evidence is None
+
+
+def test_stage6_branch_no_test_candidates() -> None:
+    """Two loans on one property with EQUAL balances: nothing to test."""
+    loans = _loans([1, 1], ["L1", "L2"], [100000.0, 100000.0])
+    properties = _props([1, 1], ["L1", "L2"], ["P1", "P1"], ["FIEI"] * 2, [2e5] * 2, [2e5] * 2)
+    out = detect_aggregation_method(loans, properties)
+    assert out.branch == "no_test_candidates"
+    assert out.evidence is None and out.total_evidence is None
+
+
+def test_stage6_branch_no_evidence_keeps_the_uncounted_candidate() -> None:
+    """One observation only: the candidate is in the evidence table with
+    no implied method, and nothing is counted."""
+    out = detect_aggregation_method(*_two_loan_group([5e5, None]))
+    assert out.detected_method == "ambiguous"
+    assert out.branch == "no_evidence"
+    assert (out.n_by_loan, out.n_by_group, out.total_evidence) == (0, 0, 0)
+    assert out.evidence is not None
+    assert out.evidence.to_dicts() == [
+        {
+            "collateral_group_id": 1,
+            "calc_property_id": "P1",
+            "values_distinct_count": 1,
+            "non_na_observations": 1,
+            "implied_method": None,
+        }
+    ]
+
+
+def test_stage6_branch_by_loan_and_by_group() -> None:
+    by_loan = detect_aggregation_method(*_two_loan_group([2e5, 2e5]))
+    assert by_loan.branch == "by_loan"
+    assert (by_loan.n_by_loan, by_loan.n_by_group, by_loan.total_evidence) == (1, 0, 1)
+    assert by_loan.evidence is not None
+    assert by_loan.evidence["implied_method"].to_list() == ["by_loan"]
+    assert by_loan.message == "Strong evidence (1/1 properties) suggests 'by_loan' duplication."
+
+    by_group = detect_aggregation_method(*_two_loan_group([1.2e5, 0.8e5]))
+    assert by_group.branch == "by_group"
+    assert (by_group.n_by_loan, by_group.n_by_group, by_group.total_evidence) == (0, 1, 1)
+    assert by_group.evidence is not None
+    assert by_group.evidence.row(0) == (1, "P1", 2, 2, "by_group")
+
+
+def test_stage6_branch_mixed_signals_evidence_is_sorted_and_complete() -> None:
+    """Nine by_loan properties, one by_group and one with a single
+    observation: 9/10 is not above 0.9."""
+    group_ids = [g for g in range(11, 0, -1) for _ in (0, 1)]  # descending on purpose
+    loan_ids = [f"L{i:02d}" for i in range(22)]
+    amounts: list[float | None] = []
+    for g in group_ids[::2]:
+        if g <= 9:
+            amounts += [5e5, 5e5]
+        elif g == 10:
+            amounts += [5e5, 4e5]
+        else:
+            amounts += [5e5, None]
+    loans = _loans(group_ids, loan_ids, [1e5 if i % 2 == 0 else 8e4 for i in range(22)])
+    properties = _props(
+        group_ids, loan_ids, [f"P{g:02d}" for g in group_ids], ["FIEI"] * 22, amounts, amounts
+    )
+    out = detect_aggregation_method(loans, properties)
+    assert out.branch == "mixed_signals"
+    assert (out.n_by_loan, out.n_by_group, out.total_evidence) == (9, 1, 10)
+    assert out.message == "Mixed signals: 9 properties suggest 'by_loan', 1 suggest 'by_group'."
+    assert out.evidence is not None
+    assert out.evidence["collateral_group_id"].to_list() == list(range(1, 12))
+    assert out.evidence["implied_method"].to_list() == [*["by_loan"] * 9, "by_group", None]
+    counted = out.evidence.filter(pl.col("implied_method").is_not_null())
+    assert counted.height == out.total_evidence
+
+
+# ---------------------------------------------------------------------------
+# valuation_selection: which valuation each record used, and why
+# ---------------------------------------------------------------------------
+
+from esma_milan.pipeline.valuation import (  # noqa: E402
+    _unique_property_values,
+    valuation_selection,
+)
+
+
+def _selection_cases() -> pl.DataFrame:
+    """One record per case. Columns: current method/amount, original amount."""
+    cases: list[tuple[str | None, float | None, float | None]] = [
+        ("FIEI", 300000.0, 200000.0),  # 0 current preferred, kept
+        ("DRVB", 300000.0, 200000.0),  # 1 original preferred, kept
+        ("FOEI", 5.0, 200000.0),       # 2 current preferred, bad -> flip to original
+        ("DRVB", 300000.0, None),      # 3 original preferred, missing -> flip to current
+        (None, 300000.0, 200000.0),    # 4 method missing, original good
+        (None, 300000.0, 5.0),         # 5 method missing, original bad: NO flip
+        (None, 300000.0, None),        # 6 method missing, original missing: NO flip
+        ("FIEI", 5.0, 7.0),            # 7 both bad: flips to the other bad amount
+        ("FIEI", 10.0, 200000.0),      # 8 boundary: 10 is bad
+        ("FIEI", 11.0, 200000.0),      # 9 boundary: 11 is good
+    ]
+    return _props_with_full_valuation(
+        current_methods=[c[0] for c in cases],
+        current_dates=[date(2024, 1, 1)] * len(cases),
+        current_amounts=[c[1] for c in cases],
+        original_methods=["AUVM"] * len(cases),
+        original_dates=[date(2019, 6, 15)] * len(cases),
+        original_amounts=[c[2] for c in cases],
+    )
+
+
+def test_valuation_selection_reports_preference_flip_and_source() -> None:
+    df = _selection_cases()
+    out = valuation_selection(df)
+    assert out.columns == [
+        "record",
+        "preferred",
+        "initial_amount_bad",
+        "flipped",
+        "source",
+        "valuation_method",
+        "valuation_date",
+        "valuation_amount",
+    ]
+    assert out["record"].to_list() == list(range(10))
+    assert out["record"].dtype == pl.UInt32
+    rows = out.select("preferred", "initial_amount_bad", "flipped", "source").rows()
+    assert rows == [
+        ("current", False, False, "current"),
+        ("original", False, False, "original"),
+        ("current", True, True, "original"),
+        ("original", True, True, "current"),
+        ("method_missing", False, False, "original"),
+        ("method_missing", True, False, "original"),
+        ("method_missing", True, False, "original"),
+        ("current", True, True, "original"),
+        ("current", True, True, "original"),
+        ("current", False, False, "current"),
+    ]
+    assert out["valuation_amount"].to_list() == [
+        300000.0, 200000.0, 200000.0, 300000.0, 200000.0, 5.0, None, 7.0, 200000.0, 11.0,
+    ]
+    assert sum(out.select("preferred", "initial_amount_bad", "flipped", "source").null_count().row(0)) == 0
+
+
+def test_valuation_selection_agrees_with_both_select_functions() -> None:
+    df = _selection_cases()
+    out = valuation_selection(df)
+    fields = select_valuation_fields(df)
+    for column in ("valuation_method", "valuation_date", "valuation_amount"):
+        assert out[column].to_list() == fields[column].to_list()
+    assert (
+        out["valuation_amount"].to_list()
+        == select_valuation_amount(df)["valuation_amount"].to_list()
+    )
+    # The source column says where all three came from.
+    for row, src in zip(df.to_dicts(), out.to_dicts(), strict=True):
+        prefix = src["source"]
+        assert src["valuation_method"] == row[f"{prefix}_valuation_method"]
+        assert src["valuation_date"] == row[f"{prefix}_valuation_date"]
+        assert src["valuation_amount"] == row[f"{prefix}_valuation_amount"]
+
+
+def test_valuation_selection_copies_identifying_columns_when_present() -> None:
+    df = _selection_cases().head(2).with_columns(
+        collateral_group_id=pl.Series([1, 1], dtype=pl.Int64),
+        calc_property_id=pl.Series(["P1", "P2"]),
+        underlying_exposure_identifier=pl.Series(["L1", "L1"]),
+    )
+    out = valuation_selection(df)
+    assert out.columns[:4] == [
+        "record",
+        "collateral_group_id",
+        "calc_property_id",
+        "underlying_exposure_identifier",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# _unique_property_values: the records behind each property value
+# ---------------------------------------------------------------------------
+
+
+def test_property_detail_by_loan_names_the_record_that_supplied_the_value() -> None:
+    df = _props_with_amount(
+        group_ids=[1, 2, 1, 1, 2, 3],
+        property_ids=["P1", "P2", "P1", "P1", "P2", "P3"],
+        amounts=[None, 750.0, 500.0, 500.0, None, None],
+    )
+    values, detail = _unique_property_values(df, "by_loan")
+    assert values.equals(calculate_unique_property_values_public(df, "by_loan"))
+    assert detail.columns == [
+        "collateral_group_id",
+        "calc_property_id",
+        "records",
+        "property_value",
+        "value_record",
+        "n_amounts",
+        "n_distinct_amounts",
+    ]
+    assert detail.rows() == [
+        (1, "P1", [0, 2, 3], 500.0, 2, 2, 1),
+        (2, "P2", [1, 4], 750.0, 1, 1, 1),
+        (3, "P3", [5], None, None, 0, 0),
+    ]
+    # The value is the amount on the record named.
+    for row in detail.to_dicts():
+        if row["value_record"] is not None:
+            assert df["valuation_amount"][row["value_record"]] == row["property_value"]
+
+
+def test_property_detail_by_group_sums_every_record() -> None:
+    df = _props_with_amount(
+        group_ids=[1, 1, 1, 2, 2],
+        property_ids=["P1", "P1", "P1", "P2", "P2"],
+        amounts=[100.0, None, 50.0, None, None],
+    )
+    values, detail = _unique_property_values(df, "by_group")
+    assert values.equals(calculate_unique_property_values_public(df, "by_group"))
+    assert detail.rows() == [
+        (1, "P1", [0, 1, 2], 150.0, None, 2, 2),
+        # Every amount missing: the sum is 0, as in R's sum(..., na.rm = TRUE).
+        (2, "P2", [3, 4], 0.0, None, 0, 0),
+    ]
+    assert detail.schema["value_record"] == pl.UInt32
+    assert detail.schema["records"] == pl.List(pl.UInt32)
+
+
+def test_property_detail_inconsistent_amounts_are_counted_and_still_warn() -> None:
+    import pytest as _pytest
+
+    df = _props_with_amount([1, 1], ["P1", "P1"], [500000.0, 499000.0])
+    with _pytest.warns(UserWarning, match="inconsistent valuation amounts"):
+        _, detail = _unique_property_values(df, "by_loan")
+    assert detail.row(0) == (1, "P1", [0, 1], 500000.0, 0, 2, 2)
+
+
+def calculate_unique_property_values_public(
+    df: pl.DataFrame, method: str
+) -> pl.DataFrame:
+    import warnings as warnings_mod
+
+    from esma_milan.pipeline.valuation import calculate_unique_property_values
+
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("ignore", UserWarning)
+        return calculate_unique_property_values(df, method)  # type: ignore[arg-type]

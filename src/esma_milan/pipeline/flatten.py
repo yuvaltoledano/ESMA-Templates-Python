@@ -35,8 +35,9 @@ import structlog
 
 from esma_milan.config import DAYS_PER_YEAR, VALUATION_METHODS_FULL_INSPECTION
 from esma_milan.pipeline.valuation import (
-    calculate_unique_property_values,
+    _unique_property_values,
     select_valuation_fields,
+    valuation_selection,
 )
 
 log = structlog.get_logger(__name__)
@@ -185,12 +186,92 @@ def select_main_property(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ValuationProvenance:
+    """Where each loan's property value came from, at the granularity at
+    which each choice is made. Reported by the flattening itself, from its
+    own intermediate frames; nothing here is recomputed by another route.
+
+    A `record` is a row position in `properties_enriched`, which is the
+    row position in `Stage3Output.properties` (the enrichment keeps the
+    order); `PipelineResult.collateral_record_index[record]` is the
+    record's position in the collaterals file.
+
+    One group can use the current valuation for one property and the
+    original for another, so the choice is recorded per record, not per
+    group.
+    """
+
+    aggregation_method: AggregationMethod
+    """The method the flattening was run with."""
+
+    records: pl.DataFrame
+    """One row per collateral record: `valuation.valuation_selection`
+    (which valuation was preferred, whether the flip applied, and the
+    method, date and amount used)."""
+
+    properties: pl.DataFrame
+    """One row per (collateral_group_id, calc_property_id), sorted: the
+    records reduced into the property, its `property_value`, and under
+    by_loan the record that supplied it. See
+    `valuation._unique_property_values`."""
+
+    groups: pl.DataFrame
+    """One row per collateral group that has a loan, sorted:
+
+      collateral_group_id
+      main_property_id     the property chosen to represent the group
+      metadata_record      the record whose valuation method and date
+                           became final_valuation_method / _date and
+                           whose other columns reached the flattened
+                           pool: the FIRST record of the main property in
+                           file order. It need not be the record that won
+                           the main-property ranking, nor the one that
+                           supplied the property's value
+                           (`properties.value_record`). R does the same
+                           (r_reference/R/property_flattening_function.R:
+                           200-222, `distinct(collateral_group_id,
+                           .keep_all = TRUE)`).
+      total_property_value the sum of the group's property values
+      total_loan_balance   the sum of its loans' balances
+      n_loans              loans in the group
+      allocation           "pro_rata", or "equal_split" when the loan
+                           total is zero or missing
+    """
+
+    loans: pl.DataFrame
+    """One row per loan, in `loans_enriched` order: calc_loan_id,
+    collateral_group_id, current_principal_balance and the
+    aggregated_property_value allocated to it."""
+
+
 def flatten_loan_collateral(
     loans_enriched: pl.DataFrame,
     properties_enriched: pl.DataFrame,
     group_classification: pl.DataFrame,
     aggregation_method: AggregationMethod = "by_loan",
 ) -> pl.DataFrame:
+    """Collapse the loan-property graph into one row per loan. See
+    `_flatten_loan_collateral` for the method; this returns its frame and
+    discards the `ValuationProvenance`."""
+    frame, _ = _flatten_loan_collateral(
+        loans_enriched,
+        properties_enriched,
+        group_classification,
+        aggregation_method,
+        _stacklevel=3,
+    )
+    return frame
+
+
+def _flatten_loan_collateral(
+    loans_enriched: pl.DataFrame,
+    properties_enriched: pl.DataFrame,
+    group_classification: pl.DataFrame,
+    aggregation_method: AggregationMethod = "by_loan",
+    *,
+    _stacklevel: int = 2,
+) -> tuple[pl.DataFrame, ValuationProvenance]:
     """Collapse the loan-property graph into one row per loan with
     pro-rata-allocated `aggregated_property_value` and the main property's
     valuation fields propagated as `final_valuation_method` /
@@ -198,6 +279,11 @@ def flatten_loan_collateral(
 
     Mirrors r_reference/R/property_flattening_function.R::flatten_loan_collateral
     (lines 73-241).
+
+    The body of `flatten_loan_collateral`, returning the
+    `ValuationProvenance` beside the frame. `_stacklevel` is the
+    `stacklevel` of the warnings it emits, so a warning is attributed to
+    the same caller whichever way this is reached.
 
     Pipeline:
       1. Validate aggregation_method.
@@ -287,9 +373,12 @@ def flatten_loan_collateral(
 
     # Step 3: Stage-1/Stage-2 valuation selection.
     properties_with_vals = select_valuation_fields(properties_clean)
+    # The same selection with its working columns kept: which valuation
+    # each record used and why. Row i describes properties_with_vals row i.
+    record_selection = valuation_selection(properties_clean)
 
     # Step 4: per (group, property) reduction.
-    unique_property_values = calculate_unique_property_values(
+    unique_property_values, property_detail = _unique_property_values(
         properties_with_vals, aggregation_method
     )
 
@@ -347,11 +436,16 @@ def flatten_loan_collateral(
             f"total balance. Property values cannot be allocated pro-rata. "
             f"Using equal allocation instead.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel,
         )
 
     # Step 8: per-loan allocation.
-    all_aggregated_values = (
+    equal_split = (
+        (pl.col("total_loan_balance") == 0)
+        | pl.col("total_loan_balance").is_null()
+        | pl.col("total_loan_balance").is_nan()
+    )
+    allocation = (
         loans_enriched.select(
             "calc_loan_id", "collateral_group_id", "current_principal_balance"
         )
@@ -359,29 +453,30 @@ def flatten_loan_collateral(
         .join(group_loan_totals, on="collateral_group_id", how="left")
         .with_columns(n_loans_in_group=pl.len().over("collateral_group_id"))
         .with_columns(
-            aggregated_property_value=pl.when(
-                (pl.col("total_loan_balance") == 0)
-                | pl.col("total_loan_balance").is_null()
-                | pl.col("total_loan_balance").is_nan()
-            )
+            aggregated_property_value=pl.when(equal_split)
             .then(pl.col("total_property_value") / pl.col("n_loans_in_group"))
             .otherwise(
                 (pl.col("current_principal_balance") / pl.col("total_loan_balance"))
                 * pl.col("total_property_value")
             ),
         )
-        .select(
-            "calc_loan_id",
-            "collateral_group_id",
-            "aggregated_property_value",
-        )
+    )
+    all_aggregated_values = allocation.select(
+        "calc_loan_id",
+        "collateral_group_id",
+        "aggregated_property_value",
     )
 
     # Step 9: main_property_details. Inner join properties_with_vals
     # with main_properties on (group, calc_property_id == main_property_id),
     # rename to final_*, drop redundant amount cols, distinct on group.
+    # `_record` is the row position in properties_with_vals. It rides
+    # through the join and the first-per-group reduction only so the
+    # provenance can name the record that was kept; it is dropped before
+    # the frame is used. No input column can be called `_record`: Stage 1
+    # strips leading underscores from every header.
     main_property_details = (
-        properties_with_vals.join(
+        properties_with_vals.with_row_index("_record").join(
             main_properties,
             left_on=["collateral_group_id", "calc_property_id"],
             right_on=["collateral_group_id", "main_property_id"],
@@ -415,6 +510,10 @@ def flatten_loan_collateral(
     main_property_details = main_property_details.drop(
         [c for c in _MAIN_PROPERTY_DROP_COLS if c in main_property_details.columns]
     ).unique(subset=["collateral_group_id"], keep="first", maintain_order=True)
+    main_records = main_property_details.select(
+        "collateral_group_id", metadata_record=pl.col("_record")
+    )
+    main_property_details = main_property_details.drop("_record")
 
     # Step 10: final assembly. Drop structure_type from loans (R does
     # this so it can come back from the classification join).
@@ -439,7 +538,7 @@ def flatten_loan_collateral(
         warnings.warn(
             "Duplicate calc_loan_id found in final output",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel,
         )
 
     log.info(
@@ -448,7 +547,44 @@ def flatten_loan_collateral(
         aggregation_method=aggregation_method,
     )
 
-    return final_output
+    groups = (
+        allocation.group_by("collateral_group_id", maintain_order=True)
+        .agg(
+            total_property_value=pl.col("total_property_value").first(),
+            total_loan_balance=pl.col("total_loan_balance").first(),
+            n_loans=pl.col("n_loans_in_group").first(),
+            allocation=pl.when(equal_split)
+            .then(pl.lit("equal_split"))
+            .otherwise(pl.lit("pro_rata"))
+            .first(),
+        )
+        .join(main_properties, on="collateral_group_id", how="left")
+        .join(main_records, on="collateral_group_id", how="left")
+        .select(
+            "collateral_group_id",
+            "main_property_id",
+            "metadata_record",
+            "total_property_value",
+            "total_loan_balance",
+            "n_loans",
+            "allocation",
+        )
+        .sort("collateral_group_id")
+    )
+    provenance = ValuationProvenance(
+        aggregation_method=aggregation_method,
+        records=record_selection,
+        properties=property_detail,
+        groups=groups,
+        loans=allocation.select(
+            "calc_loan_id",
+            "collateral_group_id",
+            "current_principal_balance",
+            "aggregated_property_value",
+        ),
+    )
+
+    return final_output, provenance
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +791,9 @@ class Stage7Output:
 
     combined_flattened: pl.DataFrame
 
+    provenance: ValuationProvenance | None = None
+    """Where each loan's property value came from; set by `run_stage7`."""
+
 
 def run_stage7(
     loans_enriched: pl.DataFrame,
@@ -670,11 +809,12 @@ def run_stage7(
     covers what R's pipeline.R does inline at lines 491-558 (call
     flatten_loan_collateral, then compute LTVs/seasoning, then apply the
     calc_ rename + reorder)."""
-    flattened = flatten_loan_collateral(
+    flattened, provenance = _flatten_loan_collateral(
         loans_enriched,
         properties_enriched,
         group_classification,
         aggregation_method=aggregation_method,
+        _stacklevel=2,
     )
     combined = apply_derived_fields(flattened)
-    return Stage7Output(combined_flattened=combined)
+    return Stage7Output(combined_flattened=combined, provenance=provenance)
