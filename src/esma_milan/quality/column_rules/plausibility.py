@@ -100,34 +100,31 @@ def column_rows(
 
     for profile in profiles:
         entry, code = profile.entry, profile.entry.code
-        valid = [(raw_value, profile.parsed[raw_value]) for raw_value in profile.present_values
-                 if profile.parsed[raw_value].ok]
-        all_valid = len(valid) == len(profile.present_values)
-        n_present = sum(profile.present_values.values())
-
         if code in ALL_ZERO_COLUMNS:
-            fired = bool(valid) and all_valid and all(v.parsed == 0 for _, v in valid)
+            fired = (
+                profile.n_present > 0 and profile.n_distinct_invalid == 0 and profile.n_nonzero == 0
+            )
             if code == "RREC21" and fired:
                 sale = by_code.get("RREC20")
-                fired = sale is None or not any(v.ok for v in sale.parsed.values())
+                fired = sale is None or sale.n_valid == 0
             emit(profile, "P8", "question", "zero_on_every_record",
                  "possible placeholder; confirm whether this is a measurement (0 on every "
                  "record that reports a value)", _severity(entry), fired)
         if code in SINGLE_TOKEN_COLUMNS:
-            tokens = list(profile.present_values)
+            token = profile.first_value or ""
             fired = (
-                raw.n_records > 1 and len(tokens) == 1 and n_present == raw.n_records
-                and not any(ch.isspace() for ch in tokens[0])
+                raw.n_records > 1 and profile.n_distinct == 1
+                and profile.n_present == raw.n_records
+                and not any(ch.isspace() for ch in token)
             )
             emit(profile, "P8", "question", "single_token_on_every_record",
                  "possible placeholder; confirm whether this is a measurement (one token on "
                  "every record)", _severity(entry), fired)
         emit(profile, "P9", "context", "constant_column",
-             f"one value on all {n_present} record(s) that report a value", "Info",
-             len(profile.present_values) == 1 and n_present > 1)
+             f"one value on all {profile.n_present} record(s) that report a value", "Info",
+             profile.n_distinct == 1 and profile.n_present > 1)
         if entry.kind == "PERCENTAGE" and code not in DQ_PERCENT_SCALE_EXCLUDED_FIELDS:
-            numbers = [v.parsed for _, v in valid if isinstance(v.parsed, Decimal)]
-            fired = bool(numbers) and all(abs(x) < 1 for x in numbers) and any(x != 0 for x in numbers)
+            fired = profile.n_valid > 0 and profile.n_abs_at_least_one == 0 and profile.n_nonzero > 0
             emit(profile, "P12", "question", "percentage_values_all_below_1",
                  "unusual: every value is below 1; the column may be a fraction and not "
                  "percentage units; please confirm", "Warn", fired)

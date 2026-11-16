@@ -20,6 +20,7 @@ import dataclasses
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 import polars as pl
 
@@ -66,6 +67,8 @@ FIELD_RULES: tuple[Rule, ...] = (
 COMPANION_RULES: tuple[Rule, ...] = (companion_rules,)
 """Run on every cell of a currency companion column."""
 
+_DISTRIBUTION_KINDS = frozenset({"LIST", "BOOLEAN", "YEAR", "COUNTRY", "CURRENCY"})
+
 # A currency companion is assessed as a {CURRENCYCODE_3} value.
 _COMPANION_TEMPLATE = FIELDS["RREL28"]
 
@@ -73,20 +76,53 @@ _COMPANION_TEMPLATE = FIELDS["RREL28"]
 @dataclass
 class ColumnProfile:
     """What the inventories and the column-level rules need from one
-    assessed column (P2 is this profile)."""
+    assessed column (P2 is this profile). It holds counts, never the
+    column's values, so its size does not grow with the file."""
 
     column: ColumnResolution
-    field_label: str
     entry: FieldEntry
     states: Counter[str] = field(default_factory=Counter)
     states_retained: Counter[str] | None = None
     format_counts: Counter[str] = field(default_factory=Counter)
     """compliant, alternative, non_compliant: present values only."""
     non_compliant_examples: list[str] = field(default_factory=list)
-    present_values: Counter[str] = field(default_factory=Counter)
-    """Distinct present raw values and their record counts."""
-    parsed: dict[str, Classified] = field(default_factory=dict)
-    """The classification of each distinct present raw value."""
+    n_present: int = 0
+    """Records with a present value."""
+    n_distinct: int = 0
+    """Distinct present raw values."""
+    n_distinct_invalid: int = 0
+    n_valid: int = 0
+    """Records whose present value is valid for the field."""
+    n_nonzero: int = 0
+    """Records with a valid number other than 0."""
+    n_abs_at_least_one: int = 0
+    """Records with a valid number of absolute value 1 or more."""
+    n_zzz: int = 0
+    """Records with a valid region code ending in ZZZ."""
+    first_value: str | None = None
+    """The first distinct present value (the value, when `n_distinct` is 1)."""
+    distribution: Counter[str] = field(default_factory=Counter)
+    """Valid values and their record counts, for the kinds with a small
+    domain (code lists, booleans, years, country and currency codes)."""
+
+    def observe(self, raw: str, value: Classified, n: int) -> None:
+        self.n_present += n
+        self.n_distinct += 1
+        if self.first_value is None:
+            self.first_value = raw
+        if not value.ok:
+            self.n_distinct_invalid += 1
+            return
+        self.n_valid += n
+        if isinstance(value.parsed, Decimal):
+            if value.parsed != 0:
+                self.n_nonzero += n
+            if abs(value.parsed) >= 1:
+                self.n_abs_at_least_one += n
+        if self.entry.kind == "NUTS" and raw.endswith("ZZZ"):
+            self.n_zzz += n
+        if self.entry.kind in _DISTRIBUTION_KINDS:
+            self.distribution[str(value.parsed) if self.entry.kind == "YEAR" else raw] += n
 
 
 @dataclass
@@ -159,7 +195,7 @@ def _evaluate(
         .with_row_index("_g")
     )
 
-    profile = ColumnProfile(column=column, field_label=entry.code, entry=entry)
+    profile = ColumnProfile(column=column, entry=entry)
     if retained is not None:
         profile.states_retained = Counter()
     outcomes: dict[str, RuleOutcome] = {}
@@ -171,8 +207,7 @@ def _evaluate(
         if profile.states_retained is not None:
             profile.states_retained[value.state] += row["_n_ret"]
         if value.present:
-            profile.present_values[row["_v"]] += n
-            profile.parsed[row["_v"]] = value
+            profile.observe(row["_v"], value, n)
         context = CellContext(
             entry=entry,
             ref=ref,
@@ -217,9 +252,10 @@ def _evaluate(
                     examples = profile.non_compliant_examples
                     if kind == "non_compliant" and len(examples) < 5 and row["_v"] not in examples:
                         examples.append(row["_v"])
-    n_present = sum(profile.present_values.values())
     profile.format_counts["compliant"] = (
-        n_present - profile.format_counts["non_compliant"] - profile.format_counts["alternative"]
+        profile.n_present
+        - profile.format_counts["non_compliant"]
+        - profile.format_counts["alternative"]
     )
 
     if not found:

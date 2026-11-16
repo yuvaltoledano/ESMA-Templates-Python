@@ -131,14 +131,10 @@ def classification_year_results(
     country-plus-ZZZ code any year is accepted (Q&A 1313)."""
     rows: list[dict[str, object]] = []
     outcomes: list[RuleOutcome] = []
-    regions = [v for p in region_profiles for v, parsed in p.parsed.items() if parsed.ok]
-    only_zzz = bool(regions) and all(v.endswith("ZZZ") for v in regions)
+    n_regions = sum(p.n_valid for p in region_profiles)
+    only_zzz = n_regions > 0 and n_regions == sum(p.n_zzz for p in region_profiles)
     for profile in year_profiles:
-        years = {
-            int(str(parsed.parsed)): profile.present_values[raw]
-            for raw, parsed in profile.parsed.items()
-            if parsed.ok
-        }
+        years = {int(year): n for year, n in profile.distribution.items()}
         outcome = RuleOutcome("P11", "loans", "RREL12", applicable=sum(years.values()))
         base: dict[str, object] = {
             "file": "loans", "column_position": profile.column.position,
