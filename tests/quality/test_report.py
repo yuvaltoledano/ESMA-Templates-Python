@@ -15,7 +15,7 @@ from esma_milan.errors import PipelineDataError
 from esma_milan.quality import assess_files, complete_report
 from esma_milan.quality import summary_dict as _summary_dict
 from esma_milan.quality.assess import QualityReport
-from esma_milan.quality.catalogue import RESULT_KINDS, RULES, SENTENCES
+from esma_milan.quality.catalogue import FIELD_SENTENCES, RESULT_KINDS, RULES, SENTENCES
 from esma_milan.quality.export import NOT_IMPLEMENTED, finding_sentence, render_json
 from esma_milan.runner import run_pipeline
 from tests.quality.builders import Pair
@@ -96,6 +96,9 @@ def test_every_rule_and_kind_that_can_be_emitted_has_its_own_clause() -> None:
         assert result_kind in RULES[rule_id].result_kinds, (rule_id, result_kind)
         assert clause[0].islower() and not clause.endswith(".")
         assert " (context)" not in clause and "plausibility window)" not in clause
+    for (rule_id, result_kind, _), clause in FIELD_SENTENCES.items():
+        assert (rule_id, result_kind) in SENTENCES
+        assert ("does not comply with" in clause) is (result_kind == "violation")
 
 
 def test_sentences_in_a_summary_read_as_sentences(tmp_path: Path) -> None:
@@ -117,6 +120,13 @@ def test_sentences_in_a_summary_read_as_sentences(tmp_path: Path) -> None:
         "RREL81 Original Lender Establishment Country: the pipeline's loader reads the cell "
         "differently from what the file states; the reason on each row says how."
     )
+    years = Pair().set("RREL12", "2016", record=1).set("RREL11", "NL999", record=2)
+    sentences = {f["finding_id"]: f["sentence"] for f in summary_dict(_report(years, tmp_path))["findings"]}
+    assert sentences["P11:violation:loans:RREL12"] == (
+        "RREL12 Geographic Region Classification: does not comply with the requirement of one "
+        "classification year across the submission: the file holds more than one year."
+    )
+    assert "the value is not in its reference list" in sentences["P11:violation:loans:RREL11"]
     assert sentences["P9:context:loans:RREL82"] == (
         "RREL82 Originator Name: the column holds one value on every record that reports a value."
     )

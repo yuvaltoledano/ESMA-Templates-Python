@@ -637,11 +637,24 @@ SENTENCES: dict[tuple[str, str], str] = {
 }
 
 
-def sentence_clause(rule_id: str, kind: str) -> str:
+# Clauses for a field on which a rule finds something of its own. P11 on
+# RREL12 is about the classification year of the submission, not about a
+# code's membership of a list.
+FIELD_SENTENCES: dict[tuple[str, str, str], str] = {
+    ("P11", "violation", "RREL12"):
+        "does not comply with the requirement of one classification year across the "
+        "submission: the file holds more than one year",
+    ("P11", "limitation", "RREL12"):
+        "could not be assessed in full: the NUTS list of this classification year is not "
+        "bundled, so the region codes reported under it are tested for their form only",
+}
+
+
+def sentence_clause(rule_id: str, kind: str, field: str | None = None) -> str:
     """The clause for a finding group. Every (rule, kind) an implemented
     rule can emit is in `SENTENCES` (a test requires it); the fallbacks
     serve the rules of later releases, which emit nothing yet."""
-    clause = SENTENCES.get((rule_id, kind))
+    clause = FIELD_SENTENCES.get((rule_id, kind, field or "")) or SENTENCES.get((rule_id, kind))
     if clause is not None:
         return clause
     rule = RULES[rule_id]

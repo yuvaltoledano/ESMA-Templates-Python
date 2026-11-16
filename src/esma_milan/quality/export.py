@@ -69,10 +69,10 @@ def summary_filename(deal_name: str, cutoff: str | None) -> str:
     return f"{cutoff or UNKNOWN_CUTOFF} {deal_name} Flattened loans and collaterals{SUMMARY_SUFFIX}"
 
 
-def finding_sentence(rule_id: str, kind: str, label: str) -> str:
+def finding_sentence(rule_id: str, kind: str, label: str, field: str | None = None) -> str:
     """One sentence for a finding group: the field, then the clause the
     catalogue holds for the rule and the result kind."""
-    return f"{label}: {sentence_clause(rule_id, kind)}."
+    return f"{label}: {sentence_clause(rule_id, kind, field)}."
 
 
 def _field_label(field_code: str | None) -> str:
@@ -165,7 +165,7 @@ def _findings(results: pl.DataFrame) -> list[dict[str, object]]:
                 sorted(((r["reason"], r["count"]) for r in row["reasons"]), key=lambda x: (-x[1], x[0]))
             ),
             "sentence": finding_sentence(
-                row["rule_id"], row["result_kind"], _field_label(row["field"])
+                row["rule_id"], row["result_kind"], _field_label(row["field"]), row["field"]
             ),
         })
     return out
