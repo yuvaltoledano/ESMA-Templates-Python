@@ -15,12 +15,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import polars as pl
 import structlog
 
 from esma_milan.config import DEFAULT_MIN_LOAN_ID_COVERAGE
+from esma_milan.errors import PipelineDataError
 from esma_milan.io_layer.write_workbook import (
     build_workbook_bytes,
     write_pipeline_workbook,
@@ -66,6 +67,10 @@ PIPELINE_STAGE_LABELS: tuple[str, ...] = (
 
 ProgressCallback = Callable[[int, int, str], None]
 """Called with (stage_index, stage_total, label) at each stage boundary."""
+
+
+AggregationSource = Literal["argument", "detected", "ambiguous_fallback"]
+"""How the aggregation method used was arrived at."""
 
 
 class OutputTooLargeError(ValueError):
@@ -133,6 +138,12 @@ class PipelineResult:
     "by_group", with a fallback to "by_loan" on "ambiguous" + non-
     interactive (matches r_reference/R/pipeline.R:469-485)."""
 
+    aggregation_source: AggregationSource | None = None
+    """Which of the three routes produced `chosen_aggregation_method`:
+    "argument" (the caller passed one), "detected" (Stage 6 found by_loan
+    or by_group) or "ambiguous_fallback" (Stage 6 could not decide and
+    by_loan was used)."""
+
     workbook_bytes: bytes | None = None
     """The 10-sheet workbook as in-memory XLSX bytes. Populated only
     when run_pipeline was called in in-memory mode (output_dir=None)
@@ -145,6 +156,26 @@ class PipelineResult:
     "2024-06-30 DEAL Flattened loans and collaterals.xlsx". Populated
     alongside `workbook_bytes` in in-memory mode; matches the filename
     used for the on-disk output. None on disk-write runs and dry_run."""
+
+    loan_record_index: pl.Series | None = None
+    """For each row of `stage3.loans`, in order, the 0-based index of its
+    record in the loans file (UInt32). The loans sheets and the flattened
+    pool keep that row order, so row i there is the same record.
+
+    The index counts the records after the header as the loader reads
+    them. The loader drops none: a blank line is a record (a row of
+    missing values, which Stage 2 then drops), a quoted field that spans
+    lines is one record, and blank lines before the header are skipped.
+    Index + 1 is the "data row" of the loader's non-numeric-value message;
+    index + 2 is the row shown when the file is opened in a spreadsheet.
+
+    Composed from the positions each stage that drops rows reports:
+    `stage2.loan_rows` indexed by `stage3.decisions.loan_rows`. No frame
+    carries it as a column."""
+
+    collateral_record_index: pl.Series | None = None
+    """The same for `stage3.properties` (and the "Cleaned ESMA properties"
+    sheet, which keeps its row order) and the collaterals file."""
 
     execution_summary: pl.DataFrame | None = None
     """The composed Execution Summary (Sheet 1) as a 2-column
@@ -239,6 +270,21 @@ def run_pipeline(
         ),
     )
 
+    # Each kept record's position in its uploaded file, composed from the
+    # positions Stage 2 (in the Stage 1 frames) and Stage 3 (in the Stage 2
+    # frames) report. Carried beside the frames, never as a column.
+    loan_record_index: pl.Series | None = None
+    collateral_record_index: pl.Series | None = None
+    if (
+        stage2.loan_rows is not None
+        and stage2.property_rows is not None
+        and stage3.decisions is not None
+    ):
+        loan_record_index = stage2.loan_rows.gather(stage3.decisions.loan_rows)
+        collateral_record_index = stage2.property_rows.gather(
+            stage3.decisions.property_rows
+        )
+
     # --- Stage 4: bipartite graph + connected components -----------------
     _report(4)
     stage4 = run_stage4(stage3.loans, stage3.properties)
@@ -268,13 +314,17 @@ def run_pipeline(
     #   - explicit argument wins when supplied
     #   - else use stage6.detected_method when it's by_loan / by_group
     #   - else (ambiguous + non-interactive) fall back to "by_loan"
+    aggregation_source: AggregationSource
     if aggregation_method is not None:
         chosen_aggregation = aggregation_method
+        aggregation_source = "argument"
     elif stage6.detected_method in ("by_loan", "by_group"):
         chosen_aggregation = stage6.detected_method
+        aggregation_source = "detected"
     else:
         # Ambiguous + non-interactive: R defaults to by_loan with a warning.
         chosen_aggregation = "by_loan"
+        aggregation_source = "ambiguous_fallback"
         log.warning(
             "aggregation_method_ambiguous_defaulting_to_by_loan",
             stage6_message=stage6.message,
@@ -298,7 +348,11 @@ def run_pipeline(
     # carries it as a Date column; pluck the first non-null value.
     cutoff = _first_non_null_date(stage1.loans, "pool_cutoff_date")
     if cutoff is None:
-        raise ValueError("pool_cutoff_date is missing in loans file")
+        raise PipelineDataError(
+            "pool_cutoff_date is missing in loans file",
+            stage="runner",
+            reason="missing_pool_cutoff_date",
+        )
     cutoff_str = cutoff.isoformat()
     output_filename = f"{cutoff_str} {deal_name} Flattened loans and collaterals.xlsx"
 
@@ -335,6 +389,9 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            aggregation_source=aggregation_source,
+            loan_record_index=loan_record_index,
+            collateral_record_index=collateral_record_index,
             execution_summary=execution_summary,
         )
 
@@ -385,6 +442,9 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            aggregation_source=aggregation_source,
+            loan_record_index=loan_record_index,
+            collateral_record_index=collateral_record_index,
             workbook_bytes=workbook_bytes,
             output_filename=output_filename,
             execution_summary=execution_summary,
@@ -409,6 +469,9 @@ def run_pipeline(
         stage6=stage6,
         stage7=stage7,
         chosen_aggregation_method=chosen_aggregation,
+        aggregation_source=aggregation_source,
+        loan_record_index=loan_record_index,
+        collateral_record_index=collateral_record_index,
         execution_summary=execution_summary,
     )
 

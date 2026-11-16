@@ -59,6 +59,7 @@ import polars as pl
 import structlog
 
 from esma_milan.config import CSV_NA_TOKENS
+from esma_milan.errors import PipelineDataError
 from esma_milan.io_layer.clean_names import clean_name
 from esma_milan.io_layer.sanitize_utf8 import sanitize_utf8_value
 
@@ -133,17 +134,26 @@ def read_and_clean(
             duplicates.append(n)
         seen.add(n)
     if duplicates:
-        raise ValueError(
+        raise PipelineDataError(
             f"CRITICAL ERROR: Duplicated column names found after renaming: "
             f"{', '.join(duplicates)}. This indicates a problem with the "
             f"taxonomy mapping. Multiple ESMA field codes may be mapping to "
-            f"the same field name."
+            f"the same field name.",
+            stage="stage1",
+            reason="duplicate_columns",
+            items=tuple(duplicates),
+            context={"file": file_path.name},
         )
 
     df.columns = new_names
 
     if df.height == 0:
-        raise ValueError(f"ERROR: No data rows found in file: {file_path.name}")
+        raise PipelineDataError(
+            f"ERROR: No data rows found in file: {file_path.name}",
+            stage="stage1",
+            reason="no_data_rows",
+            context={"file": file_path.name},
+        )
 
     if numeric_cols:
         df = _cast_numeric_columns(df, numeric_cols, file_path, taxonomy)
@@ -202,14 +212,17 @@ def _cast_numeric_columns(
         n_bad = int(bad_mask.sum())
         if n_bad == 0:
             continue
-        bad_rows = [
+        # Every bad row and its text as the file has it. The message lists
+        # the first _MAX_BAD_VALUES_REPORTED; the error carries them all.
+        all_bad_rows = [
             int(row)
-            for row in df.with_row_index("_row")
-            .filter(bad_mask)
-            .head(_MAX_BAD_VALUES_REPORTED)["_row"]
-            .to_list()
+            for row in df.with_row_index("_row").filter(bad_mask)["_row"].to_list()
         ]
-        raw_values = _raw_column_text(file_path, df.columns.index(col), bad_rows)
+        all_raw_values = _raw_column_text(
+            file_path, df.columns.index(col), all_bad_rows
+        )
+        bad_rows = all_bad_rows[:_MAX_BAD_VALUES_REPORTED]
+        raw_values = all_raw_values[:_MAX_BAD_VALUES_REPORTED]
         samples = [
             f"  data row {row + 1}: {value!r}"
             for row, value in zip(bad_rows, raw_values, strict=True)
@@ -217,12 +230,21 @@ def _cast_numeric_columns(
         more = n_bad - len(samples)
         code = next((k for k, v in taxonomy.items() if clean_name(v) == col), None)
         field = f"{code} ({col})" if code else col
-        raise ValueError(
+        raise PipelineDataError(
             f"ERROR: {n_bad} non-numeric value(s) in numeric field {field} "
             f"of file {file_path.name}; the taxonomy types this field as "
             f"numeric and every value must parse as a number or be an ND token.\n"
             + "\n".join(samples)
-            + (f"\n  ... and {more} more" if more > 0 else "")
+            + (f"\n  ... and {more} more" if more > 0 else ""),
+            stage="stage1",
+            reason="non_numeric_value",
+            items=tuple(zip(all_bad_rows, all_raw_values, strict=True)),
+            context={
+                "file": file_path.name,
+                "field_code": code,
+                "column": col,
+                "n_bad": n_bad,
+            },
         )
 
     return out

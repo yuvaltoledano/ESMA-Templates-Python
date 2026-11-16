@@ -107,6 +107,7 @@ Caddy; the `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` and
 src/esma_milan/
 ├── config.py              # constants mirrored from r_reference/R/utils.R
 ├── nd.py                  # ESMA "no data" (ND/NA/blank) detection
+├── errors.py              # PipelineDataError (typed data faults) and the catalogue of fault sites
 ├── data/
 │   └── esma_rre_taxonomy.xlsx  # the ESMA RRE taxonomy, identical to the R reference's copy
 ├── io_layer/

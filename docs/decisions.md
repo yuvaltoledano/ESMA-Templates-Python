@@ -4,7 +4,7 @@ Why the code is the way it is. One entry per decision that someone would
 otherwise re-argue; newest at the bottom. Add an entry when a PR changes one
 of these or makes a new one. Keep "Where things stand" current.
 
-## Where things stand (updated 2026-11-07)
+## Where things stand (updated 2026-11-16)
 
 The port is complete and verified cell for cell against the R reference on
 both fixtures. It runs as a CLI, as a synchronous API for pools up to
@@ -18,6 +18,12 @@ issues labelled `backlog`. Claude Code sessions follow `CLAUDE.md`. The
 analyst-facing description of the mapping is
 `frontend/public/mapping-reference.html` (version 1.0), served by the web
 UI; it is maintained by hand alongside any mapping change.
+
+A data quality report on uploaded pools is being built in five PRs. The
+first is in: the parity diff compares every cell, and the stages report
+their own decisions as data (`PipelineResult` and the stage outputs) with a
+typed error for faults in the data. Nothing consumes that interface yet
+except tests; no workbook, API response, message or log event changed.
 
 ## Entries
 
@@ -154,3 +160,61 @@ sessions and UI for a two-person tool). Because the Caddyfile lives in the
 `web` image, the first version with this change needs an image rebuild
 (`docker compose up -d --build --no-deps web`), not only the
 `--force-recreate web` that `.env`-only changes need.
+
+### 2026-11-16 — The parity diff compares every cell; the cap limits examples only
+`diff_workbooks` stopped comparing a sheet once it had recorded
+`max_cell_diffs_per_sheet` differences (50), and the real-fixture test
+removed tolerated last-digit pairs from that recorded list afterwards. The
+MILAN sheet has 73 such pairs, so the test saw 50, tolerated all 50, and
+never assessed the other 23 or anything after them; a cap of zero passed
+any sheet. Now every cell is compared, `SheetDiff.n_cell_diffs` decides
+pass or fail, and the cap only limits the examples kept. The six-column
+tolerance moved into the comparison as an optional `StringFloatTolerance`
+(default none, so every other caller compares as before) and applies only
+when both cells are strings, a slight narrowing of the old test helper,
+which would also have accepted a number against a numeric string. With
+every cell compared, all 73 real-fixture pairs are within tolerance and
+nothing else differs on either fixture. Rejected: raising the cap (still a
+cap), and a tolerance flag on `scripts/run_parity_check.py` (the
+before/after gate compares two Python outputs, which must be identical).
+
+### 2026-11-16 — The stages report their own decisions; data faults raise a typed error
+A data quality report must say what the pipeline did to each record: which
+loans and collateral rows Stage 2 kept and why the others went, which
+identifier column Stage 3 chose and what it failed to match, which
+valuation each property used. A separate package that re-derived those
+decisions would drift from the stages, so the stages expose them. Stage 2's
+conditions are named Polars expressions (`loan_drop_reasons`,
+`collateral_drop_reasons`) that the filters themselves are built from;
+`Stage3Decisions`, the Stage 6 evidence and `ValuationProvenance` come from
+the stages' own intermediate values. The interface reports what the code
+does, including where that differs from R on missing input (a missing
+collateral type drops the row; a missing current valuation method blocks
+the flip; Stage 3 halts where R drops a collateral row, issue #45); it
+corrects none of it. Public functions kept their signatures: where a
+function had to return more, its body moved to a private twin and the
+public name returns the frame as before.
+
+A record is identified by its 0-based position in the uploaded file
+(`PipelineResult.loan_record_index`, `collateral_record_index`), composed
+from the positions each stage that drops rows reports. Nothing in the data
+identifies a collateral row (a fully duplicated row is legal input), and a
+key column would have reached the "Cleaned ESMA" sheets, so no frame
+carries it. The loader drops no record after the header, so the position
+is the row a person counts in the file.
+
+The eleven places where a fault in the data halts the run raise
+`PipelineDataError` (`src/esma_milan/errors.py`), a `ValueError` with the
+same message as before, a reason code from a closed list and the complete
+identifiers where the message shows a sample. Being a `ValueError`, the
+API, the worker and the CLI treat it as they did. Faults that surface as a
+Polars exception (a column a stage names but Stage 1 does not require, a
+code column that holds numbers) are listed in `EXPECTED_FAULT_SITES` and
+not wrapped: wrapping would change the message a client sees today, which
+is a behaviour change for a later PR to make deliberately. Two sites in
+that list raise a built-in `TypeError` (identifier columns read as
+integers), which the API does not classify as an input error. Rejected:
+catching Polars exceptions by type in one place (the same type means
+different things at different sites), and a per-group "valuation used"
+flag (one group can use the current valuation for one property and the
+original for another).

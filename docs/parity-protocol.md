@@ -64,7 +64,9 @@ values are written as 15-significant-digit strings via R's
 `as.character()` semantics, and Polars and R reach the underlying double
 by different (both valid) accumulation orders, so about 0.04% of MILAN
 cells differ by one unit in the 15th digit. `test_parity_real.py`
-accepts this for exactly these columns and nothing else:
+accepts this for exactly these columns of the `MILAN template pool`
+sheet and nothing else, by passing a `StringFloatTolerance` to
+`diff_workbooks`, which applies it inside the comparison:
 
 ```
 Additional data 13 - calc_seasoning
@@ -75,11 +77,21 @@ Additional data 11 - calc_original_LTV
 Additional data 12 - calc_current_LTV
 ```
 
-A cell in one of these columns passes when both sides parse as floats
-and agree within `rel_tol = 1e-13` (about 14 significant digits), with
-no absolute tolerance. Any other column, and any wider divergence in
-these six, fails parity. The synthetic fixture is compared byte-equal
-with no such tolerance.
+A cell in one of these columns passes when both sides are strings that
+parse as floats and agree within `rel_tol = 1e-13` (about 14 significant
+digits), with no absolute tolerance. A number against a numeric string, a
+string that does not parse and a NaN are differences. Any other column,
+and any wider divergence in these six, fails parity. Accepted pairs are
+counted per sheet (`SheetDiff.n_tolerated`, 73 on the real fixture) and
+printed by `format_report`; they are not differences. The synthetic
+fixture is compared byte-equal with no such tolerance, and so is
+everything `scripts/run_parity_check.py` compares: the script passes no
+tolerance.
+
+So there are two tolerance layers. The general one (numeric cells, every
+sheet, `1e-9` absolute or `1e-12` relative) is always on. The per-column
+one (string cells, six columns of one sheet) is on only where a caller
+asks for it, which today is `test_parity_real.py`.
 
 ## Cell-by-cell diff protocol
 
@@ -93,11 +105,16 @@ Implemented in `esma_milan.parity.diff_workbooks`:
    - Compare column order. Mismatch: report and skip cell-level diff.
    - Compare row counts. Mismatch: note it; diff the overlap.
    - Build the group-id relabel maps (in-sheet or cross-sheet).
-   - Compare each cell with the type-aware tolerance rules above, up to
-     `max_cell_diffs_per_sheet` diffs per sheet (default 50).
+   - Compare every cell of the overlapping rows with the type-aware
+     tolerance rules above. `SheetDiff.n_cell_diffs` is the number of
+     differences found and decides pass or fail. At most
+     `max_cell_diffs_per_sheet` of them (default 50) are kept as examples
+     in `SheetDiff.cell_diffs`; the limit never affects the result, and
+     zero keeps none.
 4. Aggregate into a `DiffReport` with per-sheet, per-cell detail. The
    report is human-readable via `format_report()` and machine-readable
-   via `report.summary()`.
+   via `report.summary()`; both state the total, the number kept and the
+   number of tolerated pairs.
 
 ## Running parity locally
 
@@ -114,7 +131,9 @@ uv run python scripts/run_parity_check.py \
   tests/fixtures/synthetic/expected_r_output.xlsx
 ```
 
-The script exits 0 on parity, 1 on diff, 2 on file-level errors. It is
+The script exits 0 on parity, 1 on diff, 2 on file-level errors.
+`--max-diffs-per-sheet` (examples kept) and `--max-shown` (examples
+printed) change the output only, never the exit code. It is
 also the behaviour-preservation gate for refactors: run the pipeline
 before and after a change and diff the two Python outputs against each
 other.

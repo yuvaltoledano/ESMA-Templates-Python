@@ -9,6 +9,16 @@ Compares two .xlsx files produced by the ESMA -> MILAN pipeline. Tolerances
     config.SHEETS_WITH_EXCEL_SERIAL_DATES; the diff just compares cells
     in whatever form they come out of openpyxl, which preserves both.
 
+Every cell of the overlapping rows is compared. `max_cell_diffs_per_sheet`
+limits only how many example differences are kept in `SheetDiff.cell_diffs`;
+`SheetDiff.n_cell_diffs` is the total and decides pass or fail.
+
+An optional per-sheet `StringFloatTolerance` accepts, in the listed columns
+only, two STRING cells that both parse as floats and agree within a relative
+tolerance (absolute 0). It exists for the last-digit drift of 15-significant-
+digit strings on the real fixture (docs/parity-protocol.md); the default is
+none. Accepted pairs are counted in `SheetDiff.n_tolerated`.
+
 Group-id canonicalisation has two layers:
 
   1. In-sheet relabel: for sheets that carry both a row-unique
@@ -41,6 +51,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -121,9 +132,27 @@ class CellDiff:
         )
 
 
+@dataclass(frozen=True)
+class StringFloatTolerance:
+    """Columns of one sheet in which two string cells that both parse as
+    floats are accepted when they agree within `rel_tol` (absolute 0).
+
+    Both cells must be `str`: a number against a numeric string stays a
+    difference. A string that does not parse, or parses to NaN, is never
+    accepted."""
+
+    columns: frozenset[str]
+    rel_tol: float
+
+
 @dataclass
 class SheetDiff:
-    """All differences in a single sheet."""
+    """All differences in a single sheet.
+
+    `cell_diffs` holds the example differences kept (at most the cap passed
+    to `diff_workbooks`); `n_cell_diffs` is the number found in the whole
+    sheet and is what `passed` uses. `n_tolerated` counts the string pairs
+    accepted by a `StringFloatTolerance`; they are not differences."""
 
     sheet: str
     actual_present: bool = True
@@ -134,6 +163,8 @@ class SheetDiff:
     column_order_actual: tuple[str, ...] = ()
     column_order_expected: tuple[str, ...] = ()
     cell_diffs: list[CellDiff] = field(default_factory=list)
+    n_cell_diffs: int = 0
+    n_tolerated: int = 0
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -143,6 +174,7 @@ class SheetDiff:
             and self.expected_present
             and self.actual_dimensions == self.expected_dimensions
             and self.column_order_match
+            and self.n_cell_diffs == 0
             and not self.cell_diffs
         )
 
@@ -174,7 +206,9 @@ class DiffReport:
                     "actual_dim": s.actual_dimensions,
                     "expected_dim": s.expected_dimensions,
                     "column_order_match": s.column_order_match,
-                    "cell_diffs": len(s.cell_diffs),
+                    "cell_diffs": s.n_cell_diffs,
+                    "cell_diffs_kept": len(s.cell_diffs),
+                    "tolerated": s.n_tolerated,
                 }
                 for s in self.sheet_diffs
             ],
@@ -216,9 +250,15 @@ def diff_workbooks(
     expected_path: Path | str,
     *,
     max_cell_diffs_per_sheet: int = 50,
+    string_float_tolerances: Mapping[str, StringFloatTolerance] | None = None,
 ) -> DiffReport:
     """Diff two .xlsx files. Always returns a report; never raises on
-    diff. Raises only on file-level errors (file missing, malformed)."""
+    diff. Raises only on file-level errors (file missing, malformed).
+
+    `max_cell_diffs_per_sheet` is the number of example differences kept
+    per sheet (zero or less keeps none). It never affects pass or fail.
+    `string_float_tolerances` maps a sheet name to its
+    `StringFloatTolerance`; sheets not named get none."""
     actual_path = Path(actual_path)
     expected_path = Path(expected_path)
 
@@ -249,6 +289,7 @@ def diff_workbooks(
             actual_ctx=actual_ctx,
             expected_ctx=expected_ctx,
             max_cell_diffs=max_cell_diffs_per_sheet,
+            tolerance=(string_float_tolerances or {}).get(sheet_name),
         )
         report.sheet_diffs.append(sd)
 
@@ -291,6 +332,7 @@ def _diff_sheet(
     actual_ctx: WorkbookContext,
     expected_ctx: WorkbookContext,
     max_cell_diffs: int,
+    tolerance: StringFloatTolerance | None = None,
 ) -> SheetDiff:
     sd = SheetDiff(sheet=sheet_name)
 
@@ -346,6 +388,7 @@ def _diff_sheet(
             f"expected={sd.expected_dimensions[0]}"
         )
 
+    max_kept = max(max_cell_diffs, 0)
     n_compared_rows = min(len(a_rows), len(e_rows))
     for r_idx in range(n_compared_rows):
         a_row = a_rows[r_idx]
@@ -357,12 +400,19 @@ def _diff_sheet(
                 a_val = a_relabel.get(a_val, a_val)
                 e_val = e_relabel.get(e_val, e_val)
             ok, reason = _cells_equal(a_val, e_val)
-            if not ok:
-                if len(sd.cell_diffs) >= max_cell_diffs:
-                    sd.notes.append(
-                        f"truncated at {max_cell_diffs} cell diffs for this sheet"
-                    )
-                    return sd
+            if ok:
+                continue
+            if (
+                tolerance is not None
+                and col_name in tolerance.columns
+                and isinstance(a_val, str)
+                and isinstance(e_val, str)
+                and _strings_close_as_floats(a_val, e_val, rel_tol=tolerance.rel_tol)
+            ):
+                sd.n_tolerated += 1
+                continue
+            sd.n_cell_diffs += 1
+            if len(sd.cell_diffs) < max_kept:
                 sd.cell_diffs.append(
                     CellDiff(
                         sheet=sheet_name,
@@ -374,7 +424,24 @@ def _diff_sheet(
                         reason=reason,
                     )
                 )
+    if sd.n_cell_diffs > len(sd.cell_diffs):
+        sd.notes.append(
+            f"showing {len(sd.cell_diffs)} of {sd.n_cell_diffs} cell diffs"
+        )
     return sd
+
+
+def _strings_close_as_floats(actual: str, expected: str, *, rel_tol: float) -> bool:
+    """True when both strings parse as floats, neither is NaN, and
+    `math.isclose` agrees within `rel_tol` with no absolute tolerance."""
+    try:
+        a = float(actual)
+        e = float(expected)
+    except ValueError:
+        return False
+    if math.isnan(a) or math.isnan(e):
+        return False
+    return math.isclose(a, e, rel_tol=rel_tol, abs_tol=0.0)
 
 
 def _cells_equal(actual: Any, expected: Any) -> tuple[bool, str]:
@@ -593,12 +660,16 @@ def format_report(report: DiffReport, *, max_diffs_shown: int = 30) -> str:
                     lines.append(f"    extra:   {extra[:10]}{' ...' if len(extra) > 10 else ''}")
         for note in sd.notes:
             lines.append(f"  note: {note}")
-        if sd.cell_diffs:
-            lines.append(f"  {len(sd.cell_diffs)} cell diff(s):")
-            for d in sd.cell_diffs[:max_diffs_shown]:
+        if sd.n_tolerated:
+            lines.append(f"  {sd.n_tolerated} string pair(s) within tolerance")
+        if sd.n_cell_diffs:
+            shown = sd.cell_diffs[: max(max_diffs_shown, 0)]
+            lines.append(
+                f"  {sd.n_cell_diffs} cell diff(s), {len(sd.cell_diffs)} kept "
+                f"as examples, {len(shown)} shown:"
+            )
+            for d in shown:
                 lines.append(d.short())
-            if len(sd.cell_diffs) > max_diffs_shown:
-                lines.append(f"  ... ({len(sd.cell_diffs) - max_diffs_shown} more)")
         if sd.passed and sd.actual_present and sd.expected_present:
             lines.append("  PASS")
 

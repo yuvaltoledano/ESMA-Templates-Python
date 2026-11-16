@@ -12,7 +12,7 @@ from typing import Any
 
 import openpyxl
 
-from esma_milan.parity import diff_workbooks
+from esma_milan.parity import StringFloatTolerance, diff_workbooks
 
 # Type alias kept loose because the literal dicts in these tests carry
 # heterogeneous row types that mypy widens to list[object]; openpyxl's
@@ -533,3 +533,187 @@ def test_workbook_context_empty_when_loans_sheet_has_no_rows(tmp_path: Path) -> 
     wb = _load(p)
     ctx = _build_workbook_context(wb)
     assert not ctx.is_populated
+
+
+# ---------------------------------------------------------------------------
+# Every cell is compared; the cap limits kept examples only
+# ---------------------------------------------------------------------------
+
+
+def _one_column_pair(
+    tmp_path: Path,
+    actual: list[Any],
+    expected: list[Any],
+    *,
+    sheet: str = "S",
+    column: str = "v",
+) -> tuple[Path, Path]:
+    a = tmp_path / "a.xlsx"
+    e = tmp_path / "e.xlsx"
+    _write_xlsx(a, {sheet: [[column], *[[v] for v in actual]]})
+    _write_xlsx(e, {sheet: [[column], *[[v] for v in expected]]})
+    return a, e
+
+
+# Two 15-significant-digit strings that differ in the last digit only
+# (relative difference about 1e-15).
+_DRIFT_A = "88567.200601784"
+_DRIFT_E = "88567.2006017839"
+
+
+def _tol(*columns: str, rel_tol: float = 1e-13) -> StringFloatTolerance:
+    return StringFloatTolerance(columns=frozenset(columns), rel_tol=rel_tol)
+
+
+def test_material_diff_after_more_than_cap_tolerated_pairs_fails(tmp_path: Path) -> None:
+    """The failure the old gate had: 60 tolerated pairs filled the cap and
+    a material difference behind them was never assessed."""
+    a, e = _one_column_pair(
+        tmp_path, [_DRIFT_A] * 60 + ["1.5"], [_DRIFT_E] * 60 + ["2.5"]
+    )
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    sd = rep.sheet_diffs[0]
+    assert not rep.passed and not sd.passed
+    assert sd.n_tolerated == 60
+    assert sd.n_cell_diffs == 1
+    assert [d.row for d in sd.cell_diffs] == [62]
+
+
+def test_material_diff_after_more_than_cap_material_diffs_is_counted(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, ["x"] * 61, ["y"] * 61)
+    rep = diff_workbooks(a, e)
+    sd = rep.sheet_diffs[0]
+    assert sd.n_cell_diffs == 61
+    assert len(sd.cell_diffs) == 50
+    assert "showing 50 of 61 cell diffs" in sd.notes
+    assert not sd.passed
+
+
+def test_cap_zero_keeps_no_examples_and_still_fails_a_differing_sheet(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, ["x", "same"], ["y", "same"])
+    for cap in (0, -5):
+        sd = diff_workbooks(a, e, max_cell_diffs_per_sheet=cap).sheet_diffs[0]
+        assert sd.cell_diffs == []
+        assert sd.n_cell_diffs == 1
+        assert not sd.passed
+
+
+def test_cap_zero_passes_an_identical_sheet(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, ["x", 1.5], ["x", 1.5])
+    rep = diff_workbooks(a, e, max_cell_diffs_per_sheet=0)
+    assert rep.passed
+    assert rep.sheet_diffs[0].n_cell_diffs == 0
+
+
+def test_passed_and_total_do_not_depend_on_the_cap(tmp_path: Path) -> None:
+    differing = _one_column_pair(tmp_path, ["x"] * 70 + ["k"], ["y"] * 70 + ["k"])
+    (tmp_path / "same").mkdir()
+    identical = _one_column_pair(tmp_path / "same", ["k"] * 5, ["k"] * 5)
+    for (a, e), expected_passed, expected_total in (
+        (differing, False, 70),
+        (identical, True, 0),
+    ):
+        for cap in (0, 1, 50, 10_000):
+            rep = diff_workbooks(a, e, max_cell_diffs_per_sheet=cap)
+            sd = rep.sheet_diffs[0]
+            assert rep.passed is expected_passed, cap
+            assert sd.n_cell_diffs == expected_total, cap
+            assert len(sd.cell_diffs) == min(cap, expected_total), cap
+
+
+# ---------------------------------------------------------------------------
+# StringFloatTolerance: scope
+# ---------------------------------------------------------------------------
+
+
+def test_tolerated_pair_in_listed_column_passes_and_is_counted(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, [_DRIFT_A], [_DRIFT_E])
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    assert rep.passed
+    assert rep.sheet_diffs[0].n_tolerated == 1
+    assert rep.sheet_diffs[0].n_cell_diffs == 0
+
+
+def test_same_pair_without_tolerance_argument_fails(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, [_DRIFT_A], [_DRIFT_E])
+    rep = diff_workbooks(a, e)
+    assert not rep.passed
+    assert rep.sheet_diffs[0].n_tolerated == 0
+
+
+def test_within_tolerance_pair_in_unlisted_column_fails(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, [_DRIFT_A], [_DRIFT_E])
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("other")})
+    assert not rep.passed
+
+
+def test_within_tolerance_pair_in_listed_column_of_another_sheet_fails(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, [_DRIFT_A], [_DRIFT_E], sheet="T")
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    assert not rep.passed
+    assert rep.sheet_diffs[0].n_tolerated == 0
+
+
+def test_listed_column_pair_outside_tolerance_fails(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, ["88567.200601784"], ["88567.200601"])
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    assert not rep.passed
+    assert rep.sheet_diffs[0].n_cell_diffs == 1
+
+
+def test_tolerance_requires_two_strings(tmp_path: Path) -> None:
+    """A number against a numeric string stays a type mismatch, listed
+    column or not."""
+    a, e = _one_column_pair(tmp_path, [1.5], ["1.5"])
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    assert not rep.passed
+    assert "type mismatch" in rep.sheet_diffs[0].cell_diffs[0].reason
+
+
+def test_unparseable_and_nan_strings_are_never_tolerated(tmp_path: Path) -> None:
+    a, e = _one_column_pair(tmp_path, ["abc", "nan", "ND"], ["abd", "NaN", "1.0"])
+    rep = diff_workbooks(a, e, string_float_tolerances={"S": _tol("v")})
+    sd = rep.sheet_diffs[0]
+    assert sd.n_tolerated == 0
+    assert sd.n_cell_diffs == 3
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+
+def test_summary_and_report_state_total_kept_and_tolerated(tmp_path: Path) -> None:
+    from esma_milan.parity import format_report
+
+    a, e = _one_column_pair(
+        tmp_path, [_DRIFT_A, *["x"] * 7], [_DRIFT_E, *["y"] * 7]
+    )
+    rep = diff_workbooks(
+        a, e, max_cell_diffs_per_sheet=5, string_float_tolerances={"S": _tol("v")}
+    )
+    sheet = rep.summary()["sheets"][0]
+    assert sheet["cell_diffs"] == 7
+    assert sheet["cell_diffs_kept"] == 5
+    assert sheet["tolerated"] == 1
+    text = format_report(rep, max_diffs_shown=2)
+    assert "=== Parity check: FAIL ===" in text
+    assert "7 cell diff(s), 5 kept as examples, 2 shown:" in text
+    assert "1 string pair(s) within tolerance" in text
+    assert "note: showing 5 of 7 cell diffs" in text
+
+
+def test_parity_script_exit_code_is_independent_of_both_limits(tmp_path: Path) -> None:
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parity_check.py"
+    spec = importlib.util.spec_from_file_location("run_parity_check", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    a, e = _one_column_pair(tmp_path, ["x"], ["y"])
+    assert module.main([str(a), str(e)]) == 1
+    assert module.main([str(a), str(e), "--max-diffs-per-sheet", "0"]) == 1
+    assert module.main([str(a), str(e), "--max-shown", "0"]) == 1
+    assert module.main([str(a), str(a), "--max-diffs-per-sheet", "0"]) == 0
