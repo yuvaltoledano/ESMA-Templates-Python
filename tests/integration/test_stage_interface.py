@@ -123,3 +123,219 @@ def test_real_fixture_drop_reason_counts() -> None:
         "no_active_loan": 288,
         "no_positive_valuation": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 3
+# ---------------------------------------------------------------------------
+
+
+def _stage3_logs(fixture_dir: Path) -> list[dict[str, object]]:
+    """Run Stages 1-3 on the fixture and return the Stage 3 log events."""
+    import structlog
+
+    from esma_milan.pipeline.filters import run_stage2
+    from esma_milan.pipeline.identifiers import run_stage3
+    from esma_milan.pipeline.stage1 import run_stage1
+
+    stage1 = run_stage1(
+        loans_path=fixture_dir / "loans.csv",
+        collaterals_path=fixture_dir / "collaterals.csv",
+    )
+    stage2 = run_stage2(stage1.loans, stage1.properties)
+    with structlog.testing.capture_logs() as logs, warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        run_stage3(stage2.loans, stage2.properties)
+    assert caught == [], "neither fixture warns in Stage 3"
+    return [dict(event) for event in logs]
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_stage3_figures_equal_the_select_calc_loan_id_log_event(fixture_dir: Path) -> None:
+    result = _run(fixture_dir)
+    assert result.stage3 is not None and result.stage3.decisions is not None
+    selection = result.stage3.decisions.loan_id
+    (event,) = [e for e in _stage3_logs(fixture_dir) if e["event"] == "select_calc_loan_id"]
+    original, new = selection.candidates
+    assert selection.chosen_column == event["picked"]
+    assert selection.reason == event["reason"]
+    assert original.has_duplicates == event["original_duplicates"]
+    assert new.has_duplicates == event["new_duplicates"]
+    assert f"{original.matched}/{original.total}" == event["original_coverage"]
+    assert f"{new.matched}/{new.total}" == event["new_coverage"]
+    assert selection.min_coverage == 0.85
+    for candidate in (original, new):
+        assert len(candidate.unmatched) == candidate.total - candidate.matched
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_stage3_id_choices_equal_the_generate_id_column_log_events(fixture_dir: Path) -> None:
+    result = _run(fixture_dir)
+    assert result.stage3 is not None and result.stage3.decisions is not None
+    decisions = result.stage3.decisions
+    events = {
+        e["output_col"]: e
+        for e in _stage3_logs(fixture_dir)
+        if e["event"] == "generate_id_column"
+    }
+    assert set(events) == {"calc_borrower_id", "calc_property_id"}
+    for choice, frame in (
+        (decisions.borrower_id, result.stage3.loans),
+        (decisions.property_id, result.stage3.properties),
+    ):
+        event = events[choice.output_column]
+        assert choice.original_column == event["original"]
+        assert choice.new_column == event["new"]
+        assert choice.n_unique_original == event["n_unique_original"]
+        assert choice.n_unique_new == event["n_unique_new"]
+        assert choice.decision == event["decision"]
+        assert choice.identical is (choice.decision == "identical, using original")
+        # The output column really is the source column named.
+        assert frame[choice.output_column].to_list() == frame[choice.chosen_column].to_list()
+
+
+def test_fixture_stage3_figures() -> None:
+    """Pinned figures: synthetic picks the new column at 8/8 against 0/8;
+    the real fixture has both fully covered and defaults to original."""
+    synthetic = _run(SYNTHETIC).stage3
+    assert synthetic is not None and synthetic.decisions is not None
+    selection = synthetic.decisions.loan_id
+    assert selection.chosen_column == "new_underlying_exposure_identifier"
+    assert selection.reason == "full coverage"
+    assert [(c.matched, c.total) for c in selection.candidates] == [(0, 8), (8, 8)]
+    assert len(selection.candidates[0].unmatched) == 8
+    if (REAL / "loans.csv").exists():
+        real = _run(REAL).stage3
+        assert real is not None and real.decisions is not None
+        selection = real.decisions.loan_id
+        assert selection.chosen_column == "original_underlying_exposure_identifier"
+        assert selection.reason == "both fully covered; default to original"
+        assert [(c.matched, c.total) for c in selection.candidates] == [(1126, 1126)] * 2
+        assert real.decisions.borrower_id.chosen_column == "new_obligor_identifier"
+        assert real.decisions.property_id.identical
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_stage3_removed_nothing_on_the_fixtures(fixture_dir: Path) -> None:
+    result = _run(fixture_dir)
+    assert result.stage2 is not None and result.stage3 is not None
+    decisions = result.stage3.decisions
+    assert decisions is not None
+    assert decisions.loans_missing_calc_loan_id.len() == 0
+    assert decisions.loans_without_collateral.len() == 0
+    assert decisions.properties_removed.len() == 0
+    assert decisions.unmatched_loan_ids == ()
+    assert decisions.unmatched_collateral_ids == ()
+    assert decisions.loan_rows.to_list() == list(range(result.stage2.loans.height))
+    assert decisions.property_rows.to_list() == list(range(result.stage2.properties.height))
+
+
+# ---------------------------------------------------------------------------
+# Record index
+# ---------------------------------------------------------------------------
+
+
+def _assert_record_index_and_alignment(result: PipelineResult) -> None:
+    from esma_milan.pipeline.enriched import (
+        compose_loans_enriched,
+        compose_properties_enriched,
+    )
+
+    assert result.stage1 is not None and result.stage3 is not None
+    assert result.stage4 is not None and result.stage5 is not None
+    assert result.stage7 is not None
+    assert result.loan_record_index is not None
+    assert result.collateral_record_index is not None
+    stage1, stage3 = result.stage1, result.stage3
+
+    # The index points each kept row at its record in the Stage 1 frame,
+    # which is the file's record order.
+    loan_columns = stage1.loans.columns
+    assert stage1.loans[result.loan_record_index].equals(stage3.loans.select(loan_columns))
+    property_columns = stage1.properties.columns
+    assert stage1.properties[result.collateral_record_index].equals(
+        stage3.properties.select(property_columns)
+    )
+    assert result.loan_record_index.dtype == pl.UInt32
+    assert result.loan_record_index.n_unique() == stage3.loans.height
+    assert result.collateral_record_index.n_unique() == stage3.properties.height
+
+    # The enriched frames (the two "Cleaned ESMA" sheets) and the flattened
+    # pool keep Stage 3's row order, so the same index serves them.
+    loans_enriched = compose_loans_enriched(
+        stage3.loans, result.stage4.loan_groups, result.stage5.classifications
+    )
+    properties_enriched = compose_properties_enriched(
+        stage3.properties, result.stage4.collateral_groups, result.stage5.classifications
+    )
+    assert loans_enriched.select(stage3.loans.columns).equals(stage3.loans)
+    assert properties_enriched.select(stage3.properties.columns).equals(stage3.properties)
+    assert (
+        result.stage7.combined_flattened["calc_loan_id"].to_list()
+        == stage3.loans["calc_loan_id"].to_list()
+    )
+
+
+@pytest.mark.parametrize("fixture_dir", FIXTURE_PARAMS)
+def test_record_index_and_row_alignment_on_the_fixtures(fixture_dir: Path) -> None:
+    _assert_record_index_and_alignment(_run(fixture_dir))
+
+
+def test_record_index_with_a_fully_duplicated_collateral_row(tmp_path: Path) -> None:
+    """Nothing in the data tells two identical collateral rows apart; the
+    record index does. The duplicate also shifts every later record."""
+    lines = (SYNTHETIC / "collaterals.csv").read_text().splitlines()
+    duplicated = [*lines[:3], lines[2], *lines[3:]]  # data record 1 repeated as record 2
+    collaterals = tmp_path / "collaterals.csv"
+    collaterals.write_text("\n".join(duplicated) + "\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        result = run_pipeline(
+            loans_file_path=SYNTHETIC / "loans.csv",
+            collaterals_file_path=collaterals,
+            deal_name="DUP",
+            dry_run=True,
+            verbose=False,
+        )
+    _assert_record_index_and_alignment(result)
+    assert result.stage3 is not None and result.collateral_record_index is not None
+    properties = result.stage3.properties
+    assert properties.height == 13
+    assert properties[1].equals(properties[2])  # identical in every column
+    assert result.collateral_record_index.to_list() == list(range(13))
+    assert result.collateral_record_index[1] != result.collateral_record_index[2]
+
+
+def test_record_index_skips_records_stage2_dropped(tmp_path: Path) -> None:
+    """Make the third loan inactive: its record index (2) is absent and the
+    later loans keep their file positions."""
+    import csv
+
+    with (SYNTHETIC / "loans.csv").open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        assert reader.fieldnames is not None
+        header, rows = list(reader.fieldnames), list(reader)
+    rows[2]["account_status"] = "RDMD"
+    dropped_loan = rows[2]["new_underlying_exposure_identifier"]
+    loans = tmp_path / "loans.csv"
+    with loans.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        result = run_pipeline(
+            loans_file_path=loans,
+            collaterals_file_path=SYNTHETIC / "collaterals.csv",
+            deal_name="DROP",
+            dry_run=True,
+            verbose=False,
+        )
+    _assert_record_index_and_alignment(result)
+    assert result.loan_record_index is not None
+    assert result.loan_record_index.to_list() == [0, 1, 3, 4, 5, 6, 7]
+    assert result.stage1 is not None and result.collateral_record_index is not None
+    collateral_loans = result.stage1.properties["underlying_exposure_identifier"].to_list()
+    assert result.collateral_record_index.to_list() == [
+        i for i, loan in enumerate(collateral_loans) if loan != dropped_loan
+    ]

@@ -57,6 +57,132 @@ class _Candidate:
     unmatched: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class LoanIdCandidate:
+    """What `select_calc_loan_id` established about one candidate column."""
+
+    column: str
+    all_missing: bool
+    has_duplicates: bool
+    disqualified: bool
+    """True when the column is all missing or has a duplicated value."""
+
+    total: int
+    """Distinct non-missing values. Not computed for a disqualified
+    column, where it is 0 (which is why the log shows `0/0` for one)."""
+
+    matched: int
+    """How many of those values are a collateral row's loan identifier.
+    Not computed for a disqualified column: 0."""
+
+    coverage: float
+    """matched / total. Not computed for a disqualified column: 0.0."""
+
+    unmatched: tuple[str, ...]
+    """Every distinct value that is no collateral row's loan identifier,
+    sorted. Complete; warnings and errors show the first ten. Empty for a
+    disqualified column."""
+
+    duplicated_values: tuple[str, ...]
+    """Every value that occurs on more than one loan, in the order the
+    repeat is met. Complete. Empty when there is none."""
+
+
+@dataclass(frozen=True)
+class LoanIdSelection:
+    """The loan-identifier decision of `select_calc_loan_id`."""
+
+    candidates: tuple[LoanIdCandidate, LoanIdCandidate]
+    """(original, new)."""
+
+    chosen_column: str | None
+    """The column used as `calc_loan_id`. None only on the selection
+    carried by a `no_usable_loan_id_column` error, where no choice was
+    made."""
+
+    reason: str | None
+    """Why it was chosen: the string logged as `reason`. None with
+    `chosen_column`."""
+
+    min_coverage: float
+    """The minimum coverage the chosen column was held to."""
+
+
+@dataclass(frozen=True)
+class IdColumnChoice:
+    """One `generate_id_column` decision (borrower or property)."""
+
+    output_column: str
+    original_column: str
+    new_column: str
+    chosen_column: str
+    """Which of the two source columns supplied the values."""
+
+    identical: bool
+    """The two columns were equal element for element, missing values
+    included."""
+
+    n_unique_original: int
+    n_unique_new: int
+    decision: str
+    """The string logged as `decision`."""
+
+
+@dataclass(frozen=True)
+class Stage3Decisions:
+    """What Stage 3 decided and what it removed. Complete, not sampled.
+
+    Every position here is a 0-based row position in the Stage 3 INPUT
+    frame, which is the Stage 2 output. To get the record's position in
+    the uploaded file, index `Stage2Output.loan_rows` (or
+    `property_rows`) with it; `PipelineResult.loan_record_index` and
+    `collateral_record_index` do that for the rows kept.
+    """
+
+    loan_id: LoanIdSelection
+
+    loan_rows: pl.Series
+    """Positions in the Stage 3 input loans frame of the loans kept,
+    ascending (UInt32). Output `loans` row i is input row `loan_rows[i]`."""
+
+    property_rows: pl.Series
+    """Positions in the Stage 3 input properties frame of the collateral
+    rows kept, ascending (UInt32)."""
+
+    loans_missing_calc_loan_id: pl.Series
+    """Positions in the Stage 3 input loans frame of the loans dropped
+    because the chosen identifier is missing on them. The warning gives
+    only their number."""
+
+    loans_without_collateral: pl.Series
+    """Positions in the Stage 3 input loans frame of the loans dropped by
+    the intersection: their `calc_loan_id` is no collateral row's loan
+    identifier. Nothing else reports these."""
+
+    unmatched_loan_ids: tuple[str, ...]
+    """The chosen column's values with no collateral row, sorted (the
+    chosen candidate's `unmatched`)."""
+
+    unmatched_collateral_ids: tuple[str, ...]
+    """Collateral loan identifiers that are no kept loan's `calc_loan_id`,
+    sorted. Empty on every successful run today: see
+    `properties_removed`."""
+
+    properties_removed: pl.Series
+    """Positions in the Stage 3 input properties frame of the collateral
+    rows removed by the intersection. Empty on every successful run today:
+    a collateral row that the intersection would remove makes `run_stage3`
+    raise `loan_identifier_mismatch` first. R drops the row instead
+    (r_reference/R/pipeline.R:283-300). The fix for issue #45 will
+    populate this field."""
+
+    borrower_id: IdColumnChoice
+    """The `generate_id_column` decision behind `calc_borrower_id`."""
+
+    property_id: IdColumnChoice
+    """The `generate_id_column` decision behind `calc_property_id`."""
+
+
 def _sample_values(values: list[str], n: int = 10) -> str:
     """Mirrors R's `paste(utils::head(x, n), collapse = ', ')`."""
     return ", ".join(str(v) for v in values[:n])
@@ -84,7 +210,39 @@ def _duplicate_diagnostics(values: list[str | None]) -> tuple[int, str]:
     return len(dups), _sample_values(dups, 10)
 
 
-def select_calc_loan_id(
+def _loan_id_selection(
+    candidates: list[_Candidate],
+    *,
+    chosen: _Candidate | None,
+    reason: str | None,
+    min_coverage: float,
+) -> LoanIdSelection:
+    """The public record of the candidates as the selection has them."""
+    original, new = (
+        LoanIdCandidate(
+            column=c.name,
+            all_missing=c.all_na,
+            has_duplicates=c.has_duplicates,
+            disqualified=c.disqualified,
+            total=c.total,
+            matched=c.matched,
+            coverage=c.coverage,
+            unmatched=c.unmatched,
+            duplicated_values=(
+                tuple(_duplicated_values(c.values)) if c.has_duplicates else ()
+            ),
+        )
+        for c in candidates
+    )
+    return LoanIdSelection(
+        candidates=(original, new),
+        chosen_column=chosen.name if chosen is not None else None,
+        reason=reason,
+        min_coverage=float(min_coverage),
+    )
+
+
+def _select_calc_loan_id(
     loans: pl.DataFrame,
     properties: pl.DataFrame,
     *,
@@ -93,8 +251,14 @@ def select_calc_loan_id(
     output_col_name: str = "calc_loan_id",
     property_id_col: str = "underlying_exposure_identifier",
     min_coverage: float = DEFAULT_MIN_LOAN_ID_COVERAGE,
-) -> pl.DataFrame:
+    _stacklevel: int = 2,
+) -> tuple[pl.DataFrame, LoanIdSelection]:
     """Pick the loan-ID column to use as `calc_loan_id`.
+
+    The body of `select_calc_loan_id`, returning the decision beside the
+    frame. `_stacklevel` is the `stacklevel` of the warnings it emits, so
+    a warning is attributed to the caller of the public function (or to
+    `run_stage3`) whichever way this is reached.
 
     Three-gate decision (utils.R:213-226):
 
@@ -190,7 +354,12 @@ def select_calc_loan_id(
             items=tuple(
                 (c.name, v) for c in candidates for v in _duplicated_values(c.values)
             ),
-            context={"all_missing": {c.name: c.all_na for c in candidates}},
+            context={
+                "all_missing": {c.name: c.all_na for c in candidates},
+                "loan_id_selection": _loan_id_selection(
+                    candidates, chosen=None, reason=None, min_coverage=min_coverage
+                ),
+            },
         )
 
     # -- Gate 2: coverage measurement -------------------------------------
@@ -245,7 +414,7 @@ def select_calc_loan_id(
                 f"{candidates[1].name!r} unmatched sample: "
                 f"[{candidates[1].unmatched_sample}].",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=_stacklevel,
             )
 
     chosen = candidates[chosen_idx]
@@ -266,6 +435,9 @@ def select_calc_loan_id(
                 "total": chosen.total,
                 "coverage": chosen.coverage,
                 "min_coverage": float(min_coverage),
+                "loan_id_selection": _loan_id_selection(
+                    candidates, chosen=chosen, reason=reason, min_coverage=min_coverage
+                ),
             },
         )
 
@@ -286,12 +458,43 @@ def select_calc_loan_id(
             f"{_pct(chosen.coverage)}. "
             f"Unmatched sample: [{chosen.unmatched_sample}].",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel,
         )
 
-    return loans.with_columns(
-        pl.Series(output_col_name, chosen.values, dtype=pl.String)
+    return (
+        loans.with_columns(
+            pl.Series(output_col_name, chosen.values, dtype=pl.String)
+        ),
+        _loan_id_selection(
+            candidates, chosen=chosen, reason=reason, min_coverage=min_coverage
+        ),
     )
+
+
+def select_calc_loan_id(
+    loans: pl.DataFrame,
+    properties: pl.DataFrame,
+    *,
+    original_id_col: str = "original_underlying_exposure_identifier",
+    new_id_col: str = "new_underlying_exposure_identifier",
+    output_col_name: str = "calc_loan_id",
+    property_id_col: str = "underlying_exposure_identifier",
+    min_coverage: float = DEFAULT_MIN_LOAN_ID_COVERAGE,
+) -> pl.DataFrame:
+    """Pick the loan-ID column to use as `calc_loan_id` and return `loans`
+    with it appended. See `_select_calc_loan_id` for the rule; this returns
+    its frame and discards the `LoanIdSelection`."""
+    frame, _ = _select_calc_loan_id(
+        loans,
+        properties,
+        original_id_col=original_id_col,
+        new_id_col=new_id_col,
+        output_col_name=output_col_name,
+        property_id_col=property_id_col,
+        min_coverage=min_coverage,
+        _stacklevel=3,
+    )
+    return frame
 
 
 def _pct(x: float) -> str:
@@ -300,14 +503,17 @@ def _pct(x: float) -> str:
     return f"{x * 100:.2f}%"
 
 
-def generate_id_column(
+def _generate_id_column(
     df: pl.DataFrame,
     *,
     original_id_col: str,
     new_id_col: str,
     output_col_name: str,
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, IdColumnChoice]:
     """Pick between two candidate ID columns by uniqueness count.
+
+    The body of `generate_id_column`, returning the decision beside the
+    frame.
 
     Mirrors r_reference/R/utils.R:173-206. Used for borrower and
     property IDs where neither the duplicate-free constraint nor the
@@ -354,12 +560,14 @@ def generate_id_column(
     count_unique_original = len({v for v in original_values if v is not None})
     count_unique_new = len({v for v in new_values if v is not None})
 
+    chosen_col = original_id_col
     if identical:
         chosen, source = original_values, "identical, using original"
     elif count_unique_original > count_unique_new:
         chosen, source = original_values, "original has more unique values"
     elif count_unique_new > count_unique_original:
         chosen, source = new_values, "new has more unique values"
+        chosen_col = new_id_col
     else:
         chosen, source = original_values, "tied, defaulting to original"
 
@@ -373,9 +581,39 @@ def generate_id_column(
         decision=source,
     )
 
-    return df.with_columns(
-        pl.Series(output_col_name, chosen, dtype=pl.String)
+    return (
+        df.with_columns(pl.Series(output_col_name, chosen, dtype=pl.String)),
+        IdColumnChoice(
+            output_column=output_col_name,
+            original_column=original_id_col,
+            new_column=new_id_col,
+            chosen_column=chosen_col,
+            identical=identical,
+            n_unique_original=count_unique_original,
+            n_unique_new=count_unique_new,
+            decision=source,
+        ),
     )
+
+
+def generate_id_column(
+    df: pl.DataFrame,
+    *,
+    original_id_col: str,
+    new_id_col: str,
+    output_col_name: str,
+) -> pl.DataFrame:
+    """Pick between two candidate ID columns by uniqueness count and
+    return `df` with the chosen values appended. See `_generate_id_column`
+    for the rule; this returns its frame and discards the
+    `IdColumnChoice`."""
+    frame, _ = _generate_id_column(
+        df,
+        original_id_col=original_id_col,
+        new_id_col=new_id_col,
+        output_col_name=output_col_name,
+    )
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +634,9 @@ class Stage3Output:
 
     loans: pl.DataFrame
     properties: pl.DataFrame
+
+    decisions: Stage3Decisions | None = None
+    """What Stage 3 decided and removed; set by `run_stage3`."""
 
 
 def run_stage3(
@@ -421,11 +662,20 @@ def run_stage3(
       6. generate_id_column for calc_borrower_id (on loans).
       7. generate_id_column for calc_property_id (on properties).
     """
-    loans = select_calc_loan_id(loans, properties, min_coverage=min_coverage)
+    loans, loan_id = _select_calc_loan_id(
+        loans, properties, min_coverage=min_coverage, _stacklevel=2
+    )
+    # Positions in the input frames, carried beside the frames through the
+    # filters below so the decision data can name the records removed.
+    loan_positions = pl.int_range(loans.height, dtype=pl.UInt32, eager=True)
+    property_positions = pl.int_range(properties.height, dtype=pl.UInt32, eager=True)
 
     # Drop rows with null calc_loan_id. R: pipeline.R:275-280.
     n_before = loans.height
-    loans = loans.filter(pl.col("calc_loan_id").is_not_null())
+    has_calc_loan_id = loans["calc_loan_id"].is_not_null()
+    loans_missing_calc_loan_id = loan_positions.filter(~has_calc_loan_id)
+    loan_positions = loan_positions.filter(has_calc_loan_id)
+    loans = loans.filter(has_calc_loan_id)
     n_dropped = n_before - loans.height
     if n_dropped > 0:
         warnings.warn(
@@ -438,20 +688,29 @@ def run_stage3(
     property_loan_ids: set[str] = {
         v for v in properties["underlying_exposure_identifier"].to_list() if v is not None
     }
-    loans = loans.filter(pl.col("calc_loan_id").is_in(list(property_loan_ids)))
+    has_collateral = loans.select(
+        pl.col("calc_loan_id").is_in(list(property_loan_ids))
+    ).to_series()
+    loans_without_collateral = loan_positions.filter(~has_collateral)
+    loan_positions = loan_positions.filter(has_collateral)
+    loans = loans.filter(has_collateral)
 
     calc_loan_ids: set[str] = {
         v for v in loans["calc_loan_id"].to_list() if v is not None
     }
-    properties = properties.filter(
+    has_loan = properties.select(
         pl.col("underlying_exposure_identifier").is_in(list(calc_loan_ids))
-    )
+    ).to_series()
+    properties_removed = property_positions.filter(~has_loan)
+    property_positions = property_positions.filter(has_loan)
+    properties = properties.filter(has_loan)
 
     if loans.height == 0:
         raise PipelineDataError(
             "ERROR: No active loans remaining after filtering.",
             stage="stage3",
             reason="no_loans_after_intersection",
+            context={"column": loan_id.chosen_column},
         )
     if properties.height == 0:
         raise ValueError("ERROR: No properties remaining after filtering.")
@@ -487,13 +746,13 @@ def run_stage3(
         )
 
     # Borrower and property IDs use the simpler generate_id_column.
-    loans = generate_id_column(
+    loans, borrower_id = _generate_id_column(
         loans,
         original_id_col="original_obligor_identifier",
         new_id_col="new_obligor_identifier",
         output_col_name="calc_borrower_id",
     )
-    properties = generate_id_column(
+    properties, property_id = _generate_id_column(
         properties,
         original_id_col="original_collateral_identifier",
         new_id_col="new_collateral_identifier",
@@ -506,4 +765,22 @@ def run_stage3(
         n_properties=properties.height,
     )
 
-    return Stage3Output(loans=loans, properties=properties)
+    chosen_candidate = next(
+        c for c in loan_id.candidates if c.column == loan_id.chosen_column
+    )
+    return Stage3Output(
+        loans=loans,
+        properties=properties,
+        decisions=Stage3Decisions(
+            loan_id=loan_id,
+            loan_rows=loan_positions,
+            property_rows=property_positions,
+            loans_missing_calc_loan_id=loans_missing_calc_loan_id,
+            loans_without_collateral=loans_without_collateral,
+            unmatched_loan_ids=chosen_candidate.unmatched,
+            unmatched_collateral_ids=tuple(missing_in_loans),
+            properties_removed=properties_removed,
+            borrower_id=borrower_id,
+            property_id=property_id,
+        ),
+    )

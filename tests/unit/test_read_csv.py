@@ -351,3 +351,37 @@ def test_windows_1252_header_is_repaired_and_renamed_via_taxonomy(tmp_path: Path
     df = read_and_clean(p, {"RREL2": "Original Underlying Exposure Identifier", "Währung": "Loan Currency"})
     assert df.columns == ["original_underlying_exposure_identifier", "loan_currency"]
     assert df["loan_currency"].to_list() == ["EUR"]
+
+
+# ---------------------------------------------------------------------------
+# What a record index means: the loader drops no record after the header.
+# `PipelineResult.loan_record_index` / `collateral_record_index` are row
+# positions in the frame this function returns, so these pin what that
+# position refers to in the file.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_first_column"),
+    [
+        pytest.param(b"id,x\nA,1\nB,2\nC,3\n", ["A", "B", "C"], id="plain"),
+        pytest.param(b"id,x\nA,1\n\nB,2\n", ["A", None, "B"], id="blank line is a record"),
+        pytest.param(b"id,x\nA,1\nB,2\n\n\n", ["A", "B", None, None], id="trailing blank lines"),
+        pytest.param(b"id,x\nA,1\n,\nB,2\n", ["A", None, "B"], id="commas-only line"),
+        pytest.param(b"id,x\r\nA,1\r\n\r\nB,2\r\n", ["A", None, "B"], id="CRLF blank line"),
+        pytest.param(b"\nid,x\nA,1\nB,2\n", ["A", "B"], id="blank line before the header is skipped"),
+        pytest.param(b'id,x\nA,"1\n2"\nB,2\n', ["A", "B"], id="quoted line break is one record"),
+        pytest.param(b"id,x\nA,1\nB,2", ["A", "B"], id="no final newline"),
+        pytest.param(b"id,x\nA,1\nB\nC,3\n", ["A", "B", "C"], id="short row kept"),
+        pytest.param(
+            b"id,x\nA,M\xfcller\n\nB,2\n", ["A", None, "B"], id="repaired file keeps the blank line"
+        ),
+    ],
+)
+def test_loader_keeps_every_record_after_the_header(
+    tmp_path: Path, raw: bytes, expected_first_column: list[str | None]
+) -> None:
+    p = tmp_path / "f.csv"
+    p.write_bytes(raw)
+    df = read_and_clean(p, taxonomy={})
+    assert df["id"].to_list() == expected_first_column

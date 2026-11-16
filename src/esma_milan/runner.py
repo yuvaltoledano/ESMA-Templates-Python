@@ -147,6 +147,26 @@ class PipelineResult:
     alongside `workbook_bytes` in in-memory mode; matches the filename
     used for the on-disk output. None on disk-write runs and dry_run."""
 
+    loan_record_index: pl.Series | None = None
+    """For each row of `stage3.loans`, in order, the 0-based index of its
+    record in the loans file (UInt32). The loans sheets and the flattened
+    pool keep that row order, so row i there is the same record.
+
+    The index counts the records after the header as the loader reads
+    them. The loader drops none: a blank line is a record (a row of
+    missing values, which Stage 2 then drops), a quoted field that spans
+    lines is one record, and blank lines before the header are skipped.
+    Index + 1 is the "data row" of the loader's non-numeric-value message;
+    index + 2 is the row shown when the file is opened in a spreadsheet.
+
+    Composed from the positions each stage that drops rows reports:
+    `stage2.loan_rows` indexed by `stage3.decisions.loan_rows`. No frame
+    carries it as a column."""
+
+    collateral_record_index: pl.Series | None = None
+    """The same for `stage3.properties` (and the "Cleaned ESMA properties"
+    sheet, which keeps its row order) and the collaterals file."""
+
     execution_summary: pl.DataFrame | None = None
     """The composed Execution Summary (Sheet 1) as a 2-column
     `(Metric: Utf8, Value: Utf8)` Polars frame with pre-formatted
@@ -239,6 +259,21 @@ def run_pipeline(
             else DEFAULT_MIN_LOAN_ID_COVERAGE
         ),
     )
+
+    # Each kept record's position in its uploaded file, composed from the
+    # positions Stage 2 (in the Stage 1 frames) and Stage 3 (in the Stage 2
+    # frames) report. Carried beside the frames, never as a column.
+    loan_record_index: pl.Series | None = None
+    collateral_record_index: pl.Series | None = None
+    if (
+        stage2.loan_rows is not None
+        and stage2.property_rows is not None
+        and stage3.decisions is not None
+    ):
+        loan_record_index = stage2.loan_rows.gather(stage3.decisions.loan_rows)
+        collateral_record_index = stage2.property_rows.gather(
+            stage3.decisions.property_rows
+        )
 
     # --- Stage 4: bipartite graph + connected components -----------------
     _report(4)
@@ -340,6 +375,8 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            loan_record_index=loan_record_index,
+            collateral_record_index=collateral_record_index,
             execution_summary=execution_summary,
         )
 
@@ -390,6 +427,8 @@ def run_pipeline(
             stage6=stage6,
             stage7=stage7,
             chosen_aggregation_method=chosen_aggregation,
+            loan_record_index=loan_record_index,
+            collateral_record_index=collateral_record_index,
             workbook_bytes=workbook_bytes,
             output_filename=output_filename,
             execution_summary=execution_summary,
@@ -414,6 +453,8 @@ def run_pipeline(
         stage6=stage6,
         stage7=stage7,
         chosen_aggregation_method=chosen_aggregation,
+        loan_record_index=loan_record_index,
+        collateral_record_index=collateral_record_index,
         execution_summary=execution_summary,
     )
 

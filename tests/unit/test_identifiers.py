@@ -422,3 +422,265 @@ def test_generate_id_missing_new_col_errors() -> None:
             new_id_col="new_obligor_identifier",
             output_col_name="calc_borrower_id",
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 decisions as data
+# ---------------------------------------------------------------------------
+
+import structlog  # noqa: E402
+
+from esma_milan.errors import PipelineDataError  # noqa: E402
+from esma_milan.pipeline.filters import run_stage2  # noqa: E402
+from esma_milan.pipeline.identifiers import (  # noqa: E402
+    LoanIdSelection,
+    _generate_id_column,
+    _select_calc_loan_id,
+    run_stage3,
+)
+
+_ORIG = "original_underlying_exposure_identifier"
+_NEW = "new_underlying_exposure_identifier"
+
+
+def _stage3_loans(
+    orig: Sequence[str | None],
+    new: Sequence[str | None],
+    *,
+    statuses: Sequence[str] | None = None,
+) -> pl.DataFrame:
+    n = len(orig)
+    return pl.DataFrame(
+        {
+            _ORIG: pl.Series(list(orig), dtype=pl.String),
+            _NEW: pl.Series(list(new), dtype=pl.String),
+            "original_obligor_identifier": [f"BO{i}" for i in range(n)],
+            "new_obligor_identifier": [f"BN{i}" for i in range(n)],
+            "account_status": list(statuses) if statuses else ["PERF"] * n,
+            "current_principal_balance": [100.0] * n,
+        }
+    )
+
+
+def _stage3_properties(loan_ids: Sequence[str | None]) -> pl.DataFrame:
+    n = len(loan_ids)
+    return pl.DataFrame(
+        {
+            "underlying_exposure_identifier": pl.Series(list(loan_ids), dtype=pl.String),
+            "original_collateral_identifier": [f"PO{i}" for i in range(n)],
+            "new_collateral_identifier": [f"PN{i}" for i in range(n)],
+            "property_type": ["RHOS"] * n,
+            "collateral_type": ["RBLD"] * n,
+            "original_valuation_amount": [100000.0] * n,
+            "current_valuation_amount": [100000.0] * n,
+        }
+    )
+
+
+def test_selection_reports_both_candidates_and_the_choice() -> None:
+    loans = _make_loans(["O1", "O2", "O3", "O4"], ["N1", "N2", "N3", "N4"])
+    properties = _make_properties(["O1", "N1", "N2", "N3"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        frame, selection = _select_calc_loan_id(loans, properties, min_coverage=0.5)
+    assert frame["calc_loan_id"].to_list() == ["N1", "N2", "N3", "N4"]
+    assert selection.chosen_column == _NEW
+    assert selection.reason == "higher coverage than alternative"
+    assert selection.min_coverage == 0.5
+    original, new = selection.candidates
+    assert (original.column, original.total, original.matched, original.coverage) == (
+        _ORIG, 4, 1, 0.25,
+    )
+    assert original.unmatched == ("O2", "O3", "O4")
+    assert (new.column, new.total, new.matched, new.coverage) == (_NEW, 4, 3, 0.75)
+    assert new.unmatched == ("N4",)
+    assert not original.disqualified and not new.disqualified
+    assert original.duplicated_values == () and new.duplicated_values == ()
+
+
+def test_selection_duplicate_disqualification_lists_every_duplicated_value() -> None:
+    loans = _make_loans(["O1", "O1", "O2", "O2", "O3"], ["N1", "N2", "N3", "N4", "N5"])
+    properties = _make_properties(["N1", "N2", "N3", "N4", "N5"])
+    _, selection = _select_calc_loan_id(loans, properties)
+    original, new = selection.candidates
+    assert original.has_duplicates and original.disqualified and not original.all_missing
+    assert original.duplicated_values == ("O1", "O2")
+    # Total and matched are not computed for a disqualified column.
+    assert (original.total, original.matched, original.coverage) == (0, 0, 0.0)
+    assert original.unmatched == ()
+    assert selection.chosen_column == _NEW
+    assert selection.reason == "only duplicate-free candidate"
+    assert (new.total, new.matched, new.coverage) == (5, 5, 1.0)
+
+
+def test_selection_all_missing_disqualification() -> None:
+    loans = _make_loans([None, None], ["N1", "N2"])
+    _, selection = _select_calc_loan_id(loans, _make_properties(["N1", "N2"]))
+    original, _new = selection.candidates
+    assert original.all_missing and original.disqualified and not original.has_duplicates
+    assert selection.chosen_column == _NEW
+
+
+def test_partial_coverage_unmatched_list_equals_the_warning_sample() -> None:
+    """Ten or fewer unmatched: the complete list is what the warning shows."""
+    loans = _make_loans([f"O{i}" for i in range(1, 11)], [f"N{i}" for i in range(1, 11)])
+    properties = _make_properties([f"O{i}" for i in range(1, 10)])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        _, selection = _select_calc_loan_id(loans, properties)
+    chosen = selection.candidates[0]
+    assert chosen.unmatched == ("O10",)
+    assert any(
+        f"partial coverage {chosen.matched}/{chosen.total} = 90.00%. "
+        f"Unmatched sample: [{', '.join(chosen.unmatched)}]." in str(w.message)
+        for w in caught
+    )
+
+
+def test_coverage_failure_carries_the_selection_with_both_candidates() -> None:
+    loans = _make_loans([f"O{i}" for i in range(1, 11)], [f"N{i}" for i in range(1, 11)])
+    properties = _make_properties([f"O{i}" for i in range(1, 8)])
+    with pytest.raises(PipelineDataError) as excinfo:
+        _select_calc_loan_id(loans, properties)
+    selection = excinfo.value.context["loan_id_selection"]
+    assert isinstance(selection, LoanIdSelection)
+    assert selection.chosen_column == _ORIG
+    assert selection.reason == "higher coverage than alternative"
+    assert selection.min_coverage == DEFAULT_MIN_LOAN_ID_COVERAGE
+    original, new = selection.candidates
+    assert (original.total, original.matched, original.coverage) == (10, 7, 0.7)
+    assert original.unmatched == ("O10", "O8", "O9")  # sorted as strings
+    assert (new.total, new.matched, new.coverage) == (10, 0, 0.0)
+    assert len(new.unmatched) == 10
+    assert excinfo.value.items == original.unmatched
+
+
+def test_no_usable_column_failure_carries_the_selection_without_a_choice() -> None:
+    loans = _make_loans(["O1", "O1", "O2"], [None, None, None])
+    with pytest.raises(PipelineDataError) as excinfo:
+        _select_calc_loan_id(loans, _make_properties(["O1"]), min_coverage=0.9)
+    selection = excinfo.value.context["loan_id_selection"]
+    assert isinstance(selection, LoanIdSelection)
+    assert selection.chosen_column is None and selection.reason is None
+    assert selection.min_coverage == 0.9
+    original, new = selection.candidates
+    assert original.disqualified and original.duplicated_values == ("O1",)
+    assert new.disqualified and new.all_missing and new.duplicated_values == ()
+
+
+@pytest.mark.parametrize(
+    ("original", "new", "decision", "chosen_is_new", "identical"),
+    [
+        (["B1", "B2"], ["B1", "B2"], "identical, using original", False, True),
+        (["B1", "B2"], ["B1", "B1"], "original has more unique values", False, False),
+        (["B1", "B1"], ["B1", "B2"], "new has more unique values", True, False),
+        (["B1", "B2"], ["X1", "X2"], "tied, defaulting to original", False, False),
+    ],
+)
+def test_id_column_choice_for_each_decision(
+    original: list[str], new: list[str], decision: str, chosen_is_new: bool, identical: bool
+) -> None:
+    df = _two_col("original_obligor_identifier", original, "new_obligor_identifier", new)
+    with structlog.testing.capture_logs() as logs:
+        frame, choice = _generate_id_column(
+            df,
+            original_id_col="original_obligor_identifier",
+            new_id_col="new_obligor_identifier",
+            output_col_name="calc_borrower_id",
+        )
+    assert choice.decision == decision
+    assert choice.identical is identical
+    assert choice.output_column == "calc_borrower_id"
+    assert choice.original_column == "original_obligor_identifier"
+    assert choice.new_column == "new_obligor_identifier"
+    expected_column = "new_obligor_identifier" if chosen_is_new else "original_obligor_identifier"
+    assert choice.chosen_column == expected_column
+    assert frame["calc_borrower_id"].to_list() == df[expected_column].to_list()
+    (event,) = [e for e in logs if e["event"] == "generate_id_column"]
+    assert (choice.n_unique_original, choice.n_unique_new, choice.decision) == (
+        event["n_unique_original"], event["n_unique_new"], event["decision"],
+    )
+
+
+def test_stage3_reports_the_loans_it_dropped_as_positions_in_its_input() -> None:
+    """Six loans reach Stage 3. The new column is chosen (the original has
+    a duplicate). One loan has no chosen identifier, two have no
+    collateral row; three are kept."""
+    loans = _stage3_loans(
+        ["O1", "O1", "O3", "O4", "O5", "O6"],
+        ["N1", "N2", None, "N4", "N5", "N6"],
+    )
+    properties = _stage3_properties(["N1", "N1", "N4", "N6"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        out = run_stage3(loans, properties, min_coverage=0.5)
+    decisions = out.decisions
+    assert decisions is not None
+    assert decisions.loan_id.chosen_column == _NEW
+    assert decisions.loans_missing_calc_loan_id.to_list() == [2]
+    assert decisions.loans_without_collateral.to_list() == [1, 4]
+    assert decisions.loan_rows.to_list() == [0, 3, 5]
+    assert decisions.property_rows.to_list() == [0, 1, 2, 3]
+    assert decisions.unmatched_loan_ids == ("N2", "N5")
+    # Empty on every successful run today (issue #45).
+    assert decisions.properties_removed.to_list() == []
+    assert decisions.unmatched_collateral_ids == ()
+    for series in (
+        decisions.loan_rows,
+        decisions.property_rows,
+        decisions.loans_missing_calc_loan_id,
+        decisions.loans_without_collateral,
+        decisions.properties_removed,
+    ):
+        assert series.dtype == pl.UInt32
+    assert out.loans.drop("calc_loan_id", "calc_borrower_id").equals(
+        loans[decisions.loan_rows]
+    )
+    assert out.properties.drop("calc_property_id").equals(
+        properties[decisions.property_rows]
+    )
+    assert any("Dropped 1 loans with missing calc_loan_id" in str(w.message) for w in caught)
+    assert decisions.borrower_id.output_column == "calc_borrower_id"
+    assert decisions.borrower_id.decision == "tied, defaulting to original"
+    assert decisions.property_id.output_column == "calc_property_id"
+    assert decisions.property_id.chosen_column == "original_collateral_identifier"
+
+
+def test_stage3_positions_translate_to_file_records_through_stage2_rows() -> None:
+    """Every position in Stage3Decisions is a position in the Stage 3
+    input, which is the Stage 2 output; Stage2Output.loan_rows turns it
+    into the record's position in the file. Here Stage 2 drops file
+    records 1 and 4, so the two numberings differ."""
+    loans = _stage3_loans(
+        ["O0", "O1", "O0", "O3", "O4", "O5", "O6", "O7"],
+        ["N0", "N1", "N2", None, "N4", "N5", "N6", "N7"],
+        statuses=["PERF", "DFLT", "PERF", "PERF", "RDMD", "PERF", "PERF", "PERF"],
+    )
+    properties = _stage3_properties(["N0", "N2", "N1", "N6", "N7"])
+    stage2 = run_stage2(loans, properties)
+    assert stage2.loan_rows is not None and stage2.property_rows is not None
+    assert stage2.loan_rows.to_list() == [0, 2, 3, 5, 6, 7]
+    assert stage2.property_rows.to_list() == [0, 1, 3, 4]  # N1's loan is not active
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        stage3 = run_stage3(stage2.loans, stage2.properties, min_coverage=0.5)
+    decisions = stage3.decisions
+    assert decisions is not None
+
+    # In the Stage 3 input (six loans): position 2 has no new identifier,
+    # position 3 (N5) has no collateral row.
+    assert decisions.loans_missing_calc_loan_id.to_list() == [2]
+    assert decisions.loans_without_collateral.to_list() == [3]
+    # In the file: records 3 and 5.
+    missing_in_file = stage2.loan_rows.gather(decisions.loans_missing_calc_loan_id)
+    without_collateral_in_file = stage2.loan_rows.gather(decisions.loans_without_collateral)
+    assert missing_in_file.to_list() == [3]
+    assert without_collateral_in_file.to_list() == [5]
+    assert loans[_NEW].gather(missing_in_file).to_list() == [None]
+    assert loans[_NEW].gather(without_collateral_in_file).to_list() == ["N5"]
+    # The loans kept, as file records.
+    kept_in_file = stage2.loan_rows.gather(decisions.loan_rows)
+    assert kept_in_file.to_list() == [0, 2, 6, 7]
+    assert stage3.loans["calc_loan_id"].to_list() == loans[_NEW].gather(kept_in_file).to_list()
+    assert stage2.property_rows.gather(decisions.property_rows).to_list() == [0, 1, 3, 4]
