@@ -154,3 +154,20 @@ sessions and UI for a two-person tool). Because the Caddyfile lives in the
 `web` image, the first version with this change needs an image rebuild
 (`docker compose up -d --build --no-deps web`), not only the
 `--force-recreate web` that `.env`-only changes need.
+
+### 2026-11-16 — The parity diff compares every cell; the cap limits examples only
+`diff_workbooks` stopped comparing a sheet once it had recorded
+`max_cell_diffs_per_sheet` differences (50), and the real-fixture test
+removed tolerated last-digit pairs from that recorded list afterwards. The
+MILAN sheet has 73 such pairs, so the test saw 50, tolerated all 50, and
+never assessed the other 23 or anything after them; a cap of zero passed
+any sheet. Now every cell is compared, `SheetDiff.n_cell_diffs` decides
+pass or fail, and the cap only limits the examples kept. The six-column
+tolerance moved into the comparison as an optional `StringFloatTolerance`
+(default none, so every other caller compares as before) and applies only
+when both cells are strings, a slight narrowing of the old test helper,
+which would also have accepted a number against a numeric string. With
+every cell compared, all 73 real-fixture pairs are within tolerance and
+nothing else differs on either fixture. Rejected: raising the cap (still a
+cap), and a tolerance flag on `scripts/run_parity_check.py` (the
+before/after gate compares two Python outputs, which must be identical).
