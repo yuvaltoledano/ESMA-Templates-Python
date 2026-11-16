@@ -24,7 +24,11 @@ How to read it:
 - The PR split in 11.3 is the original one. The first PR (the parity gate
   and the stage interface) is merged. The brief of each later PR states
   its own scope.
-- Nothing here is implemented until the PR that says so.
+- Nothing here is implemented until the PR that says so. Implemented so
+  far: the parity gate and the stage interface (10.5, 9.1); and, in
+  `src/esma_milan/quality/`, sections 3.2 to 3.5, 4, 5, 6 and 8.1 as far
+  as they need only the two files (the paragraphs headed "As
+  implemented" say exactly what), with the summary file of 10.3.
 
 ---
 
@@ -290,6 +294,24 @@ decodable) is the boundary: the report says the file could not be split
 into records, gives the position of the failure, runs nothing that needs
 records from that file, and does not invent counts.
 
+**As implemented.** A file is reported as not splittable into records
+when: it has no header (an empty file); a record has more fields than
+the header (every such record is listed with its record number, the
+physical line it starts on and its field count, not only the first); a
+quote opens and never closes (the record and line where it opens); or
+the two parsers of 5.1 read the header differently, which is what line
+ends made of a lone carriage return do. A file with a header and no
+record is readable and has 0 records. "Not decodable" cannot occur: the
+repair cascade of the loader accepts every byte, and a repaired file is
+readable with the repair reported. The other file is still assessed.
+
+**Completeness in the releases before the last.** Every rule of the
+catalogue that is not implemented yet is a check that did not run. So
+until all families are implemented the report always shows assessment
+completeness as *partial*, with the rules not implemented in the release
+counted and listed apart from the rules that could not be evaluated on
+the files, and compliance coverage as partial for the same reason.
+
 ### 3.5 Severity
 
 - **Stop**: the pipeline cannot produce a MILAN file, or a decision of
@@ -429,7 +451,8 @@ Source review and catalogue completion are separate statuses.
 | Part | Status |
 |---|---|
 | Package (workbook 1.3.1, XSD 1.3.0), RRE performing template | reviewed in full; nothing to restart |
-| Per-field source mapping | written: `docs/data-quality/rre-source-mapping.csv` beside this file as `rre-source-mapping.csv`, one row per field (107) and per optional element (2): workbook row numbers, XML path, multiplicity, XSD type and facets, ND options, validation rule, change-log amendment, CSV representation, implementing checks, result kind, compliance and rejection effect, provisional final-report category, limitations. The package itself and a readable per-field summary are in the same folder. It becomes the reviewed catalogue table in PR 1. |
+| Per-field source mapping | written: `docs/data-quality/rre-source-mapping.csv` beside this file as `rre-source-mapping.csv`, one row per field (107) and per optional element (2): workbook row numbers, XML path, multiplicity, XSD type and facets, ND options, validation rule, change-log amendment, CSV representation, implementing checks, result kind, compliance and rejection effect, provisional final-report category, limitations. The ESMA package itself is not in the repository. The file is the reviewed table behind `src/esma_milan/quality/catalogue.py`: a test keeps field names, formats, ND flags and final-report categories equal, and keeps the `implementing_checks` column equal to the rules the catalogue applies to each field, in both directions. |
+| Reference lists | bundled under `src/esma_milan/quality/refdata/`, one code per line, with `manifest.json` recording the source, its address, the version or publication date and the SHA-256 of each source file. ISO 3166-1 alpha-2: Debian `iso-codes` 4.20.1 (LGPL-2.1-or-later, notice beside the file; codes only). ISO 4217: SIX list one (published 2026-09-17) and list three (published 2026-01-01). NUTS level 3 for 2010, 2013, 2016, 2021 and 2024: Eurostat's GISCO distribution service. The NUTS lists cover 35, 35, 37, 37 and 38 countries (the United Kingdom up to 2021 and not in 2024) and hold no `ZZZ` code. |
 | ESMA Q&As | sweep done on 16 November (4.4) |
 | Final-report (L1) field categories | assignment made for all 107 fields. No Q&A lists the "current" numeric fields or addresses RREL8 on a final report, so category 2 and the RREL8 treatment remain my reading of Q&A 1296 and the field definitions. That uncertainty is kept in the rules: L1 only ever raises questions, and ND5 in RREL8 on a repurchase is a question. |
 | RREL71 on a never-defaulted loan (0 or ND5) | settled: ND5 compliant (Q&A 1324), 0 an accepted alternative (Annex text) |
@@ -509,6 +532,26 @@ string). So:
 The audit frames never reach the pipeline, and the pipeline's inputs are
 never replaced by audit-parsed or repaired values.
 
+**As implemented** (`quality/audit_read.py`). The header is the first
+non-empty record of the decoded text as the `csv` module reads it, with
+a byte-order mark removed. The body is read by Polars from the same
+bytes with every column as text and no null tokens: the parser the
+loader uses, so the records are split exactly as the pipeline splits
+them. Record n of the audit (1-based) is index n − 1 of
+`PipelineResult.loan_record_index` and `collateral_record_index`; a
+blank line after the header is a record, blank lines before the header
+are not, and a quoted field that spans lines is one record. Columns are
+addressed by position, never by name. The physical line a record starts
+on is computed: the header's last line, one line per earlier record, and
+the line breaks inside earlier cells. The audit decodes with its own
+copy of the loader's steps (the loader's function logs an event) and
+keeps, for every repaired cell, the record, the column position and the
+original bytes in hexadecimal.
+
+The file part of the audit runs before the pipeline, one file at a time,
+and frees the file's text before reading the next, so the audit and the
+pipeline never hold their frames at once.
+
 ### 5.2 What is kept for every record
 
 Audit key; raw original and new loan, borrower and collateral
@@ -524,6 +567,14 @@ audit detects that (A13b) and, where identity is ambiguous (duplicates,
 collisions, a collateral record matching two loan records), the report
 states the ambiguity and gives ranges or "not determinable" instead of a
 precise distinct-loan count or balance share.
+
+**As implemented.** Per record the audit keeps the raw and trimmed
+identifiers, the status, the balance text, the cut-off, the population,
+the identity-confidence label and the claimed lifecycle (loans), and the
+collateral type and class (collateral). Links between collateral records
+and loan records are not built yet: they arrive with the identifier
+checks of family A, and the report says so in its scope statements. The
+identifiers the pipeline resolved are not copied onto the records yet.
 
 ### 5.3 Two inventories
 
@@ -550,6 +601,25 @@ Duplicate policy (replacing the conflict between A1 and A15):
 | Two different headers resolving to one field, identical values on every record | Warn (one field reported twice), **unless** the two headers clean to the same name, which is an existing processing failure and stays a Stop (L): the processing limitation takes precedence over the Warn |
 | Two headers resolving to one field, values differ on any record | Stop (L/A): the report lists the differing records |
 | A cleaned name colliding after `clean_names` | Stop (L), as today |
+
+**How a header is resolved, as implemented.** Within the file's own
+schema, in this order: (1) the header is exactly an ESMA code; (2) it
+is exactly a taxonomy field name; (3) its cleaned name
+(`clean_names`) equals a field's cleaned name; (4) it is an optional
+ESMA element by this application's header names (6.4); (5) its cleaned
+name is `<code>_currency` for a `{MONETARY}` field of the schema or for
+an optional element; (6) its cleaned name is `sec_id` or
+`pool_cutoff_date`; otherwise it is unmapped. A code is matched exactly,
+as the pipeline matches it: `rrel30` and a padded `RREL30 ` are not
+codes. The inventory also shows the column name the pipeline gives the
+header, because the two differ by design in three places: a code or
+name of the other file's schema (the pipeline renames it by the whole
+taxonomy; the audit says unmapped); a companion the pipeline's fixed
+lists do not know (`RREL30_CURRENCY`, which the pipeline keeps); and a
+repeated header text (Polars renames the second column; the audit
+resolves both to the field and assesses each column separately). The
+duplicate policy above is a finding of family A and is not reported yet;
+the inventory shows how each header resolved.
 
 ---
 
@@ -603,6 +673,48 @@ Classification order, the same for every field including free text:
 
 A valid ND value is never also reported as a failed number or date.
 
+**Settled readings of the classification** (as implemented in
+`quality/states.py`):
+
+- A cell is *empty* when it holds no character other than Unicode
+  whitespace. (Numbers, booleans and dates are trimmed of XML whitespace
+  only, 6.2.)
+- "Exact" means exact. A padded ND token (` ND5`), and a dated ND4 that
+  is well-formed only after trimming XML whitespace, is not an ND state:
+  in a typed field it is an invalid missing marker (P3d); in a free-text
+  field it is content.
+- The invalid missing markers are a closed list
+  (`DQ_INVALID_MISSING_MARKERS`: `NA`, `N/A`, `#N/A`, `NULL`, `NONE`,
+  `-`, `ND`) plus `ND` followed by an optional space and one digit when
+  that is not an exact valid token (`nd5`, `ND 5`, `ND6`). They are
+  compared after trimming XML whitespace and without regard to case, in
+  typed fields only, and always after the field's own domain. `NaN` is a
+  format failure (P5), not a marker.
+- Bare `ND4` is a malformed ND4 (P3e) and not also an invalid marker:
+  step 2 comes first.
+- A malformed ND4 in a field that allows no ND4 is P3e only. A
+  well-formed dated ND4 there is P3a, and also P3e when its date is not
+  after the cut-off (two defects).
+- For a country or currency code, "valid for the field" includes
+  membership of the reference list, so `ND` in a country field is a
+  marker and `NA` is Namibia. A code of the right shape that is not in
+  the list (`XX`) is a present value: its format passes P5 and P11
+  reports it.
+- An RREL65 cell that holds a `,` or `;` is a present value and goes to
+  the RREL65 validator before any ND4 prefix test.
+- The inventory's nine state columns are: empty, invalid marker, ND1,
+  ND2, ND3, dated ND4, malformed ND4, ND5, present.
+
+**The cut-off date** used by P3e, P6(b), P12 and the lifecycle label.
+For a loan record: RREL6 when it is a valid date, else the export's
+`Pool_Cutoff_Date` column; when both are valid and differ, the cut-off
+is not established for that record and the rules that need it are not
+evaluable there. For a collateral record: the file's own
+`Pool_Cutoff_Date`; where the file has no such column, the loans file's
+cut-off when its records give exactly one, and the result row then says
+"pool cut-off taken from the loans file"; otherwise not established. A9
+(one cut-off across the files) is a finding of family A.
+
 | Id | Rule | Basis | Severity |
 |---|---|---|---|
 | P1 | **Field absent from the file.** Every one of the 107 fields is required to be reported (Q&A 1283: an ND allowance does not make a field optional). One finding per absent field, whether or not MILAN uses it. Separately, if the pipeline requires the column, A2 is the Stop. | E (and L via A2) | Warn |
@@ -617,6 +729,34 @@ A valid ND value is never also reported as a failed number or date.
 
 The pipeline's handling of the dated ND4 form is a defect of its own
 (section 12): a compliant file can be unprocessable today.
+
+**Settled readings of the ND rules** (as implemented):
+
+- **P3f in the first release.** The conditional rules that need only
+  the collateral record are RREC7, RREC8, RREC9, RREC12 and RREC16
+  against RREC5. Established non-property with a value: violation (RREC8
+  on a GUAR record excepted, Q&A 1323(c)). A property row with ND5: a
+  **limitation** ("lifecycle of the exposure not established in this
+  release"), as E17 prescribes where lifecycle is not established,
+  because the record is not yet linked to its loan; no question is
+  raised per cell. OTHR, MIXD, or an RREC5 that is not a valid code:
+  limitation. ND5 in a field with no conditional rule produces no row:
+  it is the scope statement "allowed; justification not verifiable from
+  the files", printed once, with the ND5 count per field in the
+  inventory. The "mixture not explained" question of RREL65 (6.3) is
+  emitted under P3f.
+- **P3g** has one row per cell where the loader does something other
+  than what the file states: a value valid for the field that the loader
+  reads as missing (`NA` in a country field; `NA` or `ND` as free
+  text); a dated ND4 (severity Stop in a numeric field, where the loader
+  stops; Warn in a date or text field); a date in a form the pipeline
+  parses although it is not `YYYY-MM-DD`; and, for an RREL65 cell with
+  several elements, the date the pipeline's split keeps. The last two
+  are the "(L)" notes of 6.2 and 6.3.
+- **Severity Stop without a decision.** Until the acceptance rules are
+  implemented, a Stop row says what it observes ("the loader does not
+  recognise ND4-YYYY-MM-DD in a numeric field and stops at this value")
+  and the report never says a pool was blocked or rejected.
 
 ### 6.2 Format rules by type
 
@@ -659,6 +799,29 @@ RREL20. RREL28 is not extended to other loan amounts until a basis is
 documented; RREL77 is compared with the exposure's currency because its
 definition says so (C30).
 
+**Settled readings of the format rules and currency evidence** (as
+implemented):
+
+- P4(a) covers `{YEAR}` as well: `xs:gYear` collapses whitespace.
+- A control character inside a typed value fails the P5 lexical check;
+  P5 emits the one row, with the reason "control_character", and P4(c)
+  shares its defect key and emits nothing, so the defect counts on a
+  critical field under P5.
+- P4(d) applies to the `{LIST}` fields whose values the pipeline reads
+  (Appendix B), for a value that is a list code only after trimming or
+  upper-casing. Identifier padding is A13.
+- A date is exactly `YYYY-MM-DD`; the time-zone suffix `xs:date` allows
+  is not accepted.
+- `{INTEGER-9999}`: `+12`, `0012`, `12.0` and `-0` pass; a negative
+  value fails P5 (the type's own facet), not P6.
+- Digits are counted on the value: leading zeros and trailing fractional
+  zeros are not digits.
+- P13 is evaluated for every amount that passes P5. A companion cell
+  gets its own format (P5) and membership (P11) results only where its
+  amount is present; an empty or ND companion is not a finding of its
+  own. Until C30 exists, a companion and a dedicated field that differ
+  are case 1 (the companion states the currency).
+
 Remaining per-column rules:
 
 | Id | Rule | Basis | Severity |
@@ -673,6 +836,41 @@ Remaining per-column rules:
 | P11 | Reference-list membership: ISO 3166-1, ISO 4217, NUTS 3 for the RREL12 year. When the reference version needed is not bundled the result is "limited assessment: shape only", never "invalid code". The ESMA currency type permits active and historic ISO 4217 codes, so a historic code is valid. Any further timing remark (a withdrawn currency on an amount whose own date, origination, valuation, sale or cut-off as the field dictates, is after withdrawal) is plausibility only, and only once that date is defined for the field. RREL12: year greater than 1980 and less than 2100 (validation rule); when every RREL11 and RREC6 value is a country-plus-`ZZZ` code, any year is accepted (Q&A 1313). | E | Warn |
 | P12 | Plausibility windows: dates before 1950 or more than 60 years after cut-off; a percentage column whose non-missing values are all below 1 (suspected fraction export); field-specific windows in 6.3. | P | Warn or Info |
 | P13 | **Currency evidence**: the currency of every amount is stated (the five cases above). A violation is case 4; the layout note of cases 2 and 5 is one context row per absent companion column (basis A, Info); case 3 is C30's. Evaluated for every amount that passes P5; an amount that does not parse is not evaluable. | E | Warn |
+
+**Settled readings of the remaining rules** (as implemented):
+
+- **P2 and P9 are profiles.** P2 has no result rows: it is the
+  value-state counts of the inventory. P9 emits one context row per
+  column with one value on every record that reports a value.
+- **P6.** (e) is owned by A10(a) and is reported with family A. "RREC12
+  is 0 when the balance is negative" needs the loan and arrives with E9.
+- **P8**, the list (`DQ_POSSIBLE_PLACEHOLDERS`). Per cell: `0` in
+  RREL16, RREL34, RREC13 and RREC17; `9999` in the five
+  `{INTEGER-9999}` fields; `999.99999` in RREC12 and RREC16. Per
+  column, one row: every reported value is `0` in RREL33; every reported
+  value is `0` in RREC21 while RREC20 holds no date; one token without
+  a space on every record of RREL22. Never RREL20 or RREL59. Severity
+  Warn where the field feeds MILAN (Appendix B), else Info.
+- **P11.** Any ISO 3166-1 code or NUTS country prefix followed by `ZZZ`
+  is accepted (`GBZZZ`, `ATZZZ`, `ELZZZ`); anything else before `ZZZ` is a
+  violation. `EL` and `UK` are Eurostat's prefixes, not ISO codes, and
+  are valid in NUTS codes of the years that hold them. RREL11 is tested against the record's own RREL12;
+  RREC6 against the loans file's RREL12 when that is one valid year. A
+  year that is not bundled, a missing year, or a country the bundled
+  year does not cover gives "limited assessment: shape only", never
+  "invalid". More than one RREL12 year in the file is one violation
+  about the submission. Q&A 1313 is tested over both files. For an LEI,
+  P11 would need the GLEIF register and is outside the files.
+- **P12.** Date windows apply to valid dates of every `{DATEFORMAT}`
+  field. "Every value below 1" applies to every `{PERCENTAGE}` field
+  except the four margins (RREL46, RREL50, RREL52, RREL54) and RREL59,
+  needs at least one non-zero value, and uses absolute values. RREC8 = 0
+  ("not a position") is a P12 question.
+- **RREL65.** A cell without `,` or `;` takes the generic path.
+  Elements are trimmed of XML whitespace. An empty element (a trailing
+  separator) is an invalid fragment.
+- **Y/N mapper compatibility** (6.2) is an output-lineage statement and
+  arrives with P10.
 
 ### 6.3 Every field
 
@@ -837,6 +1035,20 @@ application's convention. If a later package adds an optional element
 whose rules are not yet transcribed, the inventory says "recognised
 optional ESMA element; compliance not assessed" and it is a coverage
 limitation, never a pass.
+
+**As implemented.** The two optional elements are recognised in a
+collateral file by the cleaned header names
+`current_gross_annual_rental_income` and
+`original_gross_annual_rental_income` (`DQ_OPTIONAL_ELEMENT_HEADERS`),
+each with `<name>_currency` as its companion. In the expected-field
+inventory: the value states on the retained active pool are given for
+loan fields (from the population label); for collateral fields they are
+"not available in this release", because they need the link to the
+loan. "Pipeline use and lineage class" is empty and says it arrives
+with P10. In the actual-column inventory, the sample values are up to
+five most frequent distinct values of the user's own file, each cut at
+100 characters; they are written to the summary beside the workbook and
+never logged. Record numbers and column positions are 1-based.
 
 ---
 
@@ -1025,6 +1237,38 @@ selected column (ambiguous). Every count on the report says what it
 counts: **source records**, **resolved loans** (distinct selected
 identifiers), or a **bounded estimate of distinct exposures** when
 identity is ambiguous.
+
+**As implemented.** The stage's own predicates
+(`pipeline.filters.loan_drop_reasons`) are applied to two columns typed
+by the loader's rules (the status as text, the balance as a number, each
+missing where the loader reads the cell as missing). Stage 2 has two
+reasons, which the audit splits into the nine populations:
+
+| Stage 2 reasons | Population | What the audit adds |
+|---|---|---|
+| none true | Active, retained | nothing |
+| `balance_not_positive` only | Active status, zero / negative / missing balance | the balance is 0, below 0, or missing |
+| none (the loader stops, the stage never runs) | Active status, balance unparseable | the loader's cast fails |
+| `status_not_active` | Active status not recognised; Inactive; Inactive status not recognised; Eligibility unknown | the status against the code list, exactly and after trimming and upper-casing |
+
+When the pipeline returned, the labels are compared record by record
+with `Stage2Output` and called *observed*; a difference is shown as
+"reconciliation incomplete" with both figures. When the pipeline raised,
+they are *predicted from the Stage 2 predicate* and say so. Three
+consequences of mirroring the stage: a balance of `NaN` is "Active,
+retained"; a status of `ND5` is "Eligibility unknown"; with the status
+column absent every record is "Eligibility unknown", and with the
+balance column absent an active record is "balance missing".
+
+Identity confidence: a duplicate is the same raw value on another
+record; a collision is a different raw value equal after trimming, or a
+value equal to a different record's value in the other identifier
+column. Without a Stage 3 result the label says the selection is not
+available. The findings themselves (A7, A12, A13) are family A's.
+
+Lifecycle (3.3): a default status with a valid RREL9 is final-inactive
+only when the date is not after an established cut-off; otherwise it is
+"default, recoveries not determinable", and the evidence says why.
 
 ### 8.2 The reconciliation waterfall
 
@@ -1452,7 +1696,7 @@ implementation, not assumed.
 | `... data quality report.xlsx` | `DQ Summary` (judgments, rules, waterfall, provenance, versions), `DQ Fields`, `DQ Columns`, `DQ Checks` (outcome of every check), `DQ Findings`, `DQ Rows`, `DQ Dropped loans` | A rendering. Values that Excel cannot hold are sanitised and marked: XML-illegal characters shown escaped; text beyond 32,767 characters cut with "… (n characters; full value in the detail CSV)"; every raw value and every identifier written as a text cell (leading zeros and long digit strings survive), counts as numbers, nothing as a formula, so a value starting with `=` stays text |
 | Sheets appended to the MILAN workbook | `DQ Summary`, `DQ Fields`, `DQ Columns`, `DQ Checks`, `DQ Findings` only | Abbreviated by design: no row sheets. The Summary states the total row count and the name of the complete file. The two outputs are not described as identical. |
 | `... dropped loans.csv` | the complete dropped-loans ledger: one row per lost loan with the assigned waterfall line, **every** observed cause, balance and currency, and the record numbers of its related collateral records | Complete, same encoding contract. This, with the detail CSV, is what "the CSV remains complete" means: the detail CSV holds every finding cell, this file every lost loan and its relationships. |
-| `... data quality summary.json` | the `/quality` payload | |
+| `<workbook name without extension> data quality summary.json` | the `/quality` payload. Written by the command line beside the workbook, on a dry run and when the pipeline raises; `unknown-cutoff` takes the cut-off's place in the name when none is established. It holds the provenance, the judgments, every rule's outcome, the finding groups (counts, no rows), the two inventories and the population counts. Until the result contract of 10.1 is implemented, `execution` is `completed` or `pipeline_failed` (a fact about the run), the later parts say "not implemented in this release", and no policy outcome is stated. | |
 
 Overflow: `DQ Rows` and `DQ Dropped loans` continue on numbered sheets
 past 1,048,575 rows; above `DQ_XLSX_MAX_DETAIL_ROWS` in total the
@@ -1557,6 +1801,14 @@ declaring basis, applies_to, needs, defect_key), `populations.py`
 override), `store.py` (on-disk detail, paging), `export.py` (CSV, xlsx,
 JSON), `result.py` (the contract of 10.1). Thresholds, the critical
 lists and the placeholder lists are `config.py` constants.
+
+As built so far: `catalogue.py`, `refdata/`, `audit_read.py`,
+`states.py`, `column_rules/` (`nd.py`, `formats.py`, `domain.py`,
+`currency.py`, `plausibility.py`, with the engine in its `__init__`; it
+takes the place of the single `columns.py` above), `inventories.py`,
+`populations.py`, `result.py` (result rows and coverage counts),
+`assess.py` (`assess_files`, `complete_report` and the report object)
+and `export.py` (the summary).
 
 ### 11.2 Tests
 
@@ -1785,6 +2037,13 @@ file that was produced under today's behaviour.
 If PR 4 is too large to review, the API half can merge behind a setting
 that keeps the old response until the frontend half merges; that is for
 the brief.
+
+As delivered, the second PR held the catalogue and the reference lists,
+the audit read, the value states, the P rules, the two inventories, the
+population, identity and lifecycle labels, the check outcomes and the
+summary JSON written by the command line. Family A, the waterfall and
+the dropped-loans list, the detail store, the detail CSV and the report
+workbook moved to the PRs after it.
 
 ---
 
