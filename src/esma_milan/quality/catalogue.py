@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from esma_milan.config import (
+    DQ_A12_IS_STOP,
+    DQ_A13_IS_STOP,
     DQ_CRITICAL_FIELDS,
     DQ_PERCENT_SCALE_EXCLUDED_FIELDS,
     DQ_POSSIBLE_PLACEHOLDERS,
@@ -446,7 +448,7 @@ _P_RULES: tuple[RuleEntry, ...] = (
           missing="RREC12 = 0 on a negative loan balance needs the loan's balance beside "
                   "the collateral record (E9, family E)"),
     _rule("P3g", "what the pipeline's loader does with the value", "L", "Warn",
-          "loader_effect:{field}", ("violation", "context"),
+          "loader_effect:{field}", ("context",),
           applies_to="cells the loader reads differently from what the file states"),
     _rule("P4(a)", "surrounding XML whitespace around a number, boolean, date or year",
           "A", "Info", "padding:{field}", ("accepted alternative",),
@@ -514,11 +516,86 @@ _P_RULES: tuple[RuleEntry, ...] = (
           missing="case 3 (the companion and the dedicated field differ) is C30's"),
 )
 
+# Family A: the files (specification 7.1, with the duplicate policy of 5.3).
+# Severity Stop is a label: basis L says the pipeline cannot process what
+# the rule found, basis A that the acceptance policy of a later release
+# would stop on it. No rule here stops, rejects or withholds anything.
+_A_RULES: tuple[RuleEntry, ...] = (
+    _rule("A1(a)", "the file has a header and at least one record", "L", "Stop",
+          "file_structure:{file}", _V, counts=True, applies_to="each file"),
+    _rule("A1(b)", "no two columns get one name from the pipeline's renaming", "L", "Stop",
+          "name_collision:{file}", _V, counts=True, applies_to="every column of each file"),
+    _rule("A1(c)", "no header text is repeated", "A", "Stop", "header_repeated:{file}", _V,
+          counts=True, applies_to="every column of each file"),
+    _rule("A2", "every column the pipeline requires is in the file", "L", "Stop",
+          "field_absent:{field}", _V, counts=True,
+          applies_to="the columns of REQUIRED_LOAN_COLUMNS and REQUIRED_PROPERTY_COLUMNS"),
+    _rule("A3", "header resolution: how each column was recognised", "L", "Info",
+          "unmapped_column:{file}", ("context",),
+          applies_to="every column of each file; the actual-column inventory shows the "
+                     "resolution, and each unmapped column has one context row"),
+    _rule("A4", "expected fields absent", "E", "Warn", "field_absent:{field}", _V,
+          source=f"{_RTS}, Annex 2; Q&A 1283", applies_to="each of the 107 template fields",
+          status="implemented", missing="reported as P1 rows (one defect, one row)"),
+    _rule("A5", "every value in a numeric field can be converted by the loader", "L", "Stop",
+          "loader_cannot_convert:{field}", _V, counts=True,
+          applies_to="cells the loader reads as present in a column whose pipeline name is "
+                     "a {MONETARY}, {PERCENTAGE} or {INTEGER} field, in either file"),
+    _rule("A6", "bytes that were not valid UTF-8 and were repaired", "L", "Warn",
+          "encoding_repaired:{file}:{field}", ("context",),
+          applies_to="every cell and header of each file"),
+    _rule("A7(a)", "a loan identifier is on one loan record only", "X", "Warn",
+          "duplicate_loan_identifier:{field}", _V, counts=True,
+          applies_to="loan records whose RREL2 or RREL3 is an identifier (not empty, not an "
+                     "ND option)"),
+    _rule("A7(b)", "no loan record repeats another in every cell", "X", "Warn",
+          "duplicate_record:loans", _V, counts=True, applies_to="every loan record"),
+    _rule("A8(a)", "a (RREC2, RREC4) pair is on one collateral record only", "X", "Warn",
+          "duplicate_collateral_pair", _V,
+          applies_to="collateral records whose RREC2 and RREC4 are identifiers"),
+    _rule("A8(b)", "no collateral record repeats another in every cell", "X", "Warn",
+          "duplicate_record:collateral", _V, applies_to="every collateral record"),
+    _rule("A9", "one data cut-off date across RREL6, the export's Pool_Cutoff_Date and the "
+          "collateral file, on every record", "A", "Stop", "cutoff_not_single", _V, counts=True,
+          applies_to="every record of a file that has a cut-off column, and the pool"),
+    _rule("A10(a)", "the data cut-off date is in the past", "E", "Warn", "cutoff_not_in_past",
+          ("violation", "question"),
+          source=f"{_WORKBOOK}: must be in the past",
+          applies_to="each distinct cut-off date, against the assessment date (the UTC "
+                     "calendar date of the run's start)"),
+    _rule("A10(b)", "the data cut-off date is not before every origination date", "P", "Warn",
+          "cutoff_before_originations", ("question",),
+          applies_to="the pool, when it has a single cut-off date",
+          needs=("a single cut-off date", "a valid RREL23 on some record")),
+    _rule("A11", "one unique identifier in each file, and the same in both", "X", "Warn",
+          "unique_identifier_not_single", _V, applies_to="RREL1, RREC1 and the two together"),
+    _rule("A12", "no loan identifier equals a different record's identifier in the other "
+          "column", "L", "Stop" if DQ_A12_IS_STOP else "Warn", "identifier_collision", _V,
+          counts=True, applies_to="loan records whose RREL2 or RREL3 is an identifier"),
+    _rule("A13(a)", "an identifier has no surrounding whitespace", "L",
+          "Stop" if DQ_A13_IS_STOP else "Warn", "identifier_padded:{field}", _V, counts=True,
+          applies_to="identifiers in RREL2 to RREL5 and RREC2 to RREC4"),
+    _rule("A13(b)", "different identifiers stay different after trimming", "L", "Warn",
+          "identifier_trim_collision:{field}", _V, counts=True,
+          applies_to="identifiers in RREL2 to RREL5 and RREC2 to RREC4, within each column"),
+    _rule("A14", "record counts of each file", "L", "Info", "record_counts", ("context",),
+          applies_to="each file",
+          status="implemented", missing="reported in the summary's file block"),
+    _rule("A15(a)", "a field is supplied in one column", "A", "Warn", "field_twice:{field}", _V,
+          applies_to="a field supplied in two columns with equal values on every record"),
+    _rule("A15(b)", "a field supplied in two columns holds the same value in both", "A", "Stop",
+          "field_twice:{field}", _V, counts=True,
+          applies_to="every record, for a field supplied in two columns"),
+    _rule("A16", "the file can be split into records", "L", "Stop",
+          "file_not_splittable:{file}", _V, counts=True, applies_to="each file"),
+    _rule("A17", "currency compatibility of the amounts the pipeline combines", "L", "Warn",
+          "mixed_currency", _V, status="not_implemented",
+          missing="arrives with the pool waterfall"),
+)
+
 # Rules of the later releases, by family (specification section 7). Each is
 # recorded so the report lists it as not assessed.
 _LATER: dict[str, tuple[str, Basis, Severity, tuple[str, ...]]] = {
-    "A": ("the files (structure, duplicates, cut-off, identifiers)", "L", "Stop",
-          tuple(f"A{n}" for n in range(1, 18))),
     "C": ("consistency within a loan record", "X", "Warn",
           tuple(f"C{n}" for n in range(1, 48) if n != 29)),
     "D": ("a borrower's records", "X", "Warn", ("D1", "D2", "D3")),
@@ -530,7 +607,7 @@ _LATER: dict[str, tuple[str, Basis, Severity, tuple[str, ...]]] = {
     "L": ("consistency with the claimed lifecycle", "E", "Warn", ("L1",)),
 }
 
-RULES: dict[str, RuleEntry] = {r.rule_id: r for r in _P_RULES} | {
+RULES: dict[str, RuleEntry] = {r.rule_id: r for r in (*_P_RULES, *_A_RULES)} | {
     rule_id: _rule(
         rule_id, f"family {family}: {title}", basis, severity, f"{rule_id}", _V,
         status="not_implemented", missing=f"family {family} arrives in a later release",
@@ -576,9 +653,6 @@ SENTENCES: dict[tuple[str, str], str] = {
         "could not be assessed: whether ND5 is the right entry depends on the collateral type "
         "and on the lifecycle of the loan, which the files do not establish for this record; "
         "the reason on each row says what is missing",
-    ("P3g", "violation"):
-        "the pipeline cannot read the file as it is: its loader does not recognise "
-        "ND4-YYYY-MM-DD in a numeric field and stops at this value",
     ("P3g", "context"):
         "the pipeline's loader reads the cell differently from what the file states; the "
         "reason on each row says how",
@@ -637,6 +711,80 @@ SENTENCES: dict[tuple[str, str], str] = {
         "other permitted evidence; this is a note about this application's CSV layout",
 }
 
+
+# Family A. A Stop is worded by its basis: "the pipeline cannot process
+# this" (L) or "would stop under the acceptance policy" (A). Neither says
+# that this run was stopped.
+SENTENCES |= {
+    ("A1(a)", "violation"):
+        "the pipeline cannot process this: the file has no header, or no record after it",
+    ("A1(b)", "violation"):
+        "the pipeline cannot process this: its renaming gives two columns one name",
+    ("A1(c)", "violation"):
+        "would stop under the acceptance policy: the same header text is on more than one "
+        "column, and the pipeline uses the first of them without saying so",
+    ("A2", "violation"):
+        "the pipeline cannot process this: a column it requires is not in the file",
+    ("A3", "context"):
+        "no taxonomy mapping is established for a column of the file; it is not assessed for "
+        "compliance",
+    ("A4", "violation"):
+        "does not comply with the requirement to report every template field: the file has "
+        "no column for this field",
+    ("A5", "violation"):
+        "the pipeline cannot process this: its loader cannot convert the value in a numeric "
+        "field and stops at it",
+    ("A6", "context"):
+        "bytes that were not valid UTF-8 were repaired, as the pipeline repairs them; the "
+        "field's own format rule decides whether the repaired value complies",
+    ("A7(a)", "violation"):
+        "contradicts the requirement that the identifier is unique: the same value is on more "
+        "than one loan record",
+    ("A7(b)", "violation"):
+        "contradicts the requirement that a loan is reported once: every cell of the record "
+        "equals another record's",
+    ("A8(a)", "violation"):
+        "contradicts the requirement that a collateral item is reported once for a loan: the "
+        "same (RREC2, RREC4) pair is on more than one collateral record",
+    ("A8(b)", "violation"):
+        "contradicts the requirement that a collateral item is reported once: every cell of "
+        "the record equals another record's",
+    ("A9", "violation"):
+        "would stop under the acceptance policy: the pool does not have one data cut-off date "
+        "on every record",
+    ("A10(a)", "violation"):
+        "does not comply with the requirement that the data cut-off date is in the past: it is "
+        "after the date of this assessment",
+    ("A10(a)", "question"):
+        "may not comply; please confirm: the data cut-off date is the date of this assessment, "
+        "and the requirement is a date in the past",
+    ("A10(b)", "question"):
+        "unusual; please confirm: the data cut-off date is before every origination date",
+    ("A11", "violation"):
+        "contradicts the requirement of one unique identifier for the pool: the value is not "
+        "the same on every record of the two files",
+    ("A12", "violation"):
+        ("the pipeline halts or mismatches on this today (issue #45): " if DQ_A12_IS_STOP
+         else "the pipeline resolves this, and the identity of the record is uncertain: ")
+        + "the value equals a different loan record's identifier in the other identifier column",
+    ("A13(a)", "violation"):
+        ("the pipeline halts or mismatches on this today (issue #46): " if DQ_A13_IS_STOP
+         else "the pipeline trims this, and the file should not need it: ")
+        + "the identifier has surrounding whitespace",
+    ("A13(b)", "violation"):
+        "the pipeline cannot tell these records apart reliably: two different identifiers are "
+        "equal after trimming",
+    ("A14", "context"):
+        "the record counts of the file are in the summary's file block",
+    ("A15(a)", "violation"):
+        "is supplied in two columns that hold equal values on every record: one field is "
+        "reported twice",
+    ("A15(b)", "violation"):
+        "would stop under the acceptance policy: the field is supplied in two columns that "
+        "hold different values",
+    ("A16", "violation"):
+        "the pipeline cannot process this: the file cannot be split into records",
+}
 
 # Clauses for a field on which a rule finds something of its own. P11 on
 # RREL12 is about the classification year of the submission, not about a

@@ -295,6 +295,14 @@ DQ_PERCENT_SCALE_EXCLUDED_FIELDS: frozenset[str] = frozenset({
     "RREL46", "RREL50", "RREL52", "RREL54", "RREL59",
 })
 
+# (L) A12 (a loan identifier that equals a different record's identifier in
+# the other column) and A13(a) (an identifier with surrounding whitespace)
+# are shown with severity Stop while the pipeline halts or mismatches on
+# such a pool. Set each to False when its issue is fixed (#45, #46); the
+# rule is then a Warn. Neither switch changes what the pipeline does.
+DQ_A12_IS_STOP: bool = True
+DQ_A13_IS_STOP: bool = True
+
 # Sample values shown per column in the actual-column inventory.
 DQ_SAMPLE_VALUES: int = 5
 DQ_SAMPLE_VALUE_MAX_CHARS: int = 100

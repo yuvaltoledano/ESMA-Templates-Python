@@ -170,7 +170,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
     not_implemented = completeness["rules_not_implemented_in_this_release"]
     listed = {rule for ids in not_implemented["rules"].values() for rule in ids}
     assert listed == {r.rule_id for r in RULES.values() if r.status == "not_implemented"}
-    assert {"A1", "C12", "E17", "F3", "G8", "L1", "P10", "P6(e)"} <= listed
+    assert {"C12", "E17", "F3", "G8", "L1", "P10", "P6(e)"} <= listed
     assert not_implemented["count"] == len(listed)
     assert completeness["rules_not_evaluable_on_these_files"] == {}  # nothing on the compliant pair
     assert set(completeness["rules_partly_implemented"]) == {"P3f", "P11", "P13"}

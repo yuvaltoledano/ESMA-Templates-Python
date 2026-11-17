@@ -36,6 +36,7 @@ from esma_milan.quality.catalogue import RULES, FileKind
 from esma_milan.quality.column_rules import ColumnProfile, assess_columns
 from esma_milan.quality.column_rules.context import PoolFacts, pool_facts
 from esma_milan.quality.column_rules.domain import classification_year_results
+from esma_milan.quality.family_a import FileFacts, file_rules, pool_rules, unreadable_rows
 from esma_milan.quality.inventories import actual_columns, expected_fields
 from esma_milan.quality.links import build_links, collateral_link_context
 from esma_milan.quality.populations import (
@@ -201,20 +202,28 @@ def _audit(
     pool: PoolFacts | None,
     store: ResultStore | None,
     loans_records: pl.DataFrame | None = None,
-) -> tuple[FileAudit, PoolFacts, pl.DataFrame | None, pl.DataFrame | None]:
+    loans_facts: FileFacts | None = None,
+) -> tuple[FileAudit, PoolFacts, pl.DataFrame | None, pl.DataFrame | None, FileFacts | None]:
     """Read and assess one file. Returns the audit, the pool facts, the
-    per-record frame and, for the collateral file, the links to the loan
-    records (`loans_records` is the loans file's per-record frame)."""
+    per-record frame, for the collateral file the links to the loan
+    records (`loans_records` is the loans file's per-record frame), and
+    what the pool-level rules of family A need from the file."""
     raw: RawFile = read_file(path, file)
     if raw.frame is None:
+        assert raw.unreadable is not None
+        rows, unreadable_outcomes = unreadable_rows(file, raw.unreadable)
+        if store is not None:
+            store.write_results(f"{file}-family-a", rows)
+            rows = empty_results()
         return (
             FileAudit(
                 file=file, name=raw.name, sha256=raw.sha256, size=raw.size,
                 unreadable=raw.unreadable, headers=raw.headers, columns=(), n_records=0,
-                encoding_repaired=raw.encoding_repaired, results=empty_results(), outcomes=(),
-                profiles=(), actual_columns=(), records=None,
+                encoding_repaired=raw.encoding_repaired, results=rows,
+                outcomes=tuple(unreadable_outcomes), profiles=(), actual_columns=(), records=None,
             ),
             pool or PoolFacts(),
+            None,
             None,
             None,
         )
@@ -245,22 +254,30 @@ def _audit(
         raw, pool, retained=retained, ref=load_reference_data(), store=store,
         linked_lifecycle=linked_lifecycle,
     )
+    family_a, family_a_outcomes, facts = file_rules(
+        raw, pool, loans_facts.modal_cutoff if loans_facts else None
+    )
+    results = assessed.results
     if store is not None:
+        store.write_results(f"{file}-family-a", family_a)
         store.write_records(file, records)
         store.write_repairs(file, raw.encoding_repaired)
+    else:
+        results = concat_results([results, family_a])
     return (
         FileAudit(
             file=file, name=raw.name, sha256=raw.sha256, size=raw.size, unreadable=None,
             headers=raw.headers, columns=raw.columns, n_records=raw.n_records,
             encoding_repaired=raw.encoding_repaired,
-            results=assessed.results,
-            outcomes=tuple(assessed.outcomes), profiles=tuple(assessed.profiles),
+            results=results,
+            outcomes=(*assessed.outcomes, *family_a_outcomes), profiles=tuple(assessed.profiles),
             actual_columns=tuple(actual_columns(raw)),
             records=records if store is None else None,
         ),
         pool,
         records,
         links,
+        facts,
     )
 
 
@@ -280,18 +297,23 @@ def assess_files(
     it exists, and the returned object holds no result row and no
     per-record frame. Without one, everything is returned in memory."""
     started = started_at or datetime.now(UTC)
-    loans_audit, pool, loans_records, _ = _audit(loans, "loans", None, store)
-    collateral_audit, _, _, links = _audit(
+    loans_audit, pool, loans_records, _, loans_facts = _audit(loans, "loans", None, store)
+    collateral_audit, _, _, links, collateral_facts = _audit(
         collaterals, "collateral", pool if loans_audit.readable else PoolFacts(), store,
-        loans_records,
+        loans_records, loans_facts,
     )
+    as_of = started.astimezone(UTC).date()
     profiles = (*loans_audit.profiles, *collateral_audit.profiles)
     rows, outcomes = classification_year_results(
         [p for p in profiles if p.entry.code == "RREL12"],
         [p for p in profiles if p.entry.kind == "NUTS"],
         load_reference_data(),
     )
-    pool_results = results_frame(rows)
+    family_a, family_a_outcomes = pool_rules(
+        [f for f in (loans_facts, collateral_facts) if f is not None], pool, as_of
+    )
+    outcomes = [*outcomes, *family_a_outcomes]
+    pool_results = concat_results([results_frame(rows), family_a])
     if store is not None:
         store.write_results("pool", pool_results)
         pool_results = empty_results()
@@ -322,7 +344,7 @@ def assess_files(
         links=links if store is None else None,
         pool_outcomes=tuple(outcomes),
         started_at=started,
-        as_of=started.astimezone(UTC).date(),
+        as_of=as_of,
         store_root=store.root if store is not None else None,
     )
 

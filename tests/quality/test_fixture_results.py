@@ -30,7 +30,8 @@ def result_counts(fixture: str) -> list[list[str]]:
         .group_by(HEADER[:4]).len()
         .sort(HEADER[:4])
     )
-    return [[*row[:4], str(row[4])] for row in counted.iter_rows()]
+    # A result about a whole column, file or pool has no field: an empty cell.
+    return [[*("" if v is None else v for v in row[:4]), str(row[4])] for row in counted.iter_rows()]
 
 
 @pytest.mark.parametrize("fixture", ["synthetic", "real_anonymised"])

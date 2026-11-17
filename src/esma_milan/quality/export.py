@@ -52,6 +52,8 @@ ASSESSMENT_INTERRUPTED = "assessment interrupted by a technical fault"
 _REPORTED_ELSEWHERE = {
     "P2": "the value-state counts of the expected-field inventory",
     "P4(c)": "P5 rows with the reason control_character (one defect, one row)",
+    "A4": "P1 rows (one defect, one row)",
+    "A14": "the record counts of the summary's file block",
 }
 
 _THRESHOLDS = (
@@ -159,14 +161,17 @@ def _findings(counts: pl.DataFrame) -> list[dict[str, object]]:
             "finding_id": f"{row['rule_id']}:{row['result_kind']}:{row['file']}:{row['field']}",
             "rule_id": row["rule_id"], "result_kind": row["result_kind"], "file": row["file"],
             "field": row["field"], "basis": rule.basis, "severities": row["severities"],
-            "defect_key": rule.defect_key.format(field=row["field"]),
+            "defect_key": rule.defect_key.format(field=row["field"], file=row["file"]),
             "enters_compliance_judgment": row["result_kind"] == "violation"
             and rule.regulatory_source is not None,
             "rows": row["rows"],
             "records": None if row["column_level"] else row["records"],
             "reasons": _reason_counts(row["reasons"]),
             "sentence": finding_sentence(
-                row["rule_id"], row["result_kind"], _field_label(row["field"]), row["field"]
+                row["rule_id"], row["result_kind"],
+                "the pool" if row["field"] is None and row["file"] == "pool"
+                else _field_label(row["field"]),
+                row["field"],
             ),
         })
     return out

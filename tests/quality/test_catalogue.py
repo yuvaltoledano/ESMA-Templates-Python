@@ -125,14 +125,12 @@ def test_every_rule_in_the_mapping_file_is_implemented_or_recorded() -> None:
         seen |= _cell_tokens(row["implementing_checks"])
     for token in sorted(seen - {"O1"}):
         matching = [r for r in RULES.values() if r.rule_id == token or r.rule_id.startswith(token + "(")]
-        if token == "A10(a)":
-            matching = [RULES["A10"]]
         assert matching, token
         for rule in matching:
             assert rule.status in ("implemented", "partly_implemented", "not_implemented")
             if rule.status != "implemented":
                 assert rule.not_implemented_part
-    assert RULES["A10"].status == "not_implemented"
+    assert RULES["A10(a)"].status == "implemented"  # the single owner of P6(e)'s defect
     assert RULES["P6(e)"].status == "not_implemented"
 
 

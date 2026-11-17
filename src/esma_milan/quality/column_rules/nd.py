@@ -128,22 +128,18 @@ def _conditional_nd5(c: CellContext) -> RuleOutput:
 
 def _loader_effect(c: CellContext) -> RuleOutput:
     """P3g: what the pipeline's loader does with this cell, where that is
-    not what the file states."""
+    not what the file states. A dated ND4 in a numeric field makes the
+    loader stop; that is A5's row (`family_a`), one defect and one row."""
     entry, value = c.entry, c.value
     yield Mark("P3g")
     if value.present and value.ok and c.raw in CSV_NA_TOKENS:
         yield Finding("P3g", "context", "valid_value_read_as_missing",
                       expected="the loader reads this text as missing in every column")
     elif value.state == "nd4_dated":
-        if entry.kind in NUMERIC_KINDS and not entry.optional:
-            yield Finding("P3g", "violation", "loader_stops_at_dated_nd4", severity="Stop",
-                          expected="the loader does not recognise ND4-YYYY-MM-DD in a numeric "
-                                   "field and stops at this value",
-                          nd4_date=value.nd4_date)
-        elif entry.kind == "DATE":
+        if entry.kind == "DATE":
             yield Finding("P3g", "context", "dated_nd4_set_to_missing_with_a_warning",
                           nd4_date=value.nd4_date)
-        else:
+        elif entry.kind not in NUMERIC_KINDS or entry.optional:
             yield Finding("P3g", "context", "dated_nd4_kept_as_text", nd4_date=value.nd4_date)
     elif value.present and entry.kind == "DATE" and value.reason in (
         "alternative_date_form", "excel_serial"

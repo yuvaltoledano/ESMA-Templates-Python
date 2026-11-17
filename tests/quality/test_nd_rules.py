@@ -153,13 +153,12 @@ def test_p3g_na_as_a_country_is_a_value_the_loader_loses(tmp_path: Path) -> None
 
 def test_p3g_dated_nd4_by_field_type(tmp_path: Path) -> None:
     pair = Pair()
-    pair.set("RREL16", "ND4-2025-01-01", record=1)  # numeric: the loader stops
+    pair.set("RREL16", "ND4-2025-01-01", record=1)  # numeric: the loader stops (A5's row)
     pair.set("RREL23", "ND4-2025-01-01", record=1)  # date: set to missing with a warning
     pair.set("RREL78", "ND4-2025-01-01", record=1)  # text: kept
     assessed = assess(pair, tmp_path, "loans")
     by_field = {r["field"]: (r["result_kind"], r["severity"], r["reason"]) for r in assessed.found("P3g")}
     assert by_field == {
-        "RREL16": ("violation", "Stop", "loader_stops_at_dated_nd4"),
         "RREL23": ("context", "Warn", "dated_nd4_set_to_missing_with_a_warning"),
         "RREL78": ("context", "Warn", "dated_nd4_kept_as_text"),
     }
