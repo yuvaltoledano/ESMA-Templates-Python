@@ -41,6 +41,8 @@ from esma_milan.quality.result import RESULT_SCHEMA, empty_results
 MARKER = ".esma-milan-dq-work"
 PREFIX = ".dq-work-"
 
+ROW_GROUP_ROWS = 50_000
+
 COUNT_KEYS: tuple[str, ...] = ("file", "field", "rule_id", "result_kind", "severity", "reason")
 COUNT_SCHEMA: dict[str, pl.DataType] = {
     **{key: pl.String() for key in COUNT_KEYS},
@@ -133,8 +135,10 @@ class ResultStore:
             for folder in ("results", "index"):
                 (self.root / folder / f"{part}.parquet").unlink(missing_ok=True)
             return
+        # Small row groups, so that a reader asking for a range of records
+        # (the exporters do) decodes the groups in that range and not the part.
         rows.sort("record", "column_position", "rule_id", nulls_last=True).write_parquet(
-            self.root / "results" / f"{part}.parquet"
+            self.root / "results" / f"{part}.parquet", row_group_size=ROW_GROUP_ROWS
         )
         result_counts(rows).write_parquet(self.root / "index" / f"{part}.parquet")
 
