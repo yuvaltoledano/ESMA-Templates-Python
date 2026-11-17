@@ -238,6 +238,10 @@ def summary_rows(summary: Mapping[str, Any], cut: Mapping[str, object]) -> Itera
     yield row("This workbook", "statement", cut["statement"])
     for artifact in summary.get("artifacts", []):
         yield row("Files written", str(artifact.get("kind")), artifact.get("name") or artifact.get("state"))
+    detail_files = summary.get("detail_files")
+    if isinstance(detail_files, list):  # the files written before this workbook
+        for entry in detail_files:
+            yield row("Files written", str(entry.get("kind")), entry.get("name") or entry.get("state"))
     for statement in summary.get("scope_statements", []):
         yield row("Outside the scope of two files", "statement", statement)
     provenance = summary["provenance"]

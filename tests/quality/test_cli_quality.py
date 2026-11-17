@@ -250,6 +250,7 @@ def test_the_four_files_on_each_kind_of_run(tmp_path: Path, kind: str) -> None:
     )
     texts = _texts(folder)
     assert MARKER in texts[DETAIL] and MARKER in texts[REPORT]  # the value is in the detail
+    assert DETAIL in texts[REPORT] and DROPPED in texts[REPORT]  # the workbook names the other files
     # Nothing in any file says the pool was blocked, rejected, withheld or eligible.
     for name, text in texts.items():
         lowered = text.lower().replace("accepted alternative", "")
