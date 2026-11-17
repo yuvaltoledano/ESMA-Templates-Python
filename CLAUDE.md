@@ -113,6 +113,12 @@ and named in the PR.
   a MILAN column rule, a code map or an Execution Summary metric) also
   updates `frontend/public/mapping-reference.html` and bumps its version
   line.
+- A change to a data quality rule (`src/esma_milan/quality/`: what a rule
+  tests, its severity, basis, wording, a threshold or a reference list)
+  raises `DQ_RULESET_VERSION`, changes `docs/data-quality/specification.md`
+  and the catalogue together, regenerates the reviewed files under
+  `tests/quality/expected/`, and lists every difference in them, with its
+  reason, in the PR. A rule is never weakened to make a fixture quiet.
 
 ## Branches, commits, PRs
 

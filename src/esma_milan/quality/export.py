@@ -5,9 +5,11 @@ Mirrors nothing in the R reference (specification 10.1, 10.3, 10.4).
 `summary_dict` turns a `QualityReport` into the JSON document the command
 line writes beside the workbook: the provenance, the compliance and
 completeness judgments, the plausibility count, the outcome of every rule
-with its four coverage counts, the finding groups, the two inventories and
-the population counts. Row-level results are not in it; they are the
-detail file of a later release.
+with its four coverage counts, the finding groups, the two inventories,
+the population counts, the waterfall with the dropped-loans counts, the
+links between the two files, and the state of the other report files.
+Row-level results are not in it; they are in the detail CSV
+(`detail_csv`, `report_files`).
 
 Wording follows the result kind first and the basis second (3.2): only a
 violation of a reporting requirement says "does not comply with"; a

@@ -571,10 +571,29 @@ precise distinct-loan count or balance share.
 **As implemented.** Per record the audit keeps the raw and trimmed
 identifiers, the status, the balance text, the cut-off, the population,
 the identity-confidence label and the claimed lifecycle (loans), and the
-collateral type and class (collateral). Links between collateral records
-and loan records are not built yet: they arrive with the identifier
-checks of family A, and the report says so in its scope statements. The
+collateral type and class (collateral); and, for the waterfall and A17,
+the balance as the loader reads it, the currency stated for each amount
+the pipeline combines, and for a collateral record the reasons of Stage
+2's collateral predicate that the record alone establishes. The
 identifiers the pipeline resolved are not copied onto the records yet.
+
+**The links, as implemented.** The audit builds the links between
+collateral records and loan records from its own text, without calling a
+stage. A collateral record refers to a loan through RREC2. Annex 2
+prescribes RREC2 = RREL3 (convention `new`); exports also carry the
+original identifier there (convention `original`, RREC2 = RREL2), and
+Stage 3 chooses between the two. Each convention is matched twice and
+the results are kept apart: `raw` (the two cells are equal as they
+stand) and `trimmed` (equal only after trimming whitespace, which the
+pipeline does not match, #46). An empty cell and an ND token are not
+identifiers and link nothing. One row per (collateral record, loan
+record, convention) is kept. From the links: the claimed lifecycle of
+the loan a collateral record belongs to (P3f, 6.1), whether the record
+belongs to a retained loan (the retained-pool value states of 6.4), the
+causes of the waterfall's line 6 (8.2), and a record-by-record
+comparison with the loans Stage 3 dropped whenever Stage 3 ran. The
+summary gives the counts per convention and match and the records that
+link to nothing.
 
 ### 5.3 Two inventories
 
@@ -593,14 +612,21 @@ taxonomy mapping established; not assessed for compliance". It is never
 shown as compliant. Currency companions get their own format and
 membership rules (6.2).
 
-Duplicate policy (replacing the conflict between A1 and A15):
+Duplicate policy (replacing the conflict between A1 and A15). Three
+cases, tested in this order:
 
 | Situation | Outcome |
 |---|---|
-| The same header text twice | Today the loader accepts this and renames the second column, so stopping here is a new **acceptance policy** (A), proposed because the pipeline would silently use one of them. Both columns are profiled. |
-| Two different headers resolving to one field, identical values on every record | Warn (one field reported twice), **unless** the two headers clean to the same name, which is an existing processing failure and stays a Stop (L): the processing limitation takes precedence over the Warn |
-| Two headers resolving to one field, values differ on any record | Stop (L/A): the report lists the differing records |
-| A cleaned name colliding after `clean_names` | Stop (L), as today |
+| The same header text twice | A1, Stop under a new **acceptance policy** (A): today the loader's parser accepts this and renames the later columns (`<text>_duplicated_<n>`), so the pipeline silently uses the first. Every column is profiled, and the inventory shows the name the pipeline gives each. |
+| Two different headers that the pipeline gives one name (`RREL3` and `New Underlying Exposure Identifier`) | A1, Stop (L): the pipeline cannot process the file; it raises `duplicate_columns` today. |
+| A field supplied in two columns, by either case above | A15 as well: equal values on every record, Warn (one field reported twice); values differing on any record, Stop under the acceptance policy (A), and every differing record is listed, two rows a record, one per column, each naming the other column's value. |
+
+An earlier version of this table had a fourth row: two different headers
+resolving to one field with identical values, as a Warn on its own. It
+cannot occur. Every header the audit resolves to a field, by code, by
+taxonomy name or by cleaned name, gets the same name from the pipeline,
+so two different headers of one field always collide and are the second
+case.
 
 **How a header is resolved, as implemented.** Within the file's own
 schema, in this order: (1) the header is exactly an ESMA code; (2) it
@@ -725,22 +751,32 @@ cut-off when its records give exactly one, and the result row then says
 | P3d | Invalid missing marker, as classified above (field-aware). | E | Warn |
 | P3e | ND4 date: not a real calendar date, or not after the data cut-off date. | E | Warn |
 | P3f | **Conditional ND5.** Where the field definition ties applicability to other supplied values, ND5 is checked both ways: ND5 present where the field is established as applicable, and a value present where the definition prescribes ND5. The conditional rules are listed per field in 6.3 (for example RREC7, RREC8, RREC9, RREC12, RREC16 on non-property collateral). Where nothing in the files establishes applicability the ND5 is reported as "allowed; justification not verifiable from the files". | E | Warn |
-| P3g | **What the pipeline does with the state.** The loader treats empty, `NA`, `ND`, `ND1` to `ND5` as missing in every column (`CSV_NA_TOKENS`), which also turns the valid country code `NA` into missing: the source value is valid and the loader loses it, reported as L, not as a reporting fault. It does not recognise `ND4-YYYY-MM-DD`: in a numeric field the loader raises (A5); in a date field the token survives the read and the date parser then sets it to missing with a warning; in a text field it stays as text. | L | Stop where the loader raises, else Warn |
+| P3g | **What the pipeline does with the state.** The loader treats empty, `NA`, `ND`, `ND1` to `ND5` as missing in every column (`CSV_NA_TOKENS`), which also turns the valid country code `NA` into missing: the source value is valid and the loader loses it, reported as L, not as a reporting fault. It does not recognise `ND4-YYYY-MM-DD`: in a numeric field the loader raises, which is A5's row and not a P3g row (one defect, one row); in a date field the token survives the read and the date parser then sets it to missing with a warning; in a text field it stays as text. | L | Warn |
 
 The pipeline's handling of the dated ND4 form is a defect of its own
 (section 12): a compliant file can be unprocessable today.
 
 **Settled readings of the ND rules** (as implemented):
 
-- **P3f in the first release.** The conditional rules that need only
-  the collateral record are RREC7, RREC8, RREC9, RREC12 and RREC16
-  against RREC5. Established non-property with a value: violation (RREC8
-  on a GUAR record excepted, Q&A 1323(c)). A property row with ND5: a
-  **limitation** ("lifecycle of the exposure not established in this
-  release"), as E17 prescribes where lifecycle is not established,
-  because the record is not yet linked to its loan; no question is
-  raised per cell. OTHR, MIXD, or an RREC5 that is not a valid code:
-  limitation. ND5 in a field with no conditional rule produces no row:
+- **P3f.** The conditional rules are RREC7, RREC8, RREC9, RREC12 and
+  RREC16 against RREC5. Established non-property with a value: violation
+  (RREC8 on a GUAR record excepted, Q&A 1323(c)). OTHR, MIXD, or an
+  RREC5 that is not a valid code: limitation. A property row with ND5 is
+  decided through the link to the record's loan (5.2), by the lifecycle
+  that loan claims (3.3):
+
+  | The linked loan's claimed lifecycle | ND5 on a property row |
+  |---|---|
+  | final-inactive (presumed) | no row: ND5 is the prescribed value |
+  | reporting-active (presumed) | question: the field is applicable to a reporting-active exposure |
+  | default, recoveries not determinable | limitation, with that reason |
+  | not established | limitation |
+  | the record links to loans whose lifecycles differ | limitation |
+  | no loan record linked | limitation |
+
+  The lifecycle is taken under the prescribed convention on the raw text
+  first, else under the other. RREC12 = 0 on a negative loan balance
+  needs the loan's balance beside the collateral record and is E9's. ND5 in a field with no conditional rule produces no row:
   it is the scope statement "allowed; justification not verifiable from
   the files", printed once, with the ND5 count per field in the
   inventory. The "mixture not explained" question of RREL65 (6.3) is
@@ -748,14 +784,15 @@ The pipeline's handling of the dated ND4 form is a defect of its own
 - **P3g** has one row per cell where the loader does something other
   than what the file states: a value valid for the field that the loader
   reads as missing (`NA` in a country field; `NA` or `ND` as free
-  text); a dated ND4 (severity Stop in a numeric field, where the loader
-  stops; Warn in a date or text field); a date in a form the pipeline
+  text); a dated ND4 in a date or text field (in a numeric field the
+  loader stops, and the row is A5's); a date in a form the pipeline
   parses although it is not `YYYY-MM-DD`; and, for an RREL65 cell with
   several elements, the date the pipeline's split keeps. The last two
   are the "(L)" notes of 6.2 and 6.3.
 - **Severity Stop without a decision.** Until the acceptance rules are
-  implemented, a Stop row says what it observes ("the loader does not
-  recognise ND4-YYYY-MM-DD in a numeric field and stops at this value")
+  implemented, a Stop row says what it observes and by which basis: "the
+  pipeline cannot process this" (L) or "would stop under the acceptance
+  policy" (A). A rule whose severity is Stop has no effect on the run,
   and the report never says a pool was blocked or rejected.
 
 ### 6.2 Format rules by type
@@ -1042,9 +1079,9 @@ collateral file by the cleaned header names
 `original_gross_annual_rental_income` (`DQ_OPTIONAL_ELEMENT_HEADERS`),
 each with `<name>_currency` as its companion. In the expected-field
 inventory: the value states on the retained active pool are given for
-loan fields (from the population label); for collateral fields they are
-"not available in this release", because they need the link to the
-loan. "Pipeline use and lineage class" is empty and says it arrives
+loan fields from the population label, and for collateral fields from
+the link (5.2): a collateral record belongs to the retained pool when a
+raw link under either convention leads to a retained loan. "Pipeline use and lineage class" is empty and says it arrives
 with P10. In the actual-column inventory, the sample values are up to
 five most frequent distinct values of the user's own file, each cut at
 100 characters; they are written to the summary beside the workbook and
@@ -1087,6 +1124,78 @@ earlier documents where the check survives; retired ids are in Appendix A.
 | A15 | One field supplied under two headers (table in 5.3). Not a cited regulatory breach: a CSV representation policy (A) for the Warn, an actual processing failure (L) where the names collide, and a policy Stop (A) where the values differ. | A / L | Warn or Stop | no / yes |
 | A16 | A file that cannot be split into records (3.4) | L | Stop | yes |
 | A17 | **Currency compatibility of the amounts the pipeline combines** (8.5): among retained loans and their selected collateral, more than one currency, or an invalid one, within any set of amounts that the pipeline adds, subtracts, divides or allocates together. By the owner's decision (15.1, decision 3) the pool is processed and this is a prominent warning, not a Stop. | L | Warn | no |
+
+**Settled readings of family A** (as implemented). Every rule but A17
+is evaluated from the two files alone, while the file's text is in hand.
+Where one id of the table holds cases with different bases or
+severities, the catalogue splits it with a letter: A1(a) no header or no
+record, A1(b) one pipeline name for two columns, A1(c) a repeated header
+text; A7(a) and A8(a) the duplicate identifier, A7(b) and A8(b) the
+whole-record duplicate; A10(a) and (b); A13(a) and (b); A15(a) equal
+values and A15(b) differing values.
+
+- **A1 and A16.** A1(a) owns a file with no header and a header with no
+  record. A16 owns a file that cannot be split into records (a record
+  longer than the header, an unclosed quote, line ends the parsers read
+  differently) and gives it its rows: one for the file and one for every
+  over-long record.
+- **A1(b), A1(c) and A15** are the three cases of 5.3.
+- **A2** shares the defect key of P1 on the same field. Both rows are
+  shown: P1 is the reporting requirement, A2 the processing one.
+- **A3, A4 and A14** are reported through what already exists and say
+  so, as P2 and P4(c) do: A3 through the actual-column inventory, with
+  one context row per unmapped column; A4 is P1; A14 is the summary's
+  file block.
+- **A5 is the loader's test, not the format rule.** The loader casts
+  every column whose pipeline name is a numeric field's, in either file,
+  and accepts what a float cast accepts. A5 applies the same test to the
+  raw column (null tokens removed, whitespace trimmed, a float cast), so
+  it lists exactly the cells that make the loader stop, including in a
+  column the audit calls unmapped (a loans column named `lien`). `1e3`
+  converts and is a P5 violation with no A5 row; `abc` is both; a dated
+  ND4 in a numeric field is A5's row alone. A5 and P5 keep two defect
+  keys: one is a reporting breach in any pipeline, the other this
+  loader's limit (8.4).
+- **A6** is context on each repaired cell (and on a repaired header).
+  The detail file gives the repaired text and the original bytes.
+- **A7 and A8** ignore a cell that is not an identifier: an empty cell
+  and an ND token, which the ND rules report. A whole-record duplicate
+  is a record whose every cell equals another record's.
+- **A9** has one row for the pool, listing every distinct cut-off date
+  with its source and record count, and one row for each record whose
+  cut-off is missing, or conflicts within the record, or differs from
+  the date most records of the loans file hold (the later date on a
+  tie).
+- **A10(a)** compares each distinct cut-off date with the assessment
+  date of the provenance: after it, a violation; equal to it, a
+  question; before it, nothing. **A10(b)** is a question when the single
+  cut-off is before the earliest valid RREL23.
+- **A11** is tested in each file and across the two; a file with no
+  identifier at all takes no part in the comparison.
+- **A12** uses the definition of the identity-confidence label (8.1): a
+  value that is a different record's value in the other identifier
+  column. A record repeated whole therefore collides with its copy.
+- **A13** covers RREL2 to RREL5 and RREC2 to RREC4; (b) is tested within
+  each column.
+- **Severity words.** A2, A5, A16, A1(a) and A1(b) have basis L: "the
+  pipeline cannot process this". A9, A1(c) and A15(b) have basis A:
+  "would stop under the acceptance policy". A12 and A13(a) are Stop
+  while `DQ_A12_IS_STOP` and `DQ_A13_IS_STOP` are true, worded "the
+  pipeline halts or mismatches on this today (issue #45 / #46)". No row
+  says the run was stopped; only the pipeline's own failure says that.
+- **A17** is evaluated after the run, among the loans Stage 2 retained
+  (the audit's retained loans when Stage 2 did not complete). RREL30 is
+  compared across the pool: one pool-level row with every currency and
+  its record count, and one row for each record that is not in the most
+  frequent valid currency or holds a code that is not a valid currency.
+  RREL30 with RREL31 to RREL33, and RREL16 with RREL20, are compared on
+  each loan. The fourth set is the valuation Stage 7 actually selected
+  for each collateral record of the loan (the RREC13 companion and
+  RREC22 for a current valuation; the RREC17 companion for an original
+  one), with the loan's RREL29 and RREL30, and across the pool; it is
+  "not evaluable: Stage 7 did not complete" when the pipeline raised
+  before it. A currency that is not stated cannot be compared: such
+  records are counted as not evaluable, apart, and P13 reports them.
 
 ### 7.2 Family C: within a loan record
 
@@ -1206,6 +1315,15 @@ credit risk, not poor data; the wording says so.
 | L1 | Consistency with the claimed lifecycle, on final-inactive (presumed) records only, by the four field categories of 3.3: a current numeric field that is not 0, or a value in a remaining ND5-eligible field. Never raised for identifiers, cut-off, status, a valid RREL9 under Q&A 1341, or preserved historical fields. Cites Q&A 1296. | E (question) | Warn | no |
 | G8 | Population reconciliation (section 8.2): every difference between the audit's populations and the pipeline's own counts is explained by a listed exclusion. An unexplained difference is a technical fault, not a data finding, shown as "reconciliation incomplete" with both figures. Consequence: every calculation that uses the disputed population (the denominators and shares of rules 2 to 4, the waterfall lines concerned) is **unavailable**; the policy outcome is `unavailable` (10.1) and follows the technical contract, so there is no ordinary eligible release and no override; an outcome computed earlier from the disputed figures is not kept. A Stop that rests on evidence the difference does not touch still blocks. Finalised report files stay accessible, and facts the difference does not touch (per-column results, compliance violations, lineage) are still shown. | L (limitation) | technical | no; makes the outcome unavailable |
 
+**G8, as implemented.** Two reconciliation points: line 5 of the
+waterfall against the loans `Stage2Output` kept (the same records, not
+only the same count), and line 7 against line 5 less line 6 (the records
+of the output are exactly the retained loans not lost at line 6). A
+difference is a row of kind limitation for the pool, with both figures,
+and the waterfall line says "reconciliation incomplete". A point that
+cannot be tested because the stage did not complete is counted as not
+evaluable. The other rules of family G are not implemented yet.
+
 ---
 
 ## 8. Populations, exclusions and the verdict arithmetic
@@ -1313,6 +1431,59 @@ The Execution Summary describes the post-join output population. G8
 reconciles the audit's step 7 with it and step 5 with the Stage 2 result;
 it does not require pre-join and post-join figures to be equal.
 
+**As implemented.** Line 6 has one more part than the list above: **a
+collateral record without a collateral type**, labelled "the Python
+pipeline drops such a record today; the R reference keeps it" (the
+difference recorded in `pipeline.filters.collateral_drop_reasons`). A
+loan can be lost for it, so it needs a line. The bookkeeping priority of
+line 6, in order:
+
+| Order | Part | Test on a loan lost after Stage 2 |
+|---|---|---|
+| 1 | no collateral record at all | no collateral record links to the loan under either convention (raw match) |
+| 2 | collateral records only of excluded types | every record linked under the selected convention is `collateral_type_excluded` |
+| 3 | a collateral record without a collateral type | a linked record is `collateral_type_missing` |
+| 4 | a property record without a property type | a linked record is `property_type_missing` |
+| 5 | a property record without a valuation above 0 | a linked record is `no_positive_valuation` |
+| 6 | the selected identifier is missing on the loan record | the loan is in `Stage3Decisions.loans_missing_calc_loan_id` |
+| 7 | no match under the selected identifier convention | collateral records link to the loan only under the other convention |
+| 8 | removed with a group by a later stage | no stage after Stage 3 removes a loan today; 0 |
+
+Parts 6 and 7 cannot occur on a completed run until #45 is fixed: where
+a collateral record refers to a retained loan under the column Stage 3
+did not choose, Stage 3 raises. A loan Stage 3 dropped that none of the
+tests explains is shown as "cause not established (reconciliation
+incomplete)", never under a cause.
+
+Observed and predicted. When the pipeline completed, lines 2 to 5 are
+observed where the audit's retained loans are exactly Stage 2's; line 6
+is observed from `Stage3Decisions`, which names every loan, with the
+stage's own reason for every collateral record; line 7 is the rows of
+the flattened pool. When the pipeline raised, the stages that completed
+before the failure are read from the exception (`partial_result`,
+`runner.run_pipeline`): a failure after Stage 2 leaves lines 2 to 5
+observed, a failure after Stage 3 leaves line 6 observed. Otherwise
+lines 2 to 5 are predicted from the stage's predicate; of line 6 the
+first five parts are predicted, as the loans that would be lost under
+either identifier convention, and parts 6 to 8 are "not available"; line
+7 is "not available: the pipeline did not complete". An unparseable
+balance is always predicted, because the loader stops at it.
+
+Balance. Each line gives, per currency of RREL30 (its companion, else
+RREL28; else "currency not stated"), the sum of the balance **as the
+pipeline's loader reads it**, which is the number the pipeline itself
+adds up; the report says so, and the exact text of every balance is in
+the detail files. Records with no readable balance are counted apart.
+Totals are never added across currencies.
+
+The dropped-loans list has, per loan lost at line 4 or 6: the record and
+its line in the file, the identifiers as written, the status, the
+waterfall line, the assigned part, every other cause seen (including "a
+collateral record of an excluded type" and "a collateral record matches
+only after trimming whitespace"), observed or predicted, the balance
+text and currency, and the record numbers of its collateral records and
+of those Stage 2 kept.
+
 ### 8.3 Critical checks
 
 The critical-field list (`DQ_CRITICAL_FIELDS`): RREL2, RREL3, RREL4,
@@ -1364,6 +1535,12 @@ contradiction. Cross-column checks count where section 7 says yes.
   A missing property type is one defect whether it surfaces as P3f on
   RREC9 or as E2. P rules on one field that fire for the same cells
   (an invalid marker is P3d only, never also P5) share a key.
+  A5 and P5 are the exception that keeps two keys for one cell: a value
+  the loader cannot convert is a processing stop (A5, basis L) and, when
+  it also breaks the prescribed format, a reporting breach (P5, basis
+  E). The acceptance rules of a later release must not count that cell
+  twice: where both keys hold the same cell, it enters an affected set
+  once.
 - Within a check, a loan counts once, with its balance once, however
   many of its collateral records are defective.
 - A collateral finding is attributed to the loans that reference the
@@ -1709,6 +1886,120 @@ values like the existing ten (the current writer emits values only, no
 bold, freeze, filter or widths); adding a header style to the report
 sheets alone (bold, frozen row, filter) is adopted, per the second review.
 
+**As implemented (command line).** Four files are written beside the
+MILAN workbook, each named with the workbook's name without its
+extension as the stem:
+
+```
+<stem> data quality detail.csv
+<stem> dropped loans.csv
+<stem> data quality report.xlsx
+<stem> data quality summary.json
+```
+
+The detail store. The assessment writes every result row to Parquet
+parts in a working directory unique to the run, created inside the
+output folder (in the system temporary directory if that cannot be
+written) and marked with a file that holds the process id; a marked
+directory left by a process that is no longer running is removed at the
+start of a later run, and a directory without the marker is never
+touched. With the rows goes an index of counts (rows and records per
+file, field, rule, kind, severity and reason), from which the summary is
+built without reading the detail. The directory is removed at the end of
+the run, also after a failure and after Ctrl-C.
+
+Two processes of their own. The files are assessed before the pipeline
+runs, in a fresh interpreter that writes the store and exits; the report
+is completed and its files are written after the pipeline, in another
+fresh interpreter that is handed the assessment and the facts of the run
+(the stages' decisions and counts, no frame of the pool). The
+conversion's process therefore holds neither the audit's memory nor the
+exporters'. Each child prints nothing and logs nothing. A child that
+dies is a fault of the report: one log event with the step and the exit
+status, the summary says what is missing, and the pipeline's run, output
+and exit status are what they are without the report.
+
+The two CSV files start with a schema line, then the header:
+
+```
+# esma-milan data quality detail; schema 1; escape 1
+finding_id,rule_id,result_kind,basis,severity,file,record,physical_line,column_position,header,field,value_state,raw_value,raw_encoding,original_bytes_hex,nd4_date,expected,reason,note,loan_identifier_original,loan_identifier_new,obligor_identifier_new,collateral_identifier_new,population,counts
+
+# esma-milan dropped loans; schema 1; escape 1
+record,physical_line,loan_identifier_original,loan_identifier_new,obligor_identifier_new,status,waterfall_step,assigned_line,other_causes,observed_or_predicted,balance,currency,collateral_records,collateral_records_kept_by_stage2
+```
+
+The detail file is ordered by file (loans, collateral, pool), record
+(rows about a whole column or file first), column position and rule. The
+identifiers are those of the row's own record: RREL2, RREL3 and RREL5
+for a loan record; RREC2 (as the new loan identifier) and RREC4 for a
+collateral record. `population` is the loan's label; for a collateral
+record, the labels of the loans it links to. `counts` is `yes` when the
+row is a violation of a counting rule on a critical field; it is the
+catalogue's flag and nothing is enforced in this release. In
+`other_causes` and the two collateral-record columns, entries are
+separated by `;`.
+
+Escape 1, applied to the columns that can carry text of the user's files
+(`header`, `raw_value`, `expected`, `note`, the identifiers; in the
+dropped-loans file the identifiers, the status, the balance and the
+currency): a backslash is written as two backslashes; every character
+below U+0020, and U+007F, as backslash, `x` and two hexadecimal digits.
+`raw_encoding` is `escaped` when a column of the row was changed by this
+and `plain` otherwise. To read a value back, left to right: `\xNN` is
+the character NN and two backslashes are one.
+
+| In the file | In the CSV | `raw_encoding` |
+|---|---|---|
+| `AB` with the character 0x1F between | `A\x1FB` | escaped |
+| the six characters `A\x1FB` | `A\\x1FB` | escaped |
+| `C:\dir` | `C:\\dir` | escaped |
+| two lines `x`, `y` in one quoted cell | `x\x0Ay` | escaped |
+| `=1+1` | `=1+1` | plain |
+| `0012` | `0012` | plain |
+
+A cell whose bytes were not valid UTF-8 shows the repaired text in
+`raw_value` and its original bytes in `original_bytes_hex`.
+
+The report workbook is written with openpyxl in write-only mode by
+`quality/report_workbook.py`; `io_layer/` is not involved. Sheets, in
+order: `DQ Summary` (section, item, value, balance, basis), `DQ Fields`,
+`DQ Columns`, `DQ Checks`, `DQ Findings`, `DQ Rows` (the columns of the
+detail CSV) and `DQ Dropped loans`. Bold header, frozen first row and a
+filter on each. Every value of the user's files is a text cell and no
+cell is a formula; a control character is shown escaped as in the CSV;
+text beyond 32,767 characters is cut with its length and the name of the
+detail CSV. `DQ Rows` continues on `DQ Rows 2`, and so on, past a
+sheet's row limit. Above `DQ_XLSX_MAX_DETAIL_ROWS` finding rows (500,000:
+measured, a workbook of that many rows adds under two minutes to a run
+on a 500,000-loan file) `DQ Rows` holds the first rows of each finding
+group in proportion to the group's size, every group keeping at least
+one row, and `DQ Summary` gives the rows included, the total and the
+name of the detail CSV. Only this rendering is ever cut: nothing is
+sampled or dropped in the store, the detail CSV or the summary.
+
+| Run | Summary | Two CSVs | Report workbook | Working directory |
+|---|---|---|---|---|
+| normal, dry run, pipeline raised | written | written | written | removed |
+| interrupted (Ctrl-C, `SystemExit`) | none | none | none | removed |
+| a file cannot be written | written, with that file's state `failed` and the reason | the others are written | the others are written | removed |
+| the report-writing process dies | written by the main process, saying the other three are missing and why | absent | absent | removed |
+| the assessment did not complete | written, saying so | none | none | removed |
+| no working directory can be created | none; one log event with the step and the exception's type | | | |
+
+Each file is written to a temporary name and renamed. The summary is
+written last, and its `detail_files` block gives each of the other
+three: name, state, size, rows, and for the workbook the sheets and the
+rows included. The summary (schema 2) also gained `waterfall`,
+`dropped_loans` (counts by line) and `links`, and the outcomes of family
+A, G8 and A17 in `rules`.
+
+Not built yet: the sheets appended to the MILAN workbook (the row above
+in the table); the job directory and the paged reads of the API. A later
+PR that keeps the store in a job directory, where another party could
+write, must hand results between processes in a plain data format and
+not as a pickle (`docs/decisions.md`).
+
 ### 10.4 Provenance and overrides
 
 Every report records: SHA-256, name and size of both input files; the
@@ -1807,8 +2098,15 @@ As built so far: `catalogue.py`, `refdata/`, `audit_read.py`,
 `currency.py`, `plausibility.py`, with the engine in its `__init__`; it
 takes the place of the single `columns.py` above), `inventories.py`,
 `populations.py`, `result.py` (result rows and coverage counts),
-`assess.py` (`assess_files`, `complete_report` and the report object)
-and `export.py` (the summary).
+`assess.py` (`assess_files`, `complete_report` and the report object),
+`export.py` (the summary), `store.py` (the on-disk detail and its index
+of counts), `child.py` (the two child processes), `links.py` (5.2),
+`family_a.py` (7.1), `waterfall.py` (8.2, with G8 and A17),
+`detail_csv.py`, `report_workbook.py` and `report_files.py` (10.3), and
+`column_rules/fast.py` (the fast path: values proven plain by a
+conservative test are grouped by their other cells only and the rules
+run once on a representative; a test compares it with the slow path on
+the fixtures, at every boundary and on seeded random columns).
 
 ### 11.2 Tests
 
@@ -2027,10 +2325,9 @@ every consumer can represent it.
 | 4 | The decision: Stops, the four rules, override; the result contract; worker, handlers, schemas, CLI exit codes; `docs/api.md`; and the frontend section, in the same PR so no consumer sees an outcome it cannot show | rejection and report-only outcomes go live |
 | 5 | `mapping-reference.html` Part D, `docs/analysis.md`, deployment notes; anything deferred | docs |
 
-PR 2's waterfall observes steps 1 to 5 (Stage 2) and, from the stage
-results of PR 1, the identifier and matching losses; grouping and
-collateral-cause detail arrive with PR 3, and until then those lines are
-labelled "observed in total, cause detail pending". While PRs 2 and 3
+The waterfall observes steps 1 to 5 (Stage 2) and, from the stage
+results of PR 1 and the links, every loss after Stage 2 with its cause:
+no line is "cause detail pending" (8.2). While PRs 2 and 3
 are additive the report never says MILAN was blocked or rejected: it
 shows "policy outcome (not enforced in this release)" beside a MILAN
 file that was produced under today's behaviour.
@@ -2041,9 +2338,12 @@ the brief.
 As delivered, the second PR held the catalogue and the reference lists,
 the audit read, the value states, the P rules, the two inventories, the
 population, identity and lifecycle labels, the check outcomes and the
-summary JSON written by the command line. Family A, the waterfall and
-the dropped-loans list, the detail store, the detail CSV and the report
-workbook moved to the PRs after it.
+summary JSON written by the command line. The PR after it held the
+detail store, the links, family A, the waterfall with the dropped-loans
+list, G8 and A17, the detail CSV, the dropped-loans CSV and the report
+workbook, and the conditional ND5 rule through the link. Still to come:
+families C, D, E, F and the rest of G, L1, lineage (P10), the sheets
+appended to the MILAN workbook, and everything of PR 4.
 
 ---
 
@@ -2096,7 +2396,7 @@ Each constant carries its basis (A or P) and a one-line reason.
 | `DQ_INVALID_MISSING_MARKERS` | list in 6.1 | P3d |
 | `DQ_POSSIBLE_PLACEHOLDERS` | per-field dict | P8 |
 | `DQ_ROWS_PAGE_MAX` | 200 | API |
-| `DQ_XLSX_MAX_DETAIL_ROWS` | 3,000,000 | 10.3 |
+| `DQ_XLSX_MAX_DETAIL_ROWS` | 500,000 (measured: 10.3) | 10.3 |
 | `DQ_A12_IS_STOP`, `DQ_A13_IS_STOP` | True until #45, #46 merge | A12, A13 |
 
 ---

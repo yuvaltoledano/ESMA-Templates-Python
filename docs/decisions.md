@@ -4,7 +4,7 @@ Why the code is the way it is. One entry per decision that someone would
 otherwise re-argue; newest at the bottom. Add an entry when a PR changes one
 of these or makes a new one. Keep "Where things stand" current.
 
-## Where things stand (updated 2026-11-16)
+## Where things stand (updated 2026-11-17)
 
 The port is complete and verified cell for cell against the R reference on
 both fixtures. It runs as a CLI, as a synchronous API for pools up to
@@ -26,12 +26,19 @@ typed error for faults in the data. The second is in: `esma_milan.quality`
 reads the two files itself, assesses every column of every record against
 the per-column rules of the specification, labels every loan record with
 its population, and the command line writes a summary file beside the
-workbook, also on a dry run and when the pipeline fails. The report is
+workbook, also on a dry run and when the pipeline fails. The third is in:
+the rules about the files themselves (family A), the links between the two
+files, the waterfall from the file to the MILAN output with the
+dropped-loans list, and the row-level detail, written beside the workbook
+as a detail CSV, a dropped-loans CSV and a report workbook next to the
+summary. The files are assessed in a process of their own before the
+conversion and the report is written in another after it. The report is
 additive: no workbook, API response, pipeline message or pipeline log
-event changed, nothing is blocked or rejected, and the API and the web
-page do not show the report yet. Still to come: the checks across columns,
-records and files, the row-level detail files, the acceptance rules and
-the page. The agreed specification for the whole report is
+event changed, nothing is blocked or rejected, a rule shown with severity
+Stop has no effect on the run, and the API and the web page do not show
+the report yet. Still to come: the checks across columns and records, the
+sheets appended to the MILAN workbook, the acceptance rules and the
+page. The agreed specification for the whole report is
 `docs/data-quality/specification.md`.
 
 ## Entries
@@ -290,3 +297,85 @@ which is LGPL-2.1-or-later; the owner accepted bundling that list of codes
 with its notice beside it. A classification year that is not bundled, or a
 country a bundled year does not cover, is a limited assessment and never
 "invalid".
+
+### 2026-11-17 — The report's detail lives on disk; the audit and the report writing each run in a process of their own
+The row-level detail of the report is one row per finding and record,
+millions of rows on a poor 500,000-loan pool. It is written to Parquet
+parts in a working directory unique to the run (`quality/store.py`),
+with an index of counts from which the summary is built without reading
+the rows. The directory is created inside the output folder (in the
+system temporary directory if that cannot be written), carries a marker
+file with the process id, and is removed at the end of the run, also
+after a failure and after Ctrl-C; a later run removes a marked directory
+whose process is gone and never touches one without the marker. Nothing
+is sampled or dropped to save memory. The one thing that is ever cut is
+the report workbook's `DQ Rows` sheet, above `DQ_XLSX_MAX_DETAIL_ROWS`
+(500,000, set from measurement so that the workbook adds under two
+minutes on the poor 500,000-loan file), and it keeps at least one row of
+every finding group and says what it shows; the detail CSV always holds
+every row.
+
+Moving the rows to disk did not by itself bring the memory down. About
+1.4 GB of what the audit used was not rows: it was pages the allocator
+inside Polars keeps after they are freed, so the conversion started on
+top of them. Two remedies were measured on a generated 501,165-loan
+pair. (A) An allocator setting (`_RJEM_MALLOC_CONF`, set before Polars is
+imported, returning freed pages at once): whole-run peak 3,399 MiB on
+the clean file and 3,722 MiB on the poor one, and the pipeline's own
+peak falls too (2,901 MiB, against 3,463 MiB), at about 5% of the
+pipeline's time (87 s for the run). (B) The file part of the audit in a
+child process that writes the store and exits. B was chosen: the
+variable is an internal name of the allocator build Polars ships, which
+a Polars upgrade can change or drop without notice, and setting it
+changes the allocator for the conversion as well, which the report must
+not do. With B the conversion runs in a process that looks exactly as it
+does without the report. The same reasoning, turned round, put the
+writing of the report in a second child: after the conversion the main
+process has no memory to spare, and completing and writing the report
+there added about 500 MiB to the peak. The second child is handed the
+assessment and the facts of the run (`assess.RunFacts`: the stages'
+decisions, row positions and counts, no frame of the pool). Each child
+is a fresh interpreter (`sys.executable -m`), never a fork, prints and
+logs nothing, and sends its standard error to a file in the working
+directory. A child that dies is a fault of the report: one log event
+with the step and the exit status, the summary says what is missing, and
+the conversion's output and exit status are what they are without the
+report. Only the command line starts children; the API and the worker do
+not call the report yet.
+
+The children hand their results back as pickle files (the assessment;
+the assessment and the run facts). That is acceptable only because the
+file is written and read by the same package within one run, in a
+directory that run created. **A later PR that keeps the store in a job
+directory, or anywhere another party could write, must use a plain data
+format there** (JSON and Parquet), not a pickle.
+
+`run_pipeline` now gives an exception that leaves it one attribute,
+`partial_result`: a `PipelineResult` with the outputs of the stages that
+completed before the failure. The exception is otherwise the same object
+with the same type, arguments, message and traceback; nothing is
+returned, logged or warned differently; if the attribute cannot be set
+the exception leaves without it. This reverses the choice recorded
+yesterday not to edit `runner.py`: the report is most needed when the
+pipeline fails, and with the completed stages it can show what Stage 2
+and Stage 3 actually decided before the failure as observed and not as
+predicted. The partial result holds the stage frames, the same objects
+the exception's traceback already keeps alive.
+
+The per-column engine has a fast path (`column_rules/fast.py`). A value
+that a conservative test proves plain for its field (a number within
+the format's digits, upper-case ASCII text within the length, no
+padding, no ND form, no missing-value marker, no listed placeholder) can
+only pass every rule that reads the value alone, so such values are
+grouped by their other cells only and the rules run once on a
+representative. A field or rule the test does not cover takes the slow
+path. A test holds the two paths equal on both fixtures, at every
+boundary of the test and on seeded random columns; a switch that forces
+the slow path exists for that test only.
+
+Family A carries severities of Stop (a file the pipeline cannot process,
+or one the acceptance policy would stop on). In this release that is a
+label. The wording follows the basis ("the pipeline cannot process
+this", "would stop under the acceptance policy") and no file of the
+report says a run was stopped, blocked or rejected unless the pipeline's
+own failure says so.

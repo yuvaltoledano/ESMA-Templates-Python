@@ -1,18 +1,28 @@
 """The assessment of the two files, and the report completed from the run.
 
-Mirrors nothing in the R reference (specification 5, 6, 8.1, 10.1).
+Mirrors nothing in the R reference (specification 5, 6, 7.1, 8.1, 8.2, 10.1).
 
 Two steps, so the report exists whether or not the pipeline succeeds:
 
-  assess_files      reads each file in turn, runs every per-column rule,
-                    labels every record, builds the inventories, and frees
-                    the file's text before it reads the next. It needs
-                    nothing from the pipeline and is meant to run before
-                    it, so the two never hold their frames at once.
+  assess_files      reads each file in turn, runs every per-column rule
+                    and the rules about the file itself (family A), labels
+                    every record, builds the inventories and the links
+                    between the files, and frees the file's text before it
+                    reads the next. It needs nothing from the pipeline and
+                    is meant to run before it, so the two never hold their
+                    frames at once.
   complete_report   adds what only the run can say: whether the pipeline
-                    completed or failed (and with which reason code),
-                    the comparison of the population labels with Stage 2's
-                    own output, and the identifier column Stage 3 chose.
+                    completed or failed (and with which reason code), the
+                    comparison of the population labels with Stage 2's own
+                    output and of the links with Stage 3's, the waterfall
+                    with the dropped-loans list, and the rules that need
+                    the run (G8, A17).
+
+`complete_report` is `run_facts` followed by `complete_report_from`.
+`run_facts` takes from the pipeline's result (or from the partial result
+its exception carries) the decisions and counts the report reads, without
+the pool's frames, so it is small and can be handed to the process that
+writes the report (`quality.child`).
 
 Nothing here blocks, rejects or withholds anything. The report never
 states a policy outcome; that arrives with the acceptance rules of a later
