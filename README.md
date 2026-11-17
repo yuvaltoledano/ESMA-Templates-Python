@@ -86,8 +86,8 @@ messages are what they are without it, and it states no accept or reject
 decision. A rule shown with severity Stop has no effect on the run. The
 files are assessed in a process of their own before the conversion, and
 the report is written in another after it, so the conversion's memory use
-is unchanged; on a 500,000-loan pool the report adds a few minutes to the
-run. The checks across columns and records, the acceptance rules and the
+is unchanged; on a 500,000-loan pool the report adds between one and two
+minutes to the run. The checks across columns and records, the acceptance rules and the
 web page arrive in later releases; the API does not produce the report
 yet.
 
