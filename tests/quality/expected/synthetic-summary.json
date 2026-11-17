@@ -9,11 +9,10 @@
     "statement": "This release assesses the per-column rules only. Rules not implemented in this release were not run; they are listed apart from rules that could not be evaluated on these files.",
     "rules_not_implemented_in_this_release": {
       "label": "not evaluated: not implemented in this release",
-      "count": 88,
+      "count": 86,
       "rules": {
         "owned and reported once by A10(a) (family A)": ["P6(e)"],
         "output lineage (specification 9.3), including the mapper compatibility of {Y/N} spellings": ["P10"],
-        "arrives with the pool waterfall": ["A17"],
         "family C arrives in a later release": [
           "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19", "C20", "C21",
           "C22", "C23", "C24", "C25", "C26", "C27", "C28", "C30", "C31", "C32", "C33", "C34", "C35", "C36", "C37", "C38", "C39", "C40", "C41", "C42",
@@ -22,7 +21,7 @@
         "family D arrives in a later release": ["D1", "D2", "D3"],
         "family E arrives in a later release": ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12", "E13", "E15", "E16", "E17", "E18", "E19"],
         "family F arrives in a later release": ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"],
-        "family G arrives in a later release": ["G1", "G2", "G3", "G4", "G6", "G7", "G8"],
+        "family G arrives in a later release": ["G1", "G2", "G3", "G4", "G6", "G7"],
         "family L arrives in a later release": ["L1"]
       }
     },
@@ -31,7 +30,10 @@
       "P11": "whether an LEI belongs to the named entity needs the GLEIF register, which is outside the two files",
       "P13": "case 3 (the companion and the dedicated field differ) is C30's"
     },
-    "rules_not_evaluable_on_these_files": {"P11": {"records": 20, "reasons": {"value not in the code's form": 20}}}
+    "rules_not_evaluable_on_these_files": {
+      "A17": {"records": 24, "reasons": {"the currency of an amount is not stated": 24}},
+      "P11": {"records": 20, "reasons": {"value not in the code's form": 20}}
+    }
   },
   "compliance": {
     "violations": {"state": "present", "rules": 5, "fields": 73, "records": 20, "column_level_findings": 43},
@@ -46,8 +48,181 @@
   "policy_outcome": "not implemented in this release",
   "release_permitted": "not implemented in this release",
   "override": "not implemented in this release",
-  "waterfall": "not implemented in this release",
-  "dropped_loans": "not implemented in this release",
+  "waterfall": {
+    "statement": "loan records from the file to the MILAN output (specification 8.2). Each line says whether it was observed from a stage's own result or predicted from the stage's predicate because the stage's result is not available",
+    "balance_note": "balances are the current principal balance (RREL30) as the pipeline's loader reads it, per stated currency and never added across currencies; the exact text of each balance is in the detail files",
+    "priority_note": "a loan lost after Stage 2 is assigned to one part of line 6 by a fixed bookkeeping priority (the order of the parts), so the parts add up; the priority is a convention and not the established cause. The dropped-loans list gives every other cause seen on the loan. Parts 6 and 7 cannot occur on a completed run until issue #45 is fixed",
+    "lines": [
+      {
+        "line": 1,
+        "label": "loan records submitted",
+        "basis": "observed",
+        "records": 8,
+        "balance_by_currency": {"EUR": {"balance": 1550000.0, "records": 8}},
+        "records_without_a_balance": 0
+      },
+      {
+        "line": 2,
+        "label": "less: not an active status",
+        "basis": "observed",
+        "records": 0,
+        "balance_by_currency": {},
+        "records_without_a_balance": 0,
+        "parts": [
+          {"label": "eligibility unknown", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {
+            "label": "inactive",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0,
+            "of_which_status_not_recognised": {"records": 0, "balance_by_currency": {}, "records_without_a_balance": 0}
+          }
+        ]
+      },
+      {
+        "line": 3,
+        "label": "active status, before the balance filter",
+        "basis": "observed",
+        "records": 8,
+        "balance_by_currency": {"EUR": {"balance": 1550000.0, "records": 8}},
+        "records_without_a_balance": 0
+      },
+      {
+        "line": 4,
+        "label": "less: not retained by the balance filter",
+        "basis": "observed",
+        "records": 0,
+        "balance_by_currency": {},
+        "records_without_a_balance": 0,
+        "parts": [
+          {"label": "zero balance", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "negative balance", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "balance missing", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "balance unparseable", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "active status not recognised", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0}
+        ]
+      },
+      {
+        "line": 5,
+        "label": "active, retained",
+        "basis": "observed",
+        "records": 8,
+        "balance_by_currency": {"EUR": {"balance": 1550000.0, "records": 8}},
+        "records_without_a_balance": 0,
+        "reconciliation_with_stage2": {"audit": 8, "stage2": 8, "state": "agrees"}
+      },
+      {
+        "line": 6,
+        "label": "less: lost after Stage 2",
+        "basis": "observed",
+        "collateral_reasons": "observed",
+        "selected_loan_identifier": "RREL3",
+        "records": 0,
+        "balance_by_currency": {},
+        "records_without_a_balance": 0,
+        "parts": [
+          {
+            "order": 1,
+            "label": "no collateral record at all",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 2,
+            "label": "collateral records only of excluded types",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 3,
+            "label": "a collateral record without a collateral type (the Python pipeline drops such a record today; the R reference keeps it)",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 4,
+            "label": "a property record without a property type",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 5,
+            "label": "a property record without a valuation above 0",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 6,
+            "label": "the selected identifier is missing on the loan record",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 7,
+            "label": "no match under the selected identifier convention",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 8,
+            "label": "removed with a group by a later stage",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          }
+        ]
+      },
+      {
+        "line": 7,
+        "label": "loans in the MILAN output",
+        "basis": "observed",
+        "records": 8,
+        "balance_by_currency": {"EUR": {"balance": 1550000.0, "records": 8}},
+        "records_without_a_balance": 0,
+        "reconciliation_with_line_5_less_line_6": {"line_5_less_line_6": 8, "output": 8, "state": "agrees"}
+      }
+    ],
+    "reconciliation": {"line_5": {"audit": 8, "stage2": 8, "state": "agrees"}, "line_7": {"line_5_less_line_6": 8, "output": 8, "state": "agrees"}},
+    "collateral_counts": {
+      "raw collateral records": 12,
+      "distinct collateral identifiers (RREC4, as written)": 8,
+      "property rows retained by Stage 2": 12,
+      "property rows linked to a retained loan (Stage 3)": 12,
+      "graph groups": 5
+    }
+  },
+  "dropped_loans": {"loans": 0, "by_line": []},
+  "links": {
+    "by_convention": {"new (RREL3), raw": {"collateral_records": 12, "loan_records": 8, "links": 12}},
+    "collateral_records_matching_no_loan_record": 0,
+    "loan_records_with_no_collateral_record": 0,
+    "note": "raw: the two cells are equal as they stand. trimmed: equal only after trimming whitespace, which the pipeline does not match. The unlinked counts are over raw links under either convention.",
+    "stage3_comparison": {
+      "evaluated": true,
+      "reason": null,
+      "selected_loan_identifier": "RREL3",
+      "loans_dropped_for_a_missing_identifier": 0,
+      "loans_dropped_without_collateral": 0,
+      "records_that_differ": 0,
+      "first_differing_records": [],
+      "state": "agrees"
+    }
+  },
   "lineage": "not implemented in this release",
   "detail_files": "not implemented in this release",
   "requested_outputs": {"workbook": false, "summary": true},
@@ -942,6 +1117,42 @@
       "not_evaluable_reasons": {},
       "other_result_kinds": {},
       "label": "not applicable"
+    },
+    {
+      "rule_id": "A17",
+      "title": "currency compatibility of the amounts the pipeline combines",
+      "basis": "L",
+      "regulatory_source": null,
+      "severity": "Warn",
+      "applies_to": "retained loans: RREL30 across the pool; RREL30 with RREL31 to RREL33 and RREL16 with RREL20 on a loan; the valuations Stage 7 selected with RREL29 and RREL30",
+      "counts_on_critical_fields": false,
+      "status": "implemented",
+      "not_implemented_part": null,
+      "applicable": 32,
+      "evaluated": 8,
+      "failed": 0,
+      "not_evaluable": 24,
+      "not_evaluable_reasons": {"the currency of an amount is not stated": 24},
+      "other_result_kinds": {},
+      "label": "partly evaluated"
+    },
+    {
+      "rule_id": "G8",
+      "title": "population reconciliation: line 5 of the waterfall equals the Stage 2 result and line 7 equals line 5 less line 6",
+      "basis": "P",
+      "regulatory_source": null,
+      "severity": "Warn",
+      "applies_to": "the two reconciliation points of the waterfall",
+      "counts_on_critical_fields": false,
+      "status": "implemented",
+      "not_implemented_part": null,
+      "applicable": 2,
+      "evaluated": 2,
+      "failed": 0,
+      "not_evaluable": 0,
+      "not_evaluable_reasons": {},
+      "other_result_kinds": {},
+      "label": "passed"
     }
   ],
   "findings": [
@@ -2921,7 +3132,10 @@
       "code_distribution": null,
       "surrounding_whitespace": 0,
       "results": {"P13": {"context": 1, "violation": 8}},
-      "outcomes": {"P13": {"applicable": 8, "evaluated": 8, "failed": 8, "not_evaluable": 0, "label": "findings"}},
+      "outcomes": {
+        "A17": {"applicable": 8, "evaluated": 0, "failed": 0, "not_evaluable": 8, "label": "not evaluated"},
+        "P13": {"applicable": 8, "evaluated": 8, "failed": 8, "not_evaluable": 0, "label": "findings"}
+      },
       "rules_passed": ["A5", "P1", "P3a", "P3b", "P3c", "P3d", "P3g", "P4(a)", "P5", "P6(a)", "P8", "P9"],
       "worst_severity_by_basis": {"E": "Warn"},
       "pipeline_use_and_lineage": "not implemented in this release (arrives with P10)"
@@ -3223,7 +3437,10 @@
       "code_distribution": null,
       "surrounding_whitespace": 0,
       "results": {"P13": {"context": 1, "violation": 8}},
-      "outcomes": {"P13": {"applicable": 8, "evaluated": 8, "failed": 8, "not_evaluable": 0, "label": "findings"}},
+      "outcomes": {
+        "A17": {"applicable": 8, "evaluated": 0, "failed": 0, "not_evaluable": 8, "label": "not evaluated"},
+        "P13": {"applicable": 8, "evaluated": 8, "failed": 8, "not_evaluable": 0, "label": "findings"}
+      },
       "rules_passed": ["A5", "P1", "P3a", "P3b", "P3c", "P3d", "P3g", "P4(a)", "P5", "P6(a)", "P9"],
       "worst_severity_by_basis": {"E": "Warn"},
       "pipeline_use_and_lineage": "not implemented in this release (arrives with P10)"
@@ -3246,7 +3463,7 @@
       "code_distribution": null,
       "surrounding_whitespace": 0,
       "results": {},
-      "outcomes": {},
+      "outcomes": {"A17": {"applicable": 16, "evaluated": 8, "failed": 0, "not_evaluable": 8, "label": "partly evaluated"}},
       "rules_passed": ["A2", "A5", "P1", "P13", "P3a", "P3b", "P3c", "P3d", "P3g", "P4(a)", "P5", "P9"],
       "worst_severity_by_basis": {},
       "pipeline_use_and_lineage": "not implemented in this release (arrives with P10)"

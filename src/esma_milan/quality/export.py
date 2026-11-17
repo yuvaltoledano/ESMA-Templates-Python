@@ -38,6 +38,7 @@ from esma_milan.quality.assess import (
     inventory_of_expected_fields,
 )
 from esma_milan.quality.catalogue import FIELDS, RULES, SCOPE_STATEMENTS, sentence_clause
+from esma_milan.quality.links import link_counts
 from esma_milan.quality.populations import LIFECYCLES, POPULATIONS
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome
@@ -209,6 +210,49 @@ def _file_block(audit: FileAudit) -> dict[str, object]:
     return block
 
 
+def _waterfall(report: QualityReport) -> dict[str, object] | str:
+    waterfall = report.waterfall
+    if waterfall is None:
+        return "not available: the loans file could not be split into records"
+    return {
+        "statement": "loan records from the file to the MILAN output (specification 8.2). Each "
+                     "line says whether it was observed from a stage's own result or predicted "
+                     "from the stage's predicate because the stage's result is not available",
+        "balance_note": "balances are the current principal balance (RREL30) as the pipeline's "
+                        "loader reads it, per stated currency and never added across "
+                        "currencies; the exact text of each balance is in the detail files",
+        "priority_note": "a loan lost after Stage 2 is assigned to one part of line 6 by a fixed "
+                         "bookkeeping priority (the order of the parts), so the parts add up; "
+                         "the priority is a convention and not the established cause. The "
+                         "dropped-loans list gives every other cause seen on the loan. Parts 6 "
+                         "and 7 cannot occur on a completed run until issue #45 is fixed",
+        "lines": list(waterfall.lines),
+        "reconciliation": dict(waterfall.reconciliation),
+        "collateral_counts": dict(waterfall.collateral_counts),
+    }
+
+
+def _links(report: QualityReport) -> dict[str, object] | str:
+    assessment = report.assessment
+    scan = assessment.scan_links()
+    if scan is None:
+        return "not available: a file could not be split into records"
+    block = link_counts(scan, assessment.loans.n_records, assessment.collateral.n_records)
+    comparison = report.stage3_comparison
+    if comparison is not None:
+        block["stage3_comparison"] = {
+            "evaluated": comparison.evaluated, "reason": comparison.reason,
+            "selected_loan_identifier": comparison.selected,
+            "loans_dropped_for_a_missing_identifier": len(comparison.missing_identifier),
+            "loans_dropped_without_collateral": len(comparison.without_collateral),
+            "records_that_differ": len(comparison.differing_records),
+            "first_differing_records": list(comparison.differing_records[:20]),
+            "state": "agrees" if comparison.agrees
+            else "reconciliation incomplete" if comparison.evaluated else "not evaluated",
+        }
+    return block
+
+
 def _provenance(report: QualityReport) -> dict[str, object]:
     assessment = report.assessment
     started = assessment.started_at.isoformat()
@@ -371,8 +415,10 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
         "policy_outcome": NOT_IMPLEMENTED,
         "release_permitted": NOT_IMPLEMENTED,
         "override": NOT_IMPLEMENTED,
-        "waterfall": NOT_IMPLEMENTED,
-        "dropped_loans": NOT_IMPLEMENTED,
+        "waterfall": _waterfall(report),
+        "dropped_loans": report.waterfall.dropped_counts if report.waterfall is not None
+        else "not available: the loans file could not be split into records",
+        "links": _links(report),
         "lineage": NOT_IMPLEMENTED,
         "detail_files": NOT_IMPLEMENTED,
         "requested_outputs": {

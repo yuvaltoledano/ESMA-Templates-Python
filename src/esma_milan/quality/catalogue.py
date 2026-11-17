@@ -589,8 +589,22 @@ _A_RULES: tuple[RuleEntry, ...] = (
     _rule("A16", "the file can be split into records", "L", "Stop",
           "file_not_splittable:{file}", _V, counts=True, applies_to="each file"),
     _rule("A17", "currency compatibility of the amounts the pipeline combines", "L", "Warn",
-          "mixed_currency", _V, status="not_implemented",
-          missing="arrives with the pool waterfall"),
+          "mixed_currency", _V,
+          applies_to="retained loans: RREL30 across the pool; RREL30 with RREL31 to RREL33 and "
+                     "RREL16 with RREL20 on a loan; the valuations Stage 7 selected with RREL29 "
+                     "and RREL30",
+          needs=("a stated currency for each amount", "the Stage 7 result, for the valuations "
+                 "actually selected")),
+)
+
+# G8, the one pool-level rule of this release: the reconciliation of the
+# waterfall (specification 8.2). A difference is a fault of the report or
+# of the pipeline, so its result kind is a limitation, never a violation.
+_G_RULES: tuple[RuleEntry, ...] = (
+    _rule("G8", "population reconciliation: line 5 of the waterfall equals the Stage 2 result "
+          "and line 7 equals line 5 less line 6", "P", "Warn", "reconciliation", ("limitation",),
+          applies_to="the two reconciliation points of the waterfall",
+          needs=("the Stage 2 result", "a completed pipeline run, for line 7")),
 )
 
 # Rules of the later releases, by family (specification section 7). Each is
@@ -603,11 +617,11 @@ _LATER: dict[str, tuple[str, Basis, Severity, tuple[str, ...]]] = {
           tuple(f"E{n}" for n in range(1, 20) if n != 14)),
     "F": ("the relationship between the files", "L", "Warn",
           tuple(f"F{n}" for n in range(1, 11))),
-    "G": ("pool level", "P", "Warn", ("G1", "G2", "G3", "G4", "G6", "G7", "G8")),
+    "G": ("pool level", "P", "Warn", ("G1", "G2", "G3", "G4", "G6", "G7")),
     "L": ("consistency with the claimed lifecycle", "E", "Warn", ("L1",)),
 }
 
-RULES: dict[str, RuleEntry] = {r.rule_id: r for r in (*_P_RULES, *_A_RULES)} | {
+RULES: dict[str, RuleEntry] = {r.rule_id: r for r in (*_P_RULES, *_A_RULES, *_G_RULES)} | {
     rule_id: _rule(
         rule_id, f"family {family}: {title}", basis, severity, f"{rule_id}", _V,
         status="not_implemented", missing=f"family {family} arrives in a later release",
@@ -784,6 +798,12 @@ SENTENCES |= {
         "hold different values",
     ("A16", "violation"):
         "the pipeline cannot process this: the file cannot be split into records",
+    ("A17", "violation"):
+        "the pipeline combines these amounts without conversion: they are stated in more than "
+        "one currency, or in a code that is not a valid currency",
+    ("G8", "limitation"):
+        "could not be assessed in full: two figures of the waterfall that must be equal differ, "
+        "which is a fault of this report or of the pipeline and not a finding about the data",
 }
 
 # Clauses for a field on which a rule finds something of its own. P11 on

@@ -191,4 +191,43 @@ def assess(pair: Pair, folder: Path, file: FileKind) -> Assessed:
     return Assessed(raw, pool, assess_columns(raw, pool, ref=load_reference_data()))
 
 
-__all__ = ["CUTOFF", "FIELDS", "LEI", "REGION", "UNIQUE_IDENTIFIER", "Assessed", "Pair", "assess", "make_lei"]
+def assert_waterfall_adds_up(summary: dict[str, object]) -> None:
+    """The arithmetic of the waterfall in a summary, for any pool: every
+    line is the sum of its parts, line 1 = 2 + 3, line 3 = 4 + 5 and, where
+    the output is known and reconciled, line 5 = 6 + 7."""
+    waterfall = summary["waterfall"]
+    if not isinstance(waterfall, dict):
+        return
+    lines = {line["line"]: line for line in waterfall["lines"]}
+    for line in lines.values():
+        parts = [p["records"] for p in line.get("parts", [])]
+        if parts and line["records"] is not None and all(p is not None for p in parts):
+            assert sum(parts) == line["records"], line["label"]
+        for part in line.get("parts", []):
+            inner = part.get("of_which_status_not_recognised")
+            assert inner is None or inner["records"] <= part["records"]
+    assert lines[1]["records"] == lines[2]["records"] + lines[3]["records"]
+    assert lines[3]["records"] == lines[4]["records"] + lines[5]["records"]
+    reconciliation = waterfall["reconciliation"]
+    if reconciliation["line_5"]["state"] == "agrees":
+        assert reconciliation["line_5"]["audit"] == reconciliation["line_5"]["stage2"] == lines[5]["records"]
+    if reconciliation["line_7"]["state"] == "agrees":
+        assert lines[5]["records"] == lines[6]["records"] + lines[7]["records"]
+    dropped = summary["dropped_loans"]
+    assert isinstance(dropped, dict)
+    lost = lines[4]["records"] + (lines[6]["records"] or 0)
+    assert dropped["loans"] == lost == sum(row["loans"] for row in dropped["by_line"])
+
+
+__all__ = [
+    "CUTOFF",
+    "FIELDS",
+    "LEI",
+    "REGION",
+    "UNIQUE_IDENTIFIER",
+    "Assessed",
+    "Pair",
+    "assert_waterfall_adds_up",
+    "assess",
+    "make_lei",
+]

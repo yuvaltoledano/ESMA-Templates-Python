@@ -18,7 +18,7 @@ from esma_milan.quality.assess import QualityReport
 from esma_milan.quality.catalogue import FIELD_SENTENCES, RESULT_KINDS, RULES, SENTENCES
 from esma_milan.quality.export import NOT_IMPLEMENTED, finding_sentence, render_json
 from esma_milan.runner import run_pipeline
-from tests.quality.builders import Pair
+from tests.quality.builders import Pair, assert_waterfall_adds_up
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 EXPECTED = Path(__file__).resolve().parent / "expected"
@@ -26,7 +26,9 @@ STARTED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 def summary_dict(report: QualityReport) -> dict[str, Any]:
-    return _summary_dict(report)
+    summary = _summary_dict(report)
+    assert_waterfall_adds_up(summary)  # for every pool a test builds
+    return summary
 
 
 def _report(pair: Pair, folder: Path) -> QualityReport:
@@ -170,7 +172,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
     not_implemented = completeness["rules_not_implemented_in_this_release"]
     listed = {rule for ids in not_implemented["rules"].values() for rule in ids}
     assert listed == {r.rule_id for r in RULES.values() if r.status == "not_implemented"}
-    assert {"C12", "E17", "F3", "G8", "L1", "P10", "P6(e)"} <= listed
+    assert {"C12", "E17", "F3", "G7", "L1", "P10", "P6(e)"} <= listed
     assert not_implemented["count"] == len(listed)
     assert completeness["rules_not_evaluable_on_these_files"] == {}  # nothing on the compliant pair
     assert set(completeness["rules_partly_implemented"]) == {"P3f", "P11", "P13"}
@@ -178,8 +180,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
 
 def test_later_parts_say_not_implemented_and_never_eligible(tmp_path: Path) -> None:
     summary = summary_dict(_report(Pair(), tmp_path))
-    for key in ("policy_outcome", "release_permitted", "override", "waterfall", "dropped_loans",
-                "lineage", "detail_files"):
+    for key in ("policy_outcome", "release_permitted", "override", "lineage", "detail_files"):
         assert summary[key] == NOT_IMPLEMENTED == "not implemented in this release"
     assert "eligible" not in json.dumps(summary).lower()
     assert all(row["pipeline_use_and_lineage"].startswith(NOT_IMPLEMENTED)

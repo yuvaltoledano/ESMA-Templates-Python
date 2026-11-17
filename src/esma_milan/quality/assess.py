@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,7 +38,12 @@ from esma_milan.quality.column_rules.context import PoolFacts, pool_facts
 from esma_milan.quality.column_rules.domain import classification_year_results
 from esma_milan.quality.family_a import FileFacts, file_rules, pool_rules, unreadable_rows
 from esma_milan.quality.inventories import actual_columns, expected_fields
-from esma_milan.quality.links import build_links, collateral_link_context
+from esma_milan.quality.links import (
+    Stage3Comparison,
+    build_links,
+    collateral_link_context,
+    compare_with_stage3,
+)
 from esma_milan.quality.populations import (
     LOAN_ID_COLUMNS,
     RETAINED,
@@ -51,6 +56,7 @@ from esma_milan.quality.populations import (
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome, concat_results, empty_results, results_frame
 from esma_milan.quality.store import ResultStore, result_counts
+from esma_milan.quality.waterfall import Waterfall, build_waterfall
 
 if TYPE_CHECKING:
     from esma_milan.runner import PipelineResult
@@ -188,6 +194,10 @@ class QualityReport:
     """`RREL2` or `RREL3` when Stage 3 reported its choice."""
     identity_confidence: Mapping[str, int]
     options: Mapping[str, object] = field(default_factory=dict)
+    waterfall: Waterfall | None = None
+    """None when the loans file could not be split into records."""
+    stage3_comparison: Stage3Comparison | None = None
+    """The loans Stage 3 dropped against the loans the links say it drops."""
 
     @property
     def populations_observed(self) -> bool:
@@ -366,7 +376,14 @@ def complete_report(
     options: Mapping[str, object] | None = None,
 ) -> QualityReport:
     """Complete the report from the run: exactly one of `pipeline` (it
-    returned) and `error` (it raised) is given."""
+    returned) and `error` (it raised) is given.
+
+    When the pipeline raised, the stages that completed before the failure
+    are read from the exception's `partial_result`, if it carries one
+    (`runner.run_pipeline`), so what they decided is reported as observed.
+
+    The rows of the rules that need the run (G8, A17) are added to the
+    assessment's results: to the store when it has one, else in memory."""
     if (pipeline is None) == (error is None):
         raise ValueError("complete_report needs the pipeline's result or its exception, not both")
     if pipeline is not None:
@@ -382,21 +399,43 @@ def complete_report(
             reason=data_fault.reason if data_fault else None,
         )
 
+    # The stages to report from: the whole result, or what the exception carries.
+    stages: PipelineResult | None = pipeline
+    if stages is None:
+        stages = getattr(error, "partial_result", None)
+
     comparison: Stage2Comparison | None = None
+    stage3_comparison: Stage3Comparison | None = None
+    waterfall: Waterfall | None = None
     selected: str | None = None
     identity: Counter[str] = Counter()
-    records = assessment.records(
-        "loans",
-        ["record", "population", "status_not_active", "balance_not_positive",
-         "balance_unparseable", "RREL2_duplicate", "RREL2_colliding", "RREL3_duplicate",
-         "RREL3_colliding"],
-    )
+    records = assessment.records("loans")
     if records is not None:
-        comparison = compare_with_stage2(records, pipeline.stage2 if pipeline else None)
-        decisions = pipeline.stage3.decisions if pipeline and pipeline.stage3 else None
+        comparison = compare_with_stage2(records, stages.stage2 if stages else None)
+        decisions = stages.stage3.decisions if stages and stages.stage3 else None
         if decisions is not None and decisions.loan_id.chosen_column is not None:
             selected = LOAN_ID_COLUMNS.get(decisions.loan_id.chosen_column)
         identity = Counter(identity_confidence(records, selected).to_list())
+        collateral = assessment.records("collateral")
+        scan = assessment.scan_links()
+        links = scan.collect() if scan is not None else None
+        if links is not None:
+            stage3_comparison = compare_with_stage3(
+                records, links, stages.stage2 if stages else None, decisions
+            )
+        waterfall = build_waterfall(records, collateral, links, stages, completed=pipeline is not None)
+        store = assessment.store
+        if store is not None:
+            store.write_results("run", waterfall.results)
+            assessment = replace(
+                assessment, pool_outcomes=(*assessment.pool_outcomes, *waterfall.outcomes)
+            )
+        else:
+            assessment = replace(
+                assessment,
+                pool_results=concat_results([assessment.pool_results, waterfall.results]),
+                pool_outcomes=(*assessment.pool_outcomes, *waterfall.outcomes),
+            )
     return QualityReport(
         assessment=assessment,
         pipeline=outcome,
@@ -404,4 +443,6 @@ def complete_report(
         selected_loan_identifier=selected,
         identity_confidence=dict(identity),
         options=dict(options or {}),
+        waterfall=waterfall,
+        stage3_comparison=stage3_comparison,
     )

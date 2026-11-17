@@ -40,3 +40,26 @@ def test_results_equal_the_reviewed_list(fixture: str) -> None:
         rows = list(csv.reader(handle))
     assert rows[0] == HEADER
     assert result_counts(fixture) == rows[1:]
+
+
+def waterfall_document(fixture: str) -> str:
+    """The waterfall, the dropped-loans counts and the link counts of a
+    fixture's dry run, as the summary prints them."""
+    from esma_milan.quality import complete_report, summary_dict
+    from esma_milan.quality.export import render_json
+    from esma_milan.runner import run_pipeline
+
+    folder = FIXTURES / fixture
+    assessment = assess_files(folder / "loans.csv", folder / "collaterals.csv")
+    result = run_pipeline(
+        loans_file_path=folder / "loans.csv", collaterals_file_path=folder / "collaterals.csv",
+        deal_name="FIXTURE", dry_run=True, verbose=False,
+    )
+    summary = summary_dict(complete_report(assessment, pipeline=result, error=None))
+    return render_json({key: summary[key] for key in ("waterfall", "dropped_loans", "links")}) + "\n"
+
+
+@pytest.mark.parametrize("fixture", ["synthetic", "real_anonymised"])
+def test_the_waterfall_equals_the_reviewed_one(fixture: str) -> None:
+    expected = (EXPECTED / f"{fixture}-waterfall.json").read_text(encoding="utf-8")
+    assert waterfall_document(fixture) == expected

@@ -57,6 +57,8 @@ def test_the_compliant_pair_has_no_family_a_row_and_every_rule_reports(tmp_path:
     labels = {rule_id: _label(assessment, rule_id) for rule_id in FAMILY_A}
     assert labels.pop("A4") == "reported as P1 rows (one defect, one row)"
     assert labels.pop("A14") == "reported as the record counts of the summary's file block"
+    # This helper's report is of a run that raised: the valuations Stage 7 selects are not known.
+    assert labels.pop("A17") == "partly evaluated"
     # Nothing was repaired and no field is supplied twice: those rules have nothing to apply to.
     assert {r for r, label in labels.items() if label == "not applicable"} == {"A6", "A15(a)", "A15(b)", "A16"}
     assert {label for r, label in labels.items() if r not in ("A6", "A15(a)", "A15(b)", "A16")} == {"passed"}

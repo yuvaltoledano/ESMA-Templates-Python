@@ -127,8 +127,11 @@ class ResultStore:
 
     def write_results(self, part: str, rows: pl.DataFrame) -> None:
         """Write one part of result rows, sorted by record, and its counts.
-        An empty part writes nothing."""
+        An empty part writes nothing, and removes an earlier part of that
+        name."""
         if rows.height == 0:
+            for folder in ("results", "index"):
+                (self.root / folder / f"{part}.parquet").unlink(missing_ok=True)
             return
         rows.sort("record", "column_position", "rule_id", nulls_last=True).write_parquet(
             self.root / "results" / f"{part}.parquet"
