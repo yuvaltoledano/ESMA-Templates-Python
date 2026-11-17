@@ -368,22 +368,60 @@ def inventory_of_expected_fields(assessment: FileAssessment) -> list[dict[str, o
     return rows
 
 
-def complete_report(
-    assessment: FileAssessment,
-    *,
-    pipeline: PipelineResult | None,
-    error: BaseException | None,
-    options: Mapping[str, object] | None = None,
-) -> QualityReport:
-    """Complete the report from the run: exactly one of `pipeline` (it
+@dataclass(frozen=True)
+class RunFacts:
+    """What the report needs from the run, and nothing else: the outcome,
+    and the decisions of the stages that completed, without their frames.
+    It is small whatever the pool's size, so it can be handed to the
+    process that writes the report (`quality.child.write_report`)."""
+
+    outcome: PipelineOutcome
+    stages: PipelineResult | None
+    """`report_stages` of the pipeline's result, or of the partial result
+    its exception carries; None when there is neither."""
+
+
+def _rows_only(frame: pl.DataFrame) -> pl.DataFrame:
+    """A frame of the same height and no data: the report reads the count."""
+    return pl.DataFrame({"_rows": pl.repeat(None, frame.height, eager=True)})
+
+
+def report_stages(result: PipelineResult) -> PipelineResult:
+    """The stage results with what the report reads and without the pool:
+    the row positions and reasons Stage 2 and Stage 3 report, the group
+    identifiers, which valuation Stage 7 selected for each record, the two
+    record indices, and the height of each frame the report counts."""
+    stage2, stage3, stage4, stage7 = result.stage2, result.stage3, result.stage4, result.stage7
+    provenance = stage7.provenance if stage7 is not None else None
+    return replace(
+        result,
+        stage1=None, stage5=None, stage6=None, workbook_bytes=None, execution_summary=None,
+        stage2=replace(stage2, loans=_rows_only(stage2.loans), properties=_rows_only(stage2.properties))
+        if stage2 is not None else None,
+        stage3=replace(stage3, loans=_rows_only(stage3.loans), properties=_rows_only(stage3.properties))
+        if stage3 is not None else None,
+        stage4=replace(
+            stage4, loan_groups=stage4.loan_groups.clear(),
+            collateral_groups=stage4.collateral_groups.select("collateral_group_id"),
+            edges_with_group=stage4.edges_with_group.clear(),
+        ) if stage4 is not None else None,
+        stage7=replace(
+            stage7, combined_flattened=_rows_only(stage7.combined_flattened),
+            provenance=replace(
+                provenance, records=provenance.records.select("record", "source"),
+                properties=provenance.properties.clear(), groups=provenance.groups.clear(),
+            ) if provenance is not None else None,
+        ) if stage7 is not None else None,
+    )
+
+
+def run_facts(*, pipeline: PipelineResult | None, error: BaseException | None) -> RunFacts:
+    """What the report needs from the run: exactly one of `pipeline` (it
     returned) and `error` (it raised) is given.
 
     When the pipeline raised, the stages that completed before the failure
     are read from the exception's `partial_result`, if it carries one
-    (`runner.run_pipeline`), so what they decided is reported as observed.
-
-    The rows of the rules that need the run (G8, A17) are added to the
-    assessment's results: to the store when it has one, else in memory."""
+    (`runner.run_pipeline`), so what they decided is reported as observed."""
     if (pipeline is None) == (error is None):
         raise ValueError("complete_report needs the pipeline's result or its exception, not both")
     if pipeline is not None:
@@ -398,11 +436,31 @@ def complete_report(
             stage=data_fault.stage if data_fault else None,
             reason=data_fault.reason if data_fault else None,
         )
+    stages = pipeline if pipeline is not None else getattr(error, "partial_result", None)
+    return RunFacts(outcome=outcome, stages=report_stages(stages) if stages is not None else None)
 
-    # The stages to report from: the whole result, or what the exception carries.
-    stages: PipelineResult | None = pipeline
-    if stages is None:
-        stages = getattr(error, "partial_result", None)
+
+def complete_report(
+    assessment: FileAssessment,
+    *,
+    pipeline: PipelineResult | None,
+    error: BaseException | None,
+    options: Mapping[str, object] | None = None,
+) -> QualityReport:
+    """Complete the report from the run: exactly one of `pipeline` (it
+    returned) and `error` (it raised) is given."""
+    return complete_report_from(assessment, run_facts(pipeline=pipeline, error=error), options)
+
+
+def complete_report_from(
+    assessment: FileAssessment, facts: RunFacts, options: Mapping[str, object] | None = None
+) -> QualityReport:
+    """Complete the report from `run_facts`.
+
+    The rows of the rules that need the run (G8, A17) are added to the
+    assessment's results: to the store when it has one, else in memory."""
+    outcome, stages = facts.outcome, facts.stages
+    pipeline = stages if outcome.completed else None
 
     comparison: Stage2Comparison | None = None
     stage3_comparison: Stage3Comparison | None = None

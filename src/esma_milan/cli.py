@@ -16,9 +16,10 @@ One addition has no counterpart in R: the data quality report
 (`esma_milan.quality`). The two files are assessed before the pipeline
 runs, in a process of their own (`quality.child`) that writes the
 row-level detail to a working directory and exits, so the conversion runs
-in a process that holds none of the audit's memory. The report files are
+in a process that holds none of the audit's memory. The report files
+(a detail CSV, a dropped-loans CSV, a report workbook and a summary) are
 written beside the workbook when the pipeline returns or raises, a dry run
-included, and the working directory is removed at the end, also after a
+included, again in a process of their own, and the working directory is removed at the end, also after a
 failure and after Ctrl-C. An interrupted run writes no report.
 
 It changes nothing else: the pipeline is called with the same arguments,
@@ -40,13 +41,9 @@ from pathlib import Path
 import click
 import structlog
 
-from esma_milan.quality import (
-    FileAssessment,
-    complete_report,
-    summary_filename,
-    write_summary,
-)
-from esma_milan.quality.child import run_assessment
+from esma_milan.quality import FileAssessment, summary_dict, summary_filename
+from esma_milan.quality.assess import complete_report_from, run_facts
+from esma_milan.quality.child import ReportProcessError, run_assessment, write_report
 from esma_milan.quality.export import interrupted_summary, write_json
 from esma_milan.quality.store import ResultStore
 from esma_milan.runner import PipelineResult, run_pipeline
@@ -78,12 +75,16 @@ def _guarded[T](step: str, action: Callable[[], T]) -> tuple[T | None, str | Non
     try:
         return action(), None
     except Exception as exc:
-        fields: dict[str, object] = {"step": step, "error_type": type(exc).__name__}
-        exit_status = getattr(exc, "exit_status", None)
-        if exit_status is not None:
-            fields["exit_status"] = exit_status
-        log.error("data_quality_assessment_failed", **fields)
+        _log_fault(step, exc)
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def _log_fault(step: str, exc: Exception) -> None:
+    fields: dict[str, object] = {"step": step, "error_type": type(exc).__name__}
+    exit_status = getattr(exc, "exit_status", None)
+    if exit_status is not None:
+        fields["exit_status"] = exit_status
+    log.error("data_quality_assessment_failed", **fields)
 
 
 def _summary_cutoff(result: PipelineResult | None, assessment: FileAssessment | None) -> str | None:
@@ -107,13 +108,39 @@ def _write_quality_summary(
     output_dir: Path,
     deal_name: str,
     options: dict[str, object],
+    store: ResultStore,
 ) -> None:
-    path = output_dir / deal_name / summary_filename(deal_name, _summary_cutoff(result, assessment))
+    """Write the report files beside the workbook: the detail CSV, the
+    dropped-loans CSV, the report workbook and, last, the summary. The
+    report is completed and written in a process of its own
+    (`quality.child.write_report`), which is handed the assessment and the
+    facts of the run (decisions and counts, no frame of the pool), so the
+    memory it takes is not added to what the conversion holds.
+
+    When the assessment itself did not complete there is nothing to detail
+    and the summary alone is written, saying so. When the writing process
+    does not finish, the report is completed here and the summary alone is
+    written, saying that."""
+    folder = output_dir / deal_name
+    cutoff = _summary_cutoff(result, assessment)
+    path = folder / summary_filename(deal_name, cutoff)
     if assessment is None:
         write_json(interrupted_summary(assessment_fault or "unknown", error is None), path)
     else:
-        report = complete_report(assessment, pipeline=result, error=error, options=options)
-        write_summary(report, path)
+        facts = run_facts(pipeline=result, error=error)
+        try:
+            path, faults = write_report(assessment, facts, options, store, folder, deal_name, cutoff)
+        except ReportProcessError as exc:
+            _log_fault("write_report_files", exc)
+            not_written: list[dict[str, object]] = [{
+                "name": None, "kind": "detail, dropped loans and report workbook",
+                "state": "failed", "reason": str(exc),
+            }]
+            report = complete_report_from(assessment, facts, options)
+            write_json(summary_dict(report, detail_files=not_written), path)
+        else:
+            for step, error_type in faults:
+                log.error("data_quality_assessment_failed", step=step, error_type=error_type)
     log.info("data_quality_summary_written", path=str(path))
 
 
@@ -216,10 +243,12 @@ def run(
             # not finish. Otherwise it is written, guarded, so the
             # pipeline's own exception is the one that leaves the command.
             if store is not None and (result is not None or error is not None):
+                working = store
                 _guarded(
                     "write_summary",
                     lambda: _write_quality_summary(
-                        assessment, assessment_fault, result, error, output_dir, deal_name, options
+                        assessment, assessment_fault, result, error, output_dir, deal_name,
+                        options, working,
                     ),
                 )
     finally:

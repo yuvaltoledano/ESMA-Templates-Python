@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,3 +197,75 @@ def test_each_kind_of_run_goes_through_the_child(
     assert summary["assessment"] == {"state": "ran"}
     assert summary["files"][0]["records"] == 2
     assert not [p for p in folder.iterdir() if p.name.startswith(PREFIX)]  # the store is removed
+
+
+# -- the process that writes the report files -----------------------------------
+
+
+def _report_script(source: str) -> Any:
+    def command(root: Path, folder: Path, deal_name: str, cutoff: str | None) -> list[str]:
+        return [sys.executable, "-c", source]
+
+    return command
+
+
+def test_a_dead_report_process_leaves_the_summary_saying_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+    monkeypatch.setattr(child, "_report_command", _report_script(source))
+    log = _Log()
+    monkeypatch.setattr(cli, "log", log)
+    loans, collaterals = Pair().write(tmp_path)
+    out = tmp_path / "out"
+    result = CliRunner().invoke(cli.main, [
+        "run", "--loans", str(loans), "--collaterals", str(collaterals), "--deal", "DEAL",
+        "--output", str(out), "--quiet", "--dry-run",
+    ])
+    # The run is what it would have been; the summary is written here and says what is missing.
+    assert result.exit_code == 0 and result.exception is None
+    (summary_path,) = (out / "DEAL").iterdir()
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["detail_files"] == [{
+        "name": None, "kind": "detail, dropped loans and report workbook", "state": "failed",
+        "reason": "the report-writing process ended with exit status -9",
+    }]
+    assert summary["waterfall"]["lines"][0]["records"] == 2  # the report itself is complete
+    assert log.events == [
+        ("error", "data_quality_assessment_failed",
+         {"step": "write_report_files", "error_type": "ReportProcessError", "exit_status": -9}),
+        ("info", "data_quality_summary_written", {"path": str(summary_path)}),
+    ]
+
+
+def test_ctrl_c_while_the_report_is_written_leaves_no_report_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_run = subprocess.run
+    earlier = tmp_path / "out" / "DEAL" / "an earlier file.csv"
+    earlier.parent.mkdir(parents=True)
+    earlier.write_text("kept", encoding="utf-8")
+
+    written: list[str] = []
+
+    def interrupted(command: list[str], **kwargs: Any) -> Any:
+        if child.WRITE_REPORT not in command:
+            return real_run(command, **kwargs)  # the assessment runs as usual
+        real_run(command, **kwargs)  # the files are written, then the wait is interrupted
+        folder = Path(command[command.index(child.WRITE_REPORT) + 2])
+        written.extend(sorted(p.name for p in folder.iterdir() if p.is_file()))
+        detail = next(name for name in written if name.endswith("data quality detail.csv"))
+        (folder / (detail + ".part")).write_text("", encoding="utf-8")  # as if cut off mid-file
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("esma_milan.quality.child.subprocess.run", interrupted)
+    loans, collaterals = Pair().write(tmp_path)
+    result = CliRunner().invoke(cli.main, [
+        "run", "--loans", str(loans), "--collaterals", str(collaterals), "--deal", "DEAL",
+        "--output", str(tmp_path / "out"), "--quiet", "--dry-run",
+    ])
+    assert result.exit_code == 1  # click's Abort, as for any Ctrl-C
+    # No report file of this run, no working directory; a file that was there before stays.
+    assert len(written) == 5  # the four files had been written, beside the earlier one
+    assert [p.name for p in earlier.parent.iterdir()] == ["an earlier file.csv"]
+    assert earlier.read_text(encoding="utf-8") == "kept"

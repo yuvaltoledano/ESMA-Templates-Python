@@ -1,6 +1,6 @@
 {
-  "schema_version": "1",
-  "assessment_id": "aab5d6a2d59e190c",
+  "schema_version": "2",
+  "assessment_id": "0069531ca7c75364",
   "execution": "completed",
   "assessment": {"state": "ran"},
   "assessment_completeness": {
@@ -224,7 +224,7 @@
     }
   },
   "lineage": "not implemented in this release",
-  "detail_files": "not implemented in this release",
+  "detail_files": "not written: this summary was built without the other report files",
   "requested_outputs": {"workbook": false, "summary": true},
   "artifacts": [
     {"name": null, "kind": "MILAN workbook", "state": "not requested"},
@@ -6428,7 +6428,7 @@
     "Whether a NUTS code is the obligor's or the collateral's true region.", "Anything in the other Annex 2 sections or the investor report."
   ],
   "provenance": {
-    "assessment_id": "aab5d6a2d59e190c",
+    "assessment_id": "0069531ca7c75364",
     "inputs": [
       {"file": "loans", "name": "loans.csv", "sha256": "dfa1ef20ce70f2539145e74155c26d99a8034d70104f8f53e71fa6fd0e3bf9d3", "size": 3830},
       {"file": "collateral", "name": "collaterals.csv", "sha256": "0d39c1e9e256c514280c8076f062774306ed8fec79ccd90405abc49de756a3be", "size": 1410}
@@ -6437,7 +6437,7 @@
     "package_version": "0.1.0",
     "commit": null,
     "commit_note": "the build's commit is not recorded in this release",
-    "rule_set_version": "2026.11.1",
+    "rule_set_version": "2026.11.2",
     "taxonomy_sha256": "71099913777d680cd54a9f5590f55c7f443eec6d54a93384d3f4f1338dc6dadc",
     "esma_package_version": "ESMA disclosure templates package v1.3.1 (workbook DRAFT1auth.099.001.04, XSD v1.3.0)",
     "reference_lists": {

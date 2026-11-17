@@ -43,7 +43,7 @@ from esma_milan.quality.populations import LIFECYCLES, POPULATIONS
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 NOT_IMPLEMENTED = "not implemented in this release"
 SUMMARY_SUFFIX = " data quality summary.json"
 UNKNOWN_CUTOFF = "unknown-cutoff"
@@ -289,8 +289,13 @@ def _provenance(report: QualityReport) -> dict[str, object]:
     }
 
 
-def summary_dict(report: QualityReport) -> dict[str, object]:
-    """The summary document (see the module docstring)."""
+def summary_dict(
+    report: QualityReport, detail_files: list[dict[str, object]] | None = None
+) -> dict[str, object]:
+    """The summary document (see the module docstring). `detail_files` is
+    the state of the other report files, given by `report_files` as it
+    writes them; the list is shared, so a file written after this call is
+    in the document when it is rendered."""
     assessment = report.assessment
     outcomes = assessment.outcomes
     sourced = {r.rule_id for r in RULES.values() if r.regulatory_source is not None}
@@ -420,7 +425,8 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
         else "not available: the loans file could not be split into records",
         "links": _links(report),
         "lineage": NOT_IMPLEMENTED,
-        "detail_files": NOT_IMPLEMENTED,
+        "detail_files": detail_files if detail_files is not None
+        else "not written: this summary was built without the other report files",
         "requested_outputs": {
             "workbook": bool(not report.options.get("dry_run", False)), "summary": True,
         },

@@ -180,7 +180,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
 
 def test_later_parts_say_not_implemented_and_never_eligible(tmp_path: Path) -> None:
     summary = summary_dict(_report(Pair(), tmp_path))
-    for key in ("policy_outcome", "release_permitted", "override", "lineage", "detail_files"):
+    for key in ("policy_outcome", "release_permitted", "override", "lineage"):
         assert summary[key] == NOT_IMPLEMENTED == "not implemented in this release"
     assert "eligible" not in json.dumps(summary).lower()
     assert all(row["pipeline_use_and_lineage"].startswith(NOT_IMPLEMENTED)
@@ -307,7 +307,7 @@ def test_provenance(tmp_path: Path) -> None:
     summary = summary_dict(_report(Pair(), tmp_path))
     provenance = summary["provenance"]
     assert isinstance(provenance, dict)
-    assert provenance["rule_set_version"] == "2026.11.1"
+    assert provenance["rule_set_version"] == "2026.11.2"
     assert provenance["commit"] is None and "not recorded" in provenance["commit_note"]
     assert provenance["assessment_started_utc"] == "2026-01-02T03:04:05+00:00"
     assert provenance["as_of_date"] == "2026-01-02"

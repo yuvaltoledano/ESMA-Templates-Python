@@ -10,7 +10,10 @@ and no audit frame ever reaches a pipeline stage.
   assess_files      read and assess the two files (before the pipeline)
   complete_report   complete the report from the pipeline's result or
                     from the exception it raised
-  write_summary     write the summary file beside the workbook
+  write_report_files  write the four report files beside the workbook:
+                    the detail CSV, the dropped-loans CSV, the report
+                    workbook and, last, the summary
+  write_summary     write the summary file alone
 """
 
 from esma_milan.quality.assess import (
@@ -20,13 +23,16 @@ from esma_milan.quality.assess import (
     complete_report,
 )
 from esma_milan.quality.export import summary_dict, summary_filename, write_summary
+from esma_milan.quality.report_files import report_filenames, write_report_files
 
 __all__ = [
     "FileAssessment",
     "QualityReport",
     "assess_files",
     "complete_report",
+    "report_filenames",
     "summary_dict",
     "summary_filename",
+    "write_report_files",
     "write_summary",
 ]

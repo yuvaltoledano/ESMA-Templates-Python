@@ -229,7 +229,7 @@ SHEETS_WITH_EXCEL_SERIAL_DATES: frozenset[str] = frozenset({
 
 # Version of the rule set; printed in the report's provenance. Raise it
 # whenever a rule, a threshold or a reference list changes.
-DQ_RULESET_VERSION: str = "2026.11.1"
+DQ_RULESET_VERSION: str = "2026.11.2"
 
 # The ESMA disclosure templates package the catalogue was transcribed from.
 DQ_ESMA_PACKAGE_VERSION: str = (
@@ -302,6 +302,12 @@ DQ_PERCENT_SCALE_EXCLUDED_FIELDS: frozenset[str] = frozenset({
 # rule is then a Warn. Neither switch changes what the pipeline does.
 DQ_A12_IS_STOP: bool = True
 DQ_A13_IS_STOP: bool = True
+
+# The most finding rows the report workbook's `DQ Rows` sheets hold. Above
+# it the workbook holds the first rows of each finding group in proportion
+# (every group at least one) and says so; the detail CSV always holds
+# every row. Only this rendering is ever cut.
+DQ_XLSX_MAX_DETAIL_ROWS: int = 500_000
 
 # Sample values shown per column in the actual-column inventory.
 DQ_SAMPLE_VALUES: int = 5
