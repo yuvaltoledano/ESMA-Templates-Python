@@ -41,7 +41,7 @@ from esma_milan.config import (
     CSV_NA_TOKENS,
     EXCLUDED_COLLATERAL_TYPES,
 )
-from esma_milan.pipeline.filters import Stage2Output, loan_drop_reasons
+from esma_milan.pipeline.filters import Stage2Output, collateral_drop_reasons, loan_drop_reasons
 from esma_milan.quality.audit_read import RawFile
 from esma_milan.quality.catalogue import (
     FIELDS,
@@ -49,6 +49,7 @@ from esma_milan.quality.catalogue import (
     UNDETERMINED_COLLATERAL_TYPES,
 )
 from esma_milan.quality.column_rules.context import PoolFacts, cutoff_columns, strict_date
+from esma_milan.quality.refdata import load_reference_data
 
 POPULATIONS: tuple[str, ...] = (
     "Active, retained",
@@ -79,6 +80,18 @@ IDENTITY_UNKNOWN_SELECTION = (
     "duplicate or colliding in a candidate identifier column; selection not available"
 )
 
+# The amounts whose currencies A17 compares (specification 8.5), by file.
+LOAN_AMOUNTS: tuple[str, ...] = ("RREL30", "RREL29", "RREL31", "RREL32", "RREL33", "RREL16", "RREL20")
+COLLATERAL_AMOUNTS: tuple[str, ...] = ("RREC13", "RREC17")
+CURRENCY_NOT_STATED = ""
+
+# The reasons of Stage 2's collateral predicate the audit can apply from
+# the collateral file alone (`no_active_loan` needs the loans Stage 2 kept).
+COLLATERAL_REASONS: tuple[str, ...] = (
+    "property_type_missing", "collateral_type_missing", "collateral_type_excluded",
+    "no_positive_valuation",
+)
+
 # The cleaned column names Stage 3 reports, by ESMA code.
 LOAN_ID_COLUMNS: dict[str, str] = {
     "original_underlying_exposure_identifier": "RREL2",
@@ -94,6 +107,36 @@ def _text(raw: RawFile, field: str) -> pl.Expr:
 def _loader_text(expr: pl.Expr) -> pl.Expr:
     """The cell as the loader delivers it: null for an NA token."""
     return pl.when(expr.is_null() | expr.is_in(list(CSV_NA_TOKENS))).then(None).otherwise(expr)
+
+
+def _loader_number(expr: pl.Expr) -> pl.Expr:
+    """The cell as the loader's numeric cast delivers it; null where the
+    loader reads it as missing or cannot convert it."""
+    return _loader_text(expr).str.strip_chars().cast(pl.Float64, strict=False)
+
+
+def _currency(raw: RawFile, code: str) -> pl.Expr:
+    """The currency stated for an amount, by the evidence of specification
+    6.2: the amount's companion column if it holds a valid ISO 4217 code,
+    else the dedicated field if that does, else whatever text either
+    holds (an invalid code), else `CURRENCY_NOT_STATED`. Null where the
+    loader reads no number in the amount."""
+    valid = sorted(load_reference_data().currencies)
+    sources = [raw.companion_of(code)]
+    dedicated = FIELDS[code].dedicated_currency
+    if dedicated is not None:
+        sources.append(raw.column_of(dedicated))
+    texts = [_loader_text(pl.col(c.frame_column)).str.strip_chars() for c in sources if c is not None]
+    stated = [pl.when(t != "").then(t).otherwise(None) for t in texts]
+    currency = pl.coalesce(
+        *[pl.when(t.is_in(valid)).then(t).otherwise(None) for t in stated],
+        *stated,
+        pl.lit(CURRENCY_NOT_STATED),
+    )
+    return (
+        pl.when(_loader_number(_text(raw, code)).is_not_null()).then(currency).otherwise(None)
+        .cast(pl.Categorical).alias(f"cur_{code}")
+    )
 
 
 def _identity_flags(frame: pl.DataFrame, column: str, other: str) -> list[pl.Expr]:
@@ -134,18 +177,19 @@ def loan_records(raw: RawFile, pool: PoolFacts) -> pl.DataFrame:
         _text(raw, "RREL69").alias("status"),
         _text(raw, "RREL30").alias("balance_text"),
         strict_date(_text(raw, "RREL9")).alias("_rrel9"),
+        *[_currency(raw, code) for code in LOAN_AMOUNTS],
     ).with_columns(cut["_cut"].alias("cutoff"))
 
     loader_balance = _loader_text(pl.col("balance_text"))
     typed = base.select(
         account_status=_loader_text(pl.col("status")),
-        current_principal_balance=loader_balance.str.strip_chars().cast(pl.Float64, strict=False),
+        current_principal_balance=_loader_number(pl.col("balance_text")),
     )
     reasons = typed.select(**loan_drop_reasons())
     base = base.with_columns(
         reasons["status_not_active"],
         reasons["balance_not_positive"],
-        typed["current_principal_balance"].alias("_balance"),
+        typed["current_principal_balance"].alias("balance"),
         (loader_balance.is_not_null() & typed["current_principal_balance"].is_null()).alias(
             "balance_unparseable"
         ),
@@ -153,7 +197,7 @@ def loan_records(raw: RawFile, pool: PoolFacts) -> pl.DataFrame:
 
     active = ~pl.col("status_not_active")
     near = pl.col("status").fill_null("").str.strip_chars().str.to_uppercase()
-    balance = pl.col("_balance")
+    balance = pl.col("balance")
     population = (
         pl.when(active & pl.col("balance_unparseable")).then(pl.lit(POPULATIONS[4]))
         .when(active & ~pl.col("balance_not_positive")).then(pl.lit(POPULATIONS[0]))
@@ -199,19 +243,34 @@ def loan_records(raw: RawFile, pool: PoolFacts) -> pl.DataFrame:
         evidence.alias("lifecycle_evidence"),
         *_identity_flags(base, "RREL2", "RREL3"),
         *_identity_flags(base, "RREL3", "RREL2"),
-    ).drop("_rrel9", "_balance")
+    ).drop("_rrel9")
 
 
 def collateral_records(raw: RawFile) -> pl.DataFrame:
-    """One row per collateral record: identifiers and the collateral class
-    (property, established non-property, undetermined, not established)."""
+    """One row per collateral record: identifiers, the collateral class
+    (property, established non-property, undetermined, not established),
+    the currency stated for each valuation, and the reasons of Stage 2's
+    collateral predicate that the record alone establishes (`s2_<reason>`,
+    predicted: the stage's own expressions on columns typed by the
+    loader's rules)."""
     assert raw.frame is not None
     kind = pl.col("RREC5").fill_null("")
+    typed = raw.frame.select(
+        property_type=_loader_text(_text(raw, "RREC9")),
+        collateral_type=_loader_text(_text(raw, "RREC5")),
+        underlying_exposure_identifier=pl.lit(None, dtype=pl.String),
+        original_valuation_amount=_loader_number(_text(raw, "RREC17")),
+        current_valuation_amount=_loader_number(_text(raw, "RREC13")),
+    )
+    predicate = collateral_drop_reasons(())
+    reasons = typed.select(**{f"s2_{name}": predicate[name] for name in COLLATERAL_REASONS})
     return raw.frame.select(
         "record",
         "physical_line",
         *[_text(raw, f"RREC{n}").alias(f"RREC{n}") for n in (2, 3, 4, 5)],
+        *[_currency(raw, code) for code in COLLATERAL_AMOUNTS],
     ).with_columns(
+        *reasons.get_columns(),
         *[pl.col(f"RREC{n}").str.strip_chars().alias(f"RREC{n}_trimmed") for n in (2, 3, 4)],
         pl.when(kind.is_in(sorted(PROPERTY_COLLATERAL_TYPES))).then(pl.lit("property"))
         .when(kind.is_in(sorted(EXCLUDED_COLLATERAL_TYPES))).then(pl.lit("established non-property"))

@@ -81,9 +81,11 @@ class ColumnResolution:
     cleaned: str
     """`clean_name(header)`."""
     pipeline_name: str
-    """The column name the pipeline gives this header
-    (`clean_name(taxonomy.get(header, header))`); it differs from the
-    audit's resolution where the header belongs to the other file's schema."""
+    """The column name the pipeline gives this column
+    (`clean_name(taxonomy.get(header, header))`, on the header as the
+    loader's parser delivers it: a repeated header text arrives renamed).
+    It differs from the audit's resolution where the header belongs to the
+    other file's schema, and for the later columns of a repeated header."""
 
     @property
     def frame_column(self) -> str:
@@ -173,8 +175,15 @@ def resolve_headers(headers: tuple[str, ...], file: FileKind) -> tuple[ColumnRes
     taxonomy = _taxonomy()
 
     out: list[ColumnResolution] = []
+    seen: dict[str, int] = {}
     for index, header in enumerate(headers):
         cleaned = clean_name(header)
+        # The loader's CSV parser renames the second and later columns of a
+        # repeated header text to `<text>_duplicated_<n>`, so the pipeline
+        # does not see them under the field's name.
+        repeat = seen.get(header, 0)
+        seen[header] = repeat + 1
+        as_loaded = header if repeat == 0 else f"{header}_duplicated_{repeat - 1}"
         how: Resolution = "unmapped"
         field: str | None = None
         companion = _COMPANION.match(cleaned)
@@ -200,7 +209,7 @@ def resolve_headers(headers: tuple[str, ...], file: FileKind) -> tuple[ColumnRes
                 how=how,
                 field=field,
                 cleaned=cleaned,
-                pipeline_name=clean_name(taxonomy.get(header, header)),
+                pipeline_name=clean_name(taxonomy.get(as_loaded, as_loaded)),
             )
         )
     return tuple(out)

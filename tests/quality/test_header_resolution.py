@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from esma_milan.io_layer.read_csv import read_and_clean
+from esma_milan.io_layer.read_taxonomy import bundled_taxonomy_path, load_taxonomy
 from esma_milan.quality.audit_read import resolve_headers
 
 
@@ -80,3 +84,17 @@ def test_optional_elements_are_recognised_in_the_collateral_file_only() -> None:
         ("currency_companion", "OPT_RENT_CURRENT"),
     ]
     assert _resolve(headers, "loans") == [("unmapped", None)] * 3
+
+
+def test_pipeline_name_of_a_repeated_header_is_what_the_loader_produces(tmp_path: Path) -> None:
+    path = tmp_path / "f.csv"
+    path.write_text("RREL3,RREL3,note,RREL3,note\nA,B,x,C,y\n", encoding="utf-8")
+    loaded = read_and_clean(path, load_taxonomy(bundled_taxonomy_path()), None, None)
+    columns = resolve_headers(("RREL3", "RREL3", "note", "RREL3", "note"), "loans")
+    assert [c.pipeline_name for c in columns] == loaded.columns
+    assert loaded.columns == [
+        "new_underlying_exposure_identifier", "rrel3_duplicated_0", "note",
+        "rrel3_duplicated_1", "note_duplicated_0",
+    ]
+    # The audit still resolves every one of them to the field.
+    assert [c.field for c in columns] == ["RREL3", "RREL3", None, "RREL3", None]

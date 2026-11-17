@@ -11,6 +11,7 @@ The stage numbers in the flow comments below are a map of that sequence.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -188,6 +189,47 @@ class PipelineResult:
     Stage 10 could run."""
 
 
+class _Completed:
+    """The stage outputs a run has so far, for `partial_result`."""
+
+    stage1: Stage1Output | None = None
+    stage2: Stage2Output | None = None
+    stage3: Stage3Output | None = None
+    stage4: GraphResult | None = None
+    stage5: Stage5Output | None = None
+    stage6: Stage6Output | None = None
+    stage7: Stage7Output | None = None
+    loan_record_index: pl.Series | None = None
+    collateral_record_index: pl.Series | None = None
+
+
+def _attach_partial_result(exc: BaseException, completed: _Completed) -> None:
+    """Give an exception leaving `run_pipeline` the stages that completed.
+
+    Never raises and never replaces the exception: if the attribute cannot
+    be set, the exception leaves without it.
+
+    The partial result holds the stage frames. They are the same objects
+    the exception's traceback already keeps alive through the pipeline's
+    frame, so a caller that keeps the exception keeps nothing more than
+    it kept before; a caller that copies `partial_result` elsewhere keeps
+    the frames for as long as it holds the copy.
+    """
+    with contextlib.suppress(Exception):
+        exc.partial_result = PipelineResult(  # type: ignore[attr-defined]
+            output_path=None,
+            stage1=completed.stage1,
+            stage2=completed.stage2,
+            stage3=completed.stage3,
+            stage4=completed.stage4,
+            stage5=completed.stage5,
+            stage6=completed.stage6,
+            stage7=completed.stage7,
+            loan_record_index=completed.loan_record_index,
+            collateral_record_index=completed.collateral_record_index,
+        )
+
+
 def run_pipeline(
     *,
     loans_file_path: Path,
@@ -232,7 +274,47 @@ def run_pipeline(
     Raises OutputTooLargeError (a ValueError) if any sheet would exceed
     Excel's row limit; the check runs after every sheet is composed and
     before the first byte is written.
+
+    Any exception that leaves this function is the one the pipeline raised,
+    unchanged, with one attribute added where the exception allows it:
+    `partial_result`, a `PipelineResult` holding the outputs of the stages
+    that completed before it (the others None). It holds those stages'
+    frames; see `_attach_partial_result`.
     """
+    completed = _Completed()
+    try:
+        return _run_pipeline_stages(
+            completed,
+            loans_file_path=loans_file_path,
+            collaterals_file_path=collaterals_file_path,
+            deal_name=deal_name,
+            output_dir=output_dir,
+            aggregation_method=aggregation_method,
+            min_coverage=min_coverage,
+            dry_run=dry_run,
+            verbose=verbose,
+            on_progress=on_progress,
+        )
+    except BaseException as exc:
+        _attach_partial_result(exc, completed)
+        raise
+
+
+def _run_pipeline_stages(
+    completed: _Completed,
+    *,
+    loans_file_path: Path,
+    collaterals_file_path: Path,
+    deal_name: str,
+    output_dir: Path | None,
+    aggregation_method: str | None,
+    min_coverage: float | None,
+    dry_run: bool,
+    verbose: bool,
+    on_progress: ProgressCallback | None,
+) -> PipelineResult:
+    """The body of `run_pipeline`. `completed` receives each stage's output
+    as the stage finishes."""
     total_stages = len(PIPELINE_STAGE_LABELS)
 
     def _report(index: int) -> None:
@@ -253,10 +335,12 @@ def run_pipeline(
         loans_path=loans_file_path,
         collaterals_path=collaterals_file_path,
     )
+    completed.stage1 = stage1
 
     # --- Stage 2: filter active loans + RRE properties -------------------
     _report(2)
     stage2 = run_stage2(stage1.loans, stage1.properties)
+    completed.stage2 = stage2
 
     # --- Stage 3: select calc_loan_id + intersection filter + IDs --------
     _report(3)
@@ -269,6 +353,7 @@ def run_pipeline(
             else DEFAULT_MIN_LOAN_ID_COVERAGE
         ),
     )
+    completed.stage3 = stage3
 
     # Each kept record's position in its uploaded file, composed from the
     # positions Stage 2 (in the Stage 1 frames) and Stage 3 (in the Stage 2
@@ -284,14 +369,18 @@ def run_pipeline(
         collateral_record_index = stage2.property_rows.gather(
             stage3.decisions.property_rows
         )
+        completed.loan_record_index = loan_record_index
+        completed.collateral_record_index = collateral_record_index
 
     # --- Stage 4: bipartite graph + connected components -----------------
     _report(4)
     stage4 = run_stage4(stage3.loans, stage3.properties)
+    completed.stage4 = stage4
 
     # --- Stage 5: classify groups into structure types 1-5 ---------------
     _report(5)
     stage5 = run_stage5(stage4)
+    completed.stage5 = stage5
 
     # Compose loans_enriched / properties_enriched ONCE here. These are
     # used by Stage 6 (detect_aggregation_method - extra cols are
@@ -308,6 +397,7 @@ def run_pipeline(
     # --- Stage 6: detect aggregation method (by_loan vs by_group) --------
     _report(6)
     stage6 = run_stage6(loans_enriched, properties_enriched)
+    completed.stage6 = stage6
 
     # Resolve the aggregation method actually used downstream. Mirrors
     # r_reference/R/pipeline.R:469-485:
@@ -342,6 +432,7 @@ def run_pipeline(
         stage5.classifications,
         aggregation_method=cast(AggregationMethod, chosen_aggregation),
     )
+    completed.stage7 = stage7
 
     # The final filename uses the pool_cutoff_date from loans (matches
     # r_reference/R/pipeline.R:611-621). Stage 1's parsed loans table

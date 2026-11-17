@@ -1,4 +1,5 @@
 rule_id,result_kind,file,field,count
+A3,context,loans,,7
 P1,violation,collateral,RREC1,1
 P1,violation,collateral,RREC10,1
 P1,violation,collateral,RREC11,1

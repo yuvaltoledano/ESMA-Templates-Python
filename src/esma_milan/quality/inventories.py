@@ -81,7 +81,7 @@ def expected_fields(
     file: FileKind,
     profiles: Sequence[ColumnProfile],
     outcomes: Sequence[RuleOutcome],
-    results: pl.DataFrame,
+    counts: pl.DataFrame,
 ) -> list[dict[str, object]]:
     """One row per template field of `file`, and one per supplied optional
     element. A field supplied in two columns is one row; its counts are
@@ -94,9 +94,9 @@ def expected_fields(
         if outcome.field is not None:
             outcomes_by_field[outcome.field].append(outcome)
     counted = (
-        results.filter(pl.col("file") == file)
+        counts.filter(pl.col("file") == file)
         .group_by("field", "rule_id", "result_kind", "severity")
-        .agg(pl.len().alias("n"))
+        .agg(pl.col("rows").sum().alias("n"))
     )
     rule_counts: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
     worst: dict[str, dict[str, str]] = defaultdict(dict)

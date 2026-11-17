@@ -5,9 +5,11 @@ Mirrors nothing in the R reference (specification 10.1, 10.3, 10.4).
 `summary_dict` turns a `QualityReport` into the JSON document the command
 line writes beside the workbook: the provenance, the compliance and
 completeness judgments, the plausibility count, the outcome of every rule
-with its four coverage counts, the finding groups, the two inventories and
-the population counts. Row-level results are not in it; they are the
-detail file of a later release.
+with its four coverage counts, the finding groups, the two inventories,
+the population counts, the waterfall with the dropped-loans counts, the
+links between the two files, and the state of the other report files.
+Row-level results are not in it; they are in the detail CSV
+(`detail_csv`, `report_files`).
 
 Wording follows the result kind first and the basis second (3.2): only a
 violation of a reporting requirement says "does not comply with"; a
@@ -38,11 +40,12 @@ from esma_milan.quality.assess import (
     inventory_of_expected_fields,
 )
 from esma_milan.quality.catalogue import FIELDS, RULES, SCOPE_STATEMENTS, sentence_clause
+from esma_milan.quality.links import link_counts
 from esma_milan.quality.populations import LIFECYCLES, POPULATIONS
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 NOT_IMPLEMENTED = "not implemented in this release"
 SUMMARY_SUFFIX = " data quality summary.json"
 UNKNOWN_CUTOFF = "unknown-cutoff"
@@ -52,6 +55,8 @@ ASSESSMENT_INTERRUPTED = "assessment interrupted by a technical fault"
 _REPORTED_ELSEWHERE = {
     "P2": "the value-state counts of the expected-field inventory",
     "P4(c)": "P5 rows with the reason control_character (one defect, one row)",
+    "A4": "P1 rows (one defect, one row)",
+    "A14": "the record counts of the summary's file block",
 }
 
 _THRESHOLDS = (
@@ -135,18 +140,21 @@ def _rules_not_implemented() -> dict[str, object]:
     }
 
 
-def _findings(results: pl.DataFrame) -> list[dict[str, object]]:
+def _findings(counts: pl.DataFrame) -> list[dict[str, object]]:
+    """The finding groups, from the counts of the result rows (the store's
+    index): the detail itself is not read. A group is one rule, result
+    kind, file and field. Its records are counted per column and reason
+    and added, which is exact unless one field is supplied in two columns
+    with findings on the same record in both."""
     grouped = (
-        results.group_by("rule_id", "result_kind", "file", "field")
+        counts.group_by("rule_id", "result_kind", "file", "field")
         .agg(
-            pl.len().alias("rows"),
-            pl.col("record").n_unique().alias("records"),
-            pl.col("record").is_null().all().alias("column_level"),
-            pl.col("severity").cast(pl.String).unique().sort().alias("severities"),
-            pl.col("reason").cast(pl.String).value_counts(sort=True).alias("reasons"),
+            pl.col("rows").sum(),
+            pl.col("records").sum(),
+            pl.col("column_level").all(),
+            pl.col("severity").unique().sort().alias("severities"),
+            pl.struct("reason", "rows").alias("reasons"),
         )
-        .with_columns(pl.col("rule_id").cast(pl.String), pl.col("result_kind").cast(pl.String),
-                      pl.col("file").cast(pl.String), pl.col("field").cast(pl.String))
         .sort("file", "field", "rule_id", "result_kind")
     )
     out: list[dict[str, object]] = []
@@ -156,19 +164,27 @@ def _findings(results: pl.DataFrame) -> list[dict[str, object]]:
             "finding_id": f"{row['rule_id']}:{row['result_kind']}:{row['file']}:{row['field']}",
             "rule_id": row["rule_id"], "result_kind": row["result_kind"], "file": row["file"],
             "field": row["field"], "basis": rule.basis, "severities": row["severities"],
-            "defect_key": rule.defect_key.format(field=row["field"]),
+            "defect_key": rule.defect_key.format(field=row["field"], file=row["file"]),
             "enters_compliance_judgment": row["result_kind"] == "violation"
             and rule.regulatory_source is not None,
             "rows": row["rows"],
             "records": None if row["column_level"] else row["records"],
-            "reasons": dict(
-                sorted(((r["reason"], r["count"]) for r in row["reasons"]), key=lambda x: (-x[1], x[0]))
-            ),
+            "reasons": _reason_counts(row["reasons"]),
             "sentence": finding_sentence(
-                row["rule_id"], row["result_kind"], _field_label(row["field"]), row["field"]
+                row["rule_id"], row["result_kind"],
+                "the pool" if row["field"] is None and row["file"] == "pool"
+                else _field_label(row["field"]),
+                row["field"],
             ),
         })
     return out
+
+
+def _reason_counts(reasons: list[dict[str, object]]) -> dict[str, int]:
+    totals: Counter[str] = Counter()
+    for item in reasons:
+        totals[str(item["reason"])] += int(str(item["rows"]))
+    return dict(sorted(totals.items(), key=lambda x: (-x[1], x[0])))
 
 
 def _file_block(audit: FileAudit) -> dict[str, object]:
@@ -193,6 +209,49 @@ def _file_block(audit: FileAudit) -> dict[str, object]:
             records=audit.n_records, columns=len(audit.columns),
             cells_with_repaired_encoding=audit.encoding_repaired.height,
         )
+    return block
+
+
+def _waterfall(report: QualityReport) -> dict[str, object] | str:
+    waterfall = report.waterfall
+    if waterfall is None:
+        return "not available: the loans file could not be split into records"
+    return {
+        "statement": "loan records from the file to the MILAN output (specification 8.2). Each "
+                     "line says whether it was observed from a stage's own result or predicted "
+                     "from the stage's predicate because the stage's result is not available",
+        "balance_note": "balances are the current principal balance (RREL30) as the pipeline's "
+                        "loader reads it, per stated currency and never added across "
+                        "currencies; the exact text of each balance is in the detail files",
+        "priority_note": "a loan lost after Stage 2 is assigned to one part of line 6 by a fixed "
+                         "bookkeeping priority (the order of the parts), so the parts add up; "
+                         "the priority is a convention and not the established cause. The "
+                         "dropped-loans list gives every other cause seen on the loan. Parts 6 "
+                         "and 7 cannot occur on a completed run until issue #45 is fixed",
+        "lines": list(waterfall.lines),
+        "reconciliation": dict(waterfall.reconciliation),
+        "collateral_counts": dict(waterfall.collateral_counts),
+    }
+
+
+def _links(report: QualityReport) -> dict[str, object] | str:
+    assessment = report.assessment
+    scan = assessment.scan_links()
+    if scan is None:
+        return "not available: a file could not be split into records"
+    block = link_counts(scan, assessment.loans.n_records, assessment.collateral.n_records)
+    comparison = report.stage3_comparison
+    if comparison is not None:
+        block["stage3_comparison"] = {
+            "evaluated": comparison.evaluated, "reason": comparison.reason,
+            "selected_loan_identifier": comparison.selected,
+            "loans_dropped_for_a_missing_identifier": len(comparison.missing_identifier),
+            "loans_dropped_without_collateral": len(comparison.without_collateral),
+            "records_that_differ": len(comparison.differing_records),
+            "first_differing_records": list(comparison.differing_records[:20]),
+            "state": "agrees" if comparison.agrees
+            else "reconciliation incomplete" if comparison.evaluated else "not evaluated",
+        }
     return block
 
 
@@ -232,18 +291,29 @@ def _provenance(report: QualityReport) -> dict[str, object]:
     }
 
 
-def summary_dict(report: QualityReport) -> dict[str, object]:
-    """The summary document (see the module docstring)."""
+def summary_dict(
+    report: QualityReport, detail_files: list[dict[str, object]] | None = None
+) -> dict[str, object]:
+    """The summary document (see the module docstring). `detail_files` is
+    the state of the other report files, given by `report_files` as it
+    writes them; the list is shared, so a file written after this call is
+    in the document when it is rendered."""
     assessment = report.assessment
-    results = assessment.results
     outcomes = assessment.outcomes
     sourced = {r.rule_id for r in RULES.values() if r.regulatory_source is not None}
     basis_p = {r.rule_id for r in RULES.values() if r.basis == "P"}
 
-    violations = results.filter(
-        (pl.col("result_kind") == "violation") & pl.col("rule_id").cast(pl.String).is_in(sorted(sourced))
+    counts = assessment.counts
+    sourced_violations = counts.filter(
+        (pl.col("result_kind") == "violation") & pl.col("rule_id").is_in(sorted(sourced))
     )
-    violation_records = violations.filter(pl.col("record").is_not_null()).select("file", "record").unique()
+    v_rows = int(sourced_violations["rows"].sum())
+    v_rules = sourced_violations["rule_id"].n_unique()
+    v_fields = sourced_violations.select("file", "field").unique().height
+    v_column_level = int(sourced_violations.filter(pl.col("column_level"))["rows"].sum())
+    v_records = assessment.records_with_compliance_violation
+    if v_rows == 0:
+        v_rules = v_fields = 0
     not_evaluable = [o for o in outcomes if o.rule_id in sourced and o.not_evaluable]
     partly = {r.rule_id: r.not_implemented_part for r in RULES.values() if r.status == "partly_implemented"}
     unreadable = [a.file for a in assessment.files if not a.readable]
@@ -285,12 +355,12 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
 
     populations: dict[str, object] = {"statement": "loan records by population (specification 8.1)"}
     lifecycle: dict[str, int] | str = "not available: the loans file could not be split into records"
-    records = assessment.loans.records
+    records = assessment.records("loans", ["population", "lifecycle"])
     if records is not None:
-        counts = Counter(records["population"].to_list())
+        by_population = Counter(records["population"].to_list())
         comparison = report.stage2_comparison
         populations.update(
-            counts={label: counts.get(label, 0) for label in POPULATIONS},
+            counts={label: by_population.get(label, 0) for label in POPULATIONS},
             labels="observed (equal to the Stage 2 result on every record)"
             if report.populations_observed else "predicted from the Stage 2 predicate",
             stage2_comparison={
@@ -328,11 +398,11 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
         },
         "compliance": {
             "violations": {
-                "state": "present" if violations.height else "none",
-                "rules": violations["rule_id"].n_unique(),
-                "fields": violations.select("file", "field").unique().height,
-                "records": violation_records.height,
-                "column_level_findings": violations.filter(pl.col("record").is_null()).height,
+                "state": "present" if v_rows else "none",
+                "rules": v_rules,
+                "fields": v_fields,
+                "records": v_records,
+                "column_level_findings": v_column_level,
             },
             "coverage": {
                 "state": "partial",
@@ -343,17 +413,22 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
             },
         },
         "plausibility": {
-            "observations": results.filter(
-                (pl.col("result_kind") == "question") & pl.col("rule_id").cast(pl.String).is_in(sorted(basis_p))
-            ).height,
+            "observations": int(
+                counts.filter(
+                    (pl.col("result_kind") == "question") & pl.col("rule_id").is_in(sorted(basis_p))
+                )["rows"].sum()
+            ),
         },
         "policy_outcome": NOT_IMPLEMENTED,
         "release_permitted": NOT_IMPLEMENTED,
         "override": NOT_IMPLEMENTED,
-        "waterfall": NOT_IMPLEMENTED,
-        "dropped_loans": NOT_IMPLEMENTED,
+        "waterfall": _waterfall(report),
+        "dropped_loans": report.waterfall.dropped_counts if report.waterfall is not None
+        else "not available: the loans file could not be split into records",
+        "links": _links(report),
         "lineage": NOT_IMPLEMENTED,
-        "detail_files": NOT_IMPLEMENTED,
+        "detail_files": detail_files if detail_files is not None
+        else "not written: this summary was built without the other report files",
         "requested_outputs": {
             "workbook": bool(not report.options.get("dry_run", False)), "summary": True,
         },
@@ -365,7 +440,7 @@ def summary_dict(report: QualityReport) -> dict[str, object]:
         "pipeline": pipeline_block,
         "files": [_file_block(a) for a in assessment.files],
         "rules": _rules(outcomes),
-        "findings": _findings(results),
+        "findings": _findings(assessment.counts),
         "expected_fields": inventory_of_expected_fields(assessment),
         "actual_columns": {a.file: list(a.actual_columns) for a in assessment.files},
         "populations": populations,

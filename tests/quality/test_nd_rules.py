@@ -153,13 +153,12 @@ def test_p3g_na_as_a_country_is_a_value_the_loader_loses(tmp_path: Path) -> None
 
 def test_p3g_dated_nd4_by_field_type(tmp_path: Path) -> None:
     pair = Pair()
-    pair.set("RREL16", "ND4-2025-01-01", record=1)  # numeric: the loader stops
+    pair.set("RREL16", "ND4-2025-01-01", record=1)  # numeric: the loader stops (A5's row)
     pair.set("RREL23", "ND4-2025-01-01", record=1)  # date: set to missing with a warning
     pair.set("RREL78", "ND4-2025-01-01", record=1)  # text: kept
     assessed = assess(pair, tmp_path, "loans")
     by_field = {r["field"]: (r["result_kind"], r["severity"], r["reason"]) for r in assessed.found("P3g")}
     assert by_field == {
-        "RREL16": ("violation", "Stop", "loader_stops_at_dated_nd4"),
         "RREL23": ("context", "Warn", "dated_nd4_set_to_missing_with_a_warning"),
         "RREL78": ("context", "Warn", "dated_nd4_kept_as_text"),
     }
@@ -174,3 +173,61 @@ def test_p3g_a_date_form_the_pipeline_parses(tmp_path: Path) -> None:
     assert [(r["record"], r["reason"]) for r in assessed.found("P3g", "RREL23")] == [
         (1, "date_parsed_by_the_pipeline"), (2, "date_parsed_by_the_pipeline"),
     ]
+
+
+# --- P3f on a property row, assessed through the link to the loan record ---
+
+
+def _p3f_through_the_link(tmp_path: Path, pair: Pair) -> list[tuple[int, str, str]]:
+    from esma_milan.quality import assess_files
+
+    loans, collaterals = pair.write(tmp_path)
+    results = assess_files(loans, collaterals).collateral.results
+    rows = results.filter((results["rule_id"] == "P3f") & (results["field"] == "RREC7")).to_dicts()
+    return [(int(str(r["record"])), str(r["result_kind"]), str(r["reason"])) for r in rows]
+
+
+def test_p3f_nd5_on_property_of_a_reporting_active_loan_is_a_question(tmp_path: Path) -> None:
+    pair = Pair().set("RREC7", "ND5", record=1)  # LOAN001 is PERF
+    assert _p3f_through_the_link(tmp_path, pair) == [
+        (1, "question", "nd5_on_property_of_a_reporting_active_exposure")
+    ]
+
+
+def test_p3f_nd5_on_property_of_a_final_inactive_loan_is_the_prescribed_value(tmp_path: Path) -> None:
+    pair = Pair().set("RREC7", "ND5", record=1)
+    pair.set("RREL69", "RDMD", record=1).set("RREL9", "2024-01-31", record=1).set("RREL30", "0", record=1)
+    assert _p3f_through_the_link(tmp_path, pair) == []
+    repurchased = Pair().set("RREC7", "ND5", record=2).set("RREL69", "REBR", record=2)
+    assert _p3f_through_the_link(tmp_path, repurchased) == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"RREL69": "DFLT"}, "nd5_on_property_default_recoveries_not_determinable"),
+        ({"RREL69": "OTHR"}, "nd5_on_property_lifecycle_not_established"),
+        ({"RREL69": ""}, "nd5_on_property_lifecycle_not_established"),
+        ({"RREL2": "ELSEWHERE", "RREL3": "ELSEWHERE"}, "nd5_on_property_no_loan_record_linked"),
+    ],
+)
+def test_p3f_where_the_link_does_not_establish_it_the_limitation_stays(
+    tmp_path: Path, changes: dict[str, str], reason: str
+) -> None:
+    pair = Pair().set("RREC7", "ND5", record=1)
+    for header, value in changes.items():
+        pair.set(header, value, record=1)
+    assert _p3f_through_the_link(tmp_path, pair) == [(1, "limitation", reason)]
+
+
+def test_p3f_a_record_of_two_loans_whose_lifecycles_differ(tmp_path: Path) -> None:
+    pair = Pair().set("RREC7", "ND5", record=1)
+    pair.set("RREL3", "LOAN001").set("RREL2", "LOAN001", record=1).set("RREL2", "OTHER", record=2)
+    pair.set("RREL69", "RDMD", record=2).set("RREL9", "2024-01-31", record=2)
+    assert _p3f_through_the_link(tmp_path, pair) == [(1, "limitation", "nd5_on_property_linked_loans_differ")]
+
+
+def test_p3f_a_value_on_property_and_nd5_on_non_property_need_no_link(tmp_path: Path) -> None:
+    assert _p3f_through_the_link(tmp_path, Pair()) == []
+    non_property = Pair().set("RREC5", "CARX", record=1).set("RREL69", "OTHR")
+    assert _p3f_through_the_link(tmp_path, non_property) == [(1, "violation", "value_on_non_property_collateral")]

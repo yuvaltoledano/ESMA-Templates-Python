@@ -1,18 +1,28 @@
 """The assessment of the two files, and the report completed from the run.
 
-Mirrors nothing in the R reference (specification 5, 6, 8.1, 10.1).
+Mirrors nothing in the R reference (specification 5, 6, 7.1, 8.1, 8.2, 10.1).
 
 Two steps, so the report exists whether or not the pipeline succeeds:
 
-  assess_files      reads each file in turn, runs every per-column rule,
-                    labels every record, builds the inventories, and frees
-                    the file's text before it reads the next. It needs
-                    nothing from the pipeline and is meant to run before
-                    it, so the two never hold their frames at once.
+  assess_files      reads each file in turn, runs every per-column rule
+                    and the rules about the file itself (family A), labels
+                    every record, builds the inventories and the links
+                    between the files, and frees the file's text before it
+                    reads the next. It needs nothing from the pipeline and
+                    is meant to run before it, so the two never hold their
+                    frames at once.
   complete_report   adds what only the run can say: whether the pipeline
-                    completed or failed (and with which reason code),
-                    the comparison of the population labels with Stage 2's
-                    own output, and the identifier column Stage 3 chose.
+                    completed or failed (and with which reason code), the
+                    comparison of the population labels with Stage 2's own
+                    output and of the links with Stage 3's, the waterfall
+                    with the dropped-loans list, and the rules that need
+                    the run (G8, A17).
+
+`complete_report` is `run_facts` followed by `complete_report_from`.
+`run_facts` takes from the pipeline's result (or from the partial result
+its exception carries) the decisions and counts the report reads, without
+the pool's frames, so it is small and can be handed to the process that
+writes the report (`quality.child`).
 
 Nothing here blocks, rejects or withholds anything. The report never
 states a policy outcome; that arrives with the acceptance rules of a later
@@ -23,7 +33,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,11 +42,18 @@ import polars as pl
 
 from esma_milan.errors import PipelineDataError
 from esma_milan.quality.audit_read import ColumnResolution, RawFile, Unreadable, read_file
-from esma_milan.quality.catalogue import FileKind
+from esma_milan.quality.catalogue import RULES, FileKind
 from esma_milan.quality.column_rules import ColumnProfile, assess_columns
 from esma_milan.quality.column_rules.context import PoolFacts, pool_facts
 from esma_milan.quality.column_rules.domain import classification_year_results
+from esma_milan.quality.family_a import FileFacts, file_rules, pool_rules, unreadable_rows
 from esma_milan.quality.inventories import actual_columns, expected_fields
+from esma_milan.quality.links import (
+    Stage3Comparison,
+    build_links,
+    collateral_link_context,
+    compare_with_stage3,
+)
 from esma_milan.quality.populations import (
     LOAN_ID_COLUMNS,
     RETAINED,
@@ -48,6 +65,8 @@ from esma_milan.quality.populations import (
 )
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome, concat_results, empty_results, results_frame
+from esma_milan.quality.store import ResultStore, result_counts
+from esma_milan.quality.waterfall import Waterfall, build_waterfall
 
 if TYPE_CHECKING:
     from esma_milan.runner import PipelineResult
@@ -69,12 +88,14 @@ class FileAudit:
     n_records: int
     encoding_repaired: pl.DataFrame
     results: pl.DataFrame
+    """Every finding row of the file; empty when the rows are in the store
+    (`FileAssessment.store_root`)."""
     outcomes: tuple[RuleOutcome, ...]
     profiles: tuple[ColumnProfile, ...]
     actual_columns: tuple[Mapping[str, object], ...]
     records: pl.DataFrame | None
     """Per-record identifiers and labels (`populations`); None when the
-    file is unreadable."""
+    file is unreadable or the frame is in the store."""
 
     @property
     def readable(self) -> bool:
@@ -93,15 +114,64 @@ class FileAssessment:
     started_at: datetime
     as_of: date
     """The date used for "today" (UTC date of the run's start)."""
+    store_root: Path | None = None
+    """The working directory of the on-disk store, when the assessment was
+    made with one. The result rows and the per-record frames are then
+    there and not on this object."""
+    links: pl.DataFrame | None = None
+    """The links between collateral and loan records (`links.build_links`);
+    None when they are in the store or a file was unreadable."""
+    records_with_compliance_violation: int = 0
+    """Distinct records, over both files, with at least one violation of a
+    rule that has a regulatory source. It is the one figure of the summary
+    that needs the detail itself, so it is counted here, where the detail
+    is being written, and not again after the pipeline has run."""
 
     @property
     def files(self) -> tuple[FileAudit, FileAudit]:
         return (self.loans, self.collateral)
 
     @property
+    def store(self) -> ResultStore | None:
+        return ResultStore.open(self.store_root) if self.store_root is not None else None
+
+    def scan_results(self) -> pl.LazyFrame:
+        """Every result row of both files and of the pool, lazily."""
+        store = self.store
+        if store is not None:
+            return store.scan_results()
+        return concat_results([self.loans.results, self.collateral.results, self.pool_results]).lazy()
+
+    @property
     def results(self) -> pl.DataFrame:
-        """Every result row of both files and of the pool."""
-        return concat_results([self.loans.results, self.collateral.results, self.pool_results])
+        """Every result row, in memory. For tests and small files; the
+        exporters stream `scan_results()` instead."""
+        return self.scan_results().collect()
+
+    @property
+    def counts(self) -> pl.DataFrame:
+        """Rows and records per file, field, rule, kind, severity and reason."""
+        store = self.store
+        return store.index if store is not None else result_counts(self.results)
+
+    def scan_links(self) -> pl.LazyFrame | None:
+        """The links, from memory or from the store; None when there are none."""
+        if self.links is not None:
+            return self.links.lazy()
+        store = self.store
+        return store.scan_links() if store is not None and store.has_links() else None
+
+    def records(self, file: FileKind, columns: list[str] | None = None) -> pl.DataFrame | None:
+        """The per-record frame of one file (optionally some columns), from
+        the store or from memory; None when the file was unreadable."""
+        audit = self.loans if file == "loans" else self.collateral
+        if audit.records is not None:
+            return audit.records.select(columns) if columns else audit.records
+        store = self.store
+        if store is None or not store.has_records(file):
+            return None
+        scan = store.scan_records(file)
+        return (scan.select(columns) if columns else scan).collect()
 
     @property
     def outcomes(self) -> tuple[RuleOutcome, ...]:
@@ -134,6 +204,10 @@ class QualityReport:
     """`RREL2` or `RREL3` when Stage 3 reported its choice."""
     identity_confidence: Mapping[str, int]
     options: Mapping[str, object] = field(default_factory=dict)
+    waterfall: Waterfall | None = None
+    """None when the loans file could not be split into records."""
+    stage3_comparison: Stage3Comparison | None = None
+    """The loans Stage 3 dropped against the loans the links say it drops."""
 
     @property
     def populations_observed(self) -> bool:
@@ -142,84 +216,222 @@ class QualityReport:
         return self.stage2_comparison is not None and self.stage2_comparison.agrees
 
 
-def _audit(path: Path, file: FileKind, pool: PoolFacts | None) -> tuple[FileAudit, PoolFacts]:
+def _audit(
+    path: Path,
+    file: FileKind,
+    pool: PoolFacts | None,
+    store: ResultStore | None,
+    loans_records: pl.DataFrame | None = None,
+    loans_facts: FileFacts | None = None,
+) -> tuple[FileAudit, PoolFacts, pl.DataFrame | None, pl.DataFrame | None, FileFacts | None]:
+    """Read and assess one file. Returns the audit, the pool facts, the
+    per-record frame, for the collateral file the links to the loan
+    records (`loans_records` is the loans file's per-record frame), and
+    what the pool-level rules of family A need from the file."""
     raw: RawFile = read_file(path, file)
     if raw.frame is None:
+        assert raw.unreadable is not None
+        rows, unreadable_outcomes = unreadable_rows(file, raw.unreadable)
+        if store is not None:
+            store.write_results(f"{file}-family-a", rows)
+            rows = empty_results()
         return (
             FileAudit(
                 file=file, name=raw.name, sha256=raw.sha256, size=raw.size,
                 unreadable=raw.unreadable, headers=raw.headers, columns=(), n_records=0,
-                encoding_repaired=raw.encoding_repaired, results=empty_results(), outcomes=(),
-                profiles=(), actual_columns=(), records=None,
+                encoding_repaired=raw.encoding_repaired, results=rows,
+                outcomes=tuple(unreadable_outcomes), profiles=(), actual_columns=(), records=None,
             ),
             pool or PoolFacts(),
+            None,
+            None,
+            None,
         )
     if pool is None:
         pool = pool_facts(raw)
     retained: pl.Series | None = None
+    linked_lifecycle: pl.Series | None = None
+    links: pl.DataFrame | None = None
     if file == "loans":
         records = loan_records(raw, pool)
         retained = records["population"] == RETAINED
     else:
         records = collateral_records(raw)
-    assessed = assess_columns(raw, pool, retained=retained, ref=load_reference_data())
+        if loans_records is not None:
+            # The links, and through them the lifecycle of each record's loan
+            # (P3f) and whether the record belongs to the retained pool.
+            links = build_links(loans_records, records)
+            context = collateral_link_context(links, loans_records, raw.n_records)
+            records = records.with_columns(
+                context["linked_lifecycle"], context["linked_retained"],
+                context["links_new"], context["links_original"],
+            )
+            retained = context["linked_retained"]
+            linked_lifecycle = context["linked_lifecycle"]
+            if store is not None:
+                store.write_links(links)
+    assessed = assess_columns(
+        raw, pool, retained=retained, ref=load_reference_data(), store=store,
+        linked_lifecycle=linked_lifecycle,
+    )
+    family_a, family_a_outcomes, facts = file_rules(
+        raw, pool, loans_facts.modal_cutoff if loans_facts else None
+    )
+    results = assessed.results
+    if store is not None:
+        store.write_results(f"{file}-family-a", family_a)
+        store.write_records(file, records)
+        store.write_repairs(file, raw.encoding_repaired)
+    else:
+        results = concat_results([results, family_a])
     return (
         FileAudit(
             file=file, name=raw.name, sha256=raw.sha256, size=raw.size, unreadable=None,
             headers=raw.headers, columns=raw.columns, n_records=raw.n_records,
-            encoding_repaired=raw.encoding_repaired, results=assessed.results,
-            outcomes=tuple(assessed.outcomes), profiles=tuple(assessed.profiles),
-            actual_columns=tuple(actual_columns(raw)), records=records,
+            encoding_repaired=raw.encoding_repaired,
+            results=results,
+            outcomes=(*assessed.outcomes, *family_a_outcomes), profiles=tuple(assessed.profiles),
+            actual_columns=tuple(actual_columns(raw)),
+            records=records if store is None else None,
         ),
         pool,
+        records,
+        links,
+        facts,
     )
 
 
 def assess_files(
-    loans: Path, collaterals: Path, *, started_at: datetime | None = None
+    loans: Path,
+    collaterals: Path,
+    *,
+    started_at: datetime | None = None,
+    store: ResultStore | None = None,
 ) -> FileAssessment:
     """Read and assess the two uploaded files. Independent of the
     pipeline; one file's text is freed before the other is read. A file
     that cannot be split into records is reported as such and the other
-    file is still assessed."""
+    file is still assessed.
+
+    With a `store`, every part of the detail is written to it as soon as
+    it exists, and the returned object holds no result row and no
+    per-record frame. Without one, everything is returned in memory."""
     started = started_at or datetime.now(UTC)
-    loans_audit, pool = _audit(loans, "loans", None)
-    collateral_audit, _ = _audit(collaterals, "collateral", pool if loans_audit.readable else PoolFacts())
+    loans_audit, pool, loans_records, _, loans_facts = _audit(loans, "loans", None, store)
+    collateral_audit, _, _, links, collateral_facts = _audit(
+        collaterals, "collateral", pool if loans_audit.readable else PoolFacts(), store,
+        loans_records, loans_facts,
+    )
+    as_of = started.astimezone(UTC).date()
     profiles = (*loans_audit.profiles, *collateral_audit.profiles)
     rows, outcomes = classification_year_results(
         [p for p in profiles if p.entry.code == "RREL12"],
         [p for p in profiles if p.entry.kind == "NUTS"],
         load_reference_data(),
     )
+    family_a, family_a_outcomes = pool_rules(
+        [f for f in (loans_facts, collateral_facts) if f is not None], pool, as_of
+    )
+    outcomes = [*outcomes, *family_a_outcomes]
+    pool_results = concat_results([results_frame(rows), family_a])
+    if store is not None:
+        store.write_results("pool", pool_results)
+        pool_results = empty_results()
+    detail = (
+        store.scan_results()
+        if store is not None
+        else concat_results([loans_audit.results, collateral_audit.results, pool_results]).lazy()
+    )
+    sourced = sorted(r.rule_id for r in RULES.values() if r.regulatory_source is not None)
+    n_violating = (
+        detail.filter(
+            (pl.col("result_kind") == "violation")
+            & pl.col("rule_id").cast(pl.String).is_in(sourced)
+            & pl.col("record").is_not_null()
+        )
+        .select(pl.col("file").cast(pl.String), "record")
+        .unique()
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
     return FileAssessment(
         loans=loans_audit,
         collateral=collateral_audit,
         pool=pool,
-        pool_results=results_frame(rows),
+        pool_results=pool_results,
+        records_with_compliance_violation=n_violating,
+        links=links if store is None else None,
         pool_outcomes=tuple(outcomes),
         started_at=started,
-        as_of=started.astimezone(UTC).date(),
+        as_of=as_of,
+        store_root=store.root if store is not None else None,
     )
 
 
 def inventory_of_expected_fields(assessment: FileAssessment) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    results = assessment.results
+    counts = assessment.counts
     for audit in assessment.files:
         if audit.readable:
-            rows.extend(expected_fields(audit.file, audit.profiles, assessment.outcomes, results))
+            rows.extend(expected_fields(audit.file, audit.profiles, assessment.outcomes, counts))
     return rows
 
 
-def complete_report(
-    assessment: FileAssessment,
-    *,
-    pipeline: PipelineResult | None,
-    error: BaseException | None,
-    options: Mapping[str, object] | None = None,
-) -> QualityReport:
-    """Complete the report from the run: exactly one of `pipeline` (it
-    returned) and `error` (it raised) is given."""
+@dataclass(frozen=True)
+class RunFacts:
+    """What the report needs from the run, and nothing else: the outcome,
+    and the decisions of the stages that completed, without their frames.
+    It is small whatever the pool's size, so it can be handed to the
+    process that writes the report (`quality.child.write_report`)."""
+
+    outcome: PipelineOutcome
+    stages: PipelineResult | None
+    """`report_stages` of the pipeline's result, or of the partial result
+    its exception carries; None when there is neither."""
+
+
+def _rows_only(frame: pl.DataFrame) -> pl.DataFrame:
+    """A frame of the same height and no data: the report reads the count."""
+    return pl.DataFrame({"_rows": pl.repeat(None, frame.height, eager=True)})
+
+
+def report_stages(result: PipelineResult) -> PipelineResult:
+    """The stage results with what the report reads and without the pool:
+    the row positions and reasons Stage 2 and Stage 3 report, the group
+    identifiers, which valuation Stage 7 selected for each record, the two
+    record indices, and the height of each frame the report counts."""
+    stage2, stage3, stage4, stage7 = result.stage2, result.stage3, result.stage4, result.stage7
+    provenance = stage7.provenance if stage7 is not None else None
+    return replace(
+        result,
+        stage1=None, stage5=None, stage6=None, workbook_bytes=None, execution_summary=None,
+        stage2=replace(stage2, loans=_rows_only(stage2.loans), properties=_rows_only(stage2.properties))
+        if stage2 is not None else None,
+        stage3=replace(stage3, loans=_rows_only(stage3.loans), properties=_rows_only(stage3.properties))
+        if stage3 is not None else None,
+        stage4=replace(
+            stage4, loan_groups=stage4.loan_groups.clear(),
+            collateral_groups=stage4.collateral_groups.select("collateral_group_id"),
+            edges_with_group=stage4.edges_with_group.clear(),
+        ) if stage4 is not None else None,
+        stage7=replace(
+            stage7, combined_flattened=_rows_only(stage7.combined_flattened),
+            provenance=replace(
+                provenance, records=provenance.records.select("record", "source"),
+                properties=provenance.properties.clear(), groups=provenance.groups.clear(),
+            ) if provenance is not None else None,
+        ) if stage7 is not None else None,
+    )
+
+
+def run_facts(*, pipeline: PipelineResult | None, error: BaseException | None) -> RunFacts:
+    """What the report needs from the run: exactly one of `pipeline` (it
+    returned) and `error` (it raised) is given.
+
+    When the pipeline raised, the stages that completed before the failure
+    are read from the exception's `partial_result`, if it carries one
+    (`runner.run_pipeline`), so what they decided is reported as observed."""
     if (pipeline is None) == (error is None):
         raise ValueError("complete_report needs the pipeline's result or its exception, not both")
     if pipeline is not None:
@@ -234,17 +446,64 @@ def complete_report(
             stage=data_fault.stage if data_fault else None,
             reason=data_fault.reason if data_fault else None,
         )
+    stages = pipeline if pipeline is not None else getattr(error, "partial_result", None)
+    return RunFacts(outcome=outcome, stages=report_stages(stages) if stages is not None else None)
+
+
+def complete_report(
+    assessment: FileAssessment,
+    *,
+    pipeline: PipelineResult | None,
+    error: BaseException | None,
+    options: Mapping[str, object] | None = None,
+) -> QualityReport:
+    """Complete the report from the run: exactly one of `pipeline` (it
+    returned) and `error` (it raised) is given."""
+    return complete_report_from(assessment, run_facts(pipeline=pipeline, error=error), options)
+
+
+def complete_report_from(
+    assessment: FileAssessment, facts: RunFacts, options: Mapping[str, object] | None = None
+) -> QualityReport:
+    """Complete the report from `run_facts`.
+
+    The rows of the rules that need the run (G8, A17) are added to the
+    assessment's results: to the store when it has one, else in memory."""
+    outcome, stages = facts.outcome, facts.stages
+    pipeline = stages if outcome.completed else None
 
     comparison: Stage2Comparison | None = None
+    stage3_comparison: Stage3Comparison | None = None
+    waterfall: Waterfall | None = None
     selected: str | None = None
     identity: Counter[str] = Counter()
-    records = assessment.loans.records
+    records = assessment.records("loans")
     if records is not None:
-        comparison = compare_with_stage2(records, pipeline.stage2 if pipeline else None)
-        decisions = pipeline.stage3.decisions if pipeline and pipeline.stage3 else None
+        comparison = compare_with_stage2(records, stages.stage2 if stages else None)
+        decisions = stages.stage3.decisions if stages and stages.stage3 else None
         if decisions is not None and decisions.loan_id.chosen_column is not None:
             selected = LOAN_ID_COLUMNS.get(decisions.loan_id.chosen_column)
         identity = Counter(identity_confidence(records, selected).to_list())
+        collateral = assessment.records("collateral")
+        scan = assessment.scan_links()
+        links = scan.collect() if scan is not None else None
+        if links is not None:
+            stage3_comparison = compare_with_stage3(
+                records, links, stages.stage2 if stages else None, decisions
+            )
+        waterfall = build_waterfall(records, collateral, links, stages, completed=pipeline is not None)
+        store = assessment.store
+        if store is not None:
+            store.write_results("run", waterfall.results)
+            assessment = replace(
+                assessment, pool_outcomes=(*assessment.pool_outcomes, *waterfall.outcomes)
+            )
+        else:
+            assessment = replace(
+                assessment,
+                pool_results=concat_results([assessment.pool_results, waterfall.results]),
+                pool_outcomes=(*assessment.pool_outcomes, *waterfall.outcomes),
+            )
     return QualityReport(
         assessment=assessment,
         pipeline=outcome,
@@ -252,4 +511,6 @@ def complete_report(
         selected_loan_identifier=selected,
         identity_confidence=dict(identity),
         options=dict(options or {}),
+        waterfall=waterfall,
+        stage3_comparison=stage3_comparison,
     )

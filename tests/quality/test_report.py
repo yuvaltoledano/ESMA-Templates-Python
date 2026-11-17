@@ -18,7 +18,7 @@ from esma_milan.quality.assess import QualityReport
 from esma_milan.quality.catalogue import FIELD_SENTENCES, RESULT_KINDS, RULES, SENTENCES
 from esma_milan.quality.export import NOT_IMPLEMENTED, finding_sentence, render_json
 from esma_milan.runner import run_pipeline
-from tests.quality.builders import Pair
+from tests.quality.builders import Pair, assert_waterfall_adds_up
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 EXPECTED = Path(__file__).resolve().parent / "expected"
@@ -26,7 +26,9 @@ STARTED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 def summary_dict(report: QualityReport) -> dict[str, Any]:
-    return _summary_dict(report)
+    summary = _summary_dict(report)
+    assert_waterfall_adds_up(summary)  # for every pool a test builds
+    return summary
 
 
 def _report(pair: Pair, folder: Path) -> QualityReport:
@@ -170,7 +172,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
     not_implemented = completeness["rules_not_implemented_in_this_release"]
     listed = {rule for ids in not_implemented["rules"].values() for rule in ids}
     assert listed == {r.rule_id for r in RULES.values() if r.status == "not_implemented"}
-    assert {"A1", "C12", "E17", "F3", "G8", "L1", "P10", "P6(e)"} <= listed
+    assert {"C12", "E17", "F3", "G7", "L1", "P10", "P6(e)"} <= listed
     assert not_implemented["count"] == len(listed)
     assert completeness["rules_not_evaluable_on_these_files"] == {}  # nothing on the compliant pair
     assert set(completeness["rules_partly_implemented"]) == {"P3f", "P11", "P13"}
@@ -178,8 +180,7 @@ def test_completeness_is_always_partial_with_the_two_lists_apart(tmp_path: Path)
 
 def test_later_parts_say_not_implemented_and_never_eligible(tmp_path: Path) -> None:
     summary = summary_dict(_report(Pair(), tmp_path))
-    for key in ("policy_outcome", "release_permitted", "override", "waterfall", "dropped_loans",
-                "lineage", "detail_files"):
+    for key in ("policy_outcome", "release_permitted", "override", "lineage"):
         assert summary[key] == NOT_IMPLEMENTED == "not implemented in this release"
     assert "eligible" not in json.dumps(summary).lower()
     assert all(row["pipeline_use_and_lineage"].startswith(NOT_IMPLEMENTED)
@@ -306,7 +307,7 @@ def test_provenance(tmp_path: Path) -> None:
     summary = summary_dict(_report(Pair(), tmp_path))
     provenance = summary["provenance"]
     assert isinstance(provenance, dict)
-    assert provenance["rule_set_version"] == "2026.11.1"
+    assert provenance["rule_set_version"] == "2026.11.2"
     assert provenance["commit"] is None and "not recorded" in provenance["commit_note"]
     assert provenance["assessment_started_utc"] == "2026-01-02T03:04:05+00:00"
     assert provenance["as_of_date"] == "2026-01-02"
@@ -326,7 +327,6 @@ def test_nd5_without_a_conditional_rule_is_a_scope_statement_not_a_row(tmp_path:
     report = _report(Pair(), tmp_path)
     summary = summary_dict(report)
     assert any("justification not verifiable from the files" in s for s in summary["scope_statements"])
-    assert any("Links between collateral records and loan records" in s for s in summary["scope_statements"])
     field = next(f for f in summary["expected_fields"] if f["field"] == "RREL8")
     assert field["value_states"]["nd5"] == 2 and field["results"] == {}
     assert report.assessment.results.filter(pl.col("rule_id") == "P3f").height == 0

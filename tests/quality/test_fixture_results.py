@@ -30,7 +30,8 @@ def result_counts(fixture: str) -> list[list[str]]:
         .group_by(HEADER[:4]).len()
         .sort(HEADER[:4])
     )
-    return [[*row[:4], str(row[4])] for row in counted.iter_rows()]
+    # A result about a whole column, file or pool has no field: an empty cell.
+    return [[*("" if v is None else v for v in row[:4]), str(row[4])] for row in counted.iter_rows()]
 
 
 @pytest.mark.parametrize("fixture", ["synthetic", "real_anonymised"])
@@ -39,3 +40,26 @@ def test_results_equal_the_reviewed_list(fixture: str) -> None:
         rows = list(csv.reader(handle))
     assert rows[0] == HEADER
     assert result_counts(fixture) == rows[1:]
+
+
+def waterfall_document(fixture: str) -> str:
+    """The waterfall, the dropped-loans counts and the link counts of a
+    fixture's dry run, as the summary prints them."""
+    from esma_milan.quality import complete_report, summary_dict
+    from esma_milan.quality.export import render_json
+    from esma_milan.runner import run_pipeline
+
+    folder = FIXTURES / fixture
+    assessment = assess_files(folder / "loans.csv", folder / "collaterals.csv")
+    result = run_pipeline(
+        loans_file_path=folder / "loans.csv", collaterals_file_path=folder / "collaterals.csv",
+        deal_name="FIXTURE", dry_run=True, verbose=False,
+    )
+    summary = summary_dict(complete_report(assessment, pipeline=result, error=None))
+    return render_json({key: summary[key] for key in ("waterfall", "dropped_loans", "links")}) + "\n"
+
+
+@pytest.mark.parametrize("fixture", ["synthetic", "real_anonymised"])
+def test_the_waterfall_equals_the_reviewed_one(fixture: str) -> None:
+    expected = (EXPECTED / f"{fixture}-waterfall.json").read_text(encoding="utf-8")
+    assert waterfall_document(fixture) == expected

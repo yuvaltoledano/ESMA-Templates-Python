@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from importlib.resources import files
 
 NUTS_YEARS: tuple[int, ...] = (2010, 2013, 2016, 2021, 2024)
@@ -36,12 +36,12 @@ class ReferenceData:
     prefixes (`EL`, `UK`), which are not ISO codes, are among them."""
     manifest: Mapping[str, object]
 
-    @property
+    @cached_property
     def currencies(self) -> frozenset[str]:
         """Active and historic codes: the ESMA currency type permits both."""
         return self.currencies_active | self.currencies_historic
 
-    @property
+    @cached_property
     def nuts_prefixes(self) -> frozenset[str]:
         """Every country prefix of any bundled NUTS year."""
         return frozenset().union(*self.nuts_countries.values())

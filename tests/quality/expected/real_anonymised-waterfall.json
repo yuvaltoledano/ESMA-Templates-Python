@@ -1,0 +1,180 @@
+{
+  "waterfall": {
+    "statement": "loan records from the file to the MILAN output (specification 8.2). Each line says whether it was observed from a stage's own result or predicted from the stage's predicate because the stage's result is not available",
+    "balance_note": "balances are the current principal balance (RREL30) as the pipeline's loader reads it, per stated currency and never added across currencies; the exact text of each balance is in the detail files",
+    "priority_note": "a loan lost after Stage 2 is assigned to one part of line 6 by a fixed bookkeeping priority (the order of the parts), so the parts add up; the priority is a convention and not the established cause. The dropped-loans list gives every other cause seen on the loan. Parts 6 and 7 cannot occur on a completed run until issue #45 is fixed",
+    "lines": [
+      {
+        "line": 1,
+        "label": "loan records submitted",
+        "basis": "observed",
+        "records": 1295,
+        "balance_by_currency": {"EUR": {"balance": 279018846.1, "records": 1295}},
+        "records_without_a_balance": 0
+      },
+      {
+        "line": 2,
+        "label": "less: not an active status",
+        "basis": "observed",
+        "records": 169,
+        "balance_by_currency": {"EUR": {"balance": 0.0, "records": 169}},
+        "records_without_a_balance": 0,
+        "parts": [
+          {"label": "eligibility unknown", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {
+            "label": "inactive",
+            "records": 169,
+            "balance_by_currency": {"EUR": {"balance": 0.0, "records": 169}},
+            "records_without_a_balance": 0,
+            "of_which_status_not_recognised": {"records": 0, "balance_by_currency": {}, "records_without_a_balance": 0}
+          }
+        ]
+      },
+      {
+        "line": 3,
+        "label": "active status, before the balance filter",
+        "basis": "observed",
+        "records": 1126,
+        "balance_by_currency": {"EUR": {"balance": 279018846.1, "records": 1126}},
+        "records_without_a_balance": 0
+      },
+      {
+        "line": 4,
+        "label": "less: not retained by the balance filter",
+        "basis": "observed",
+        "records": 0,
+        "balance_by_currency": {},
+        "records_without_a_balance": 0,
+        "parts": [
+          {"label": "zero balance", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "negative balance", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "balance missing", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "balance unparseable", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0},
+          {"label": "active status not recognised", "records": 0, "balance_by_currency": {}, "records_without_a_balance": 0}
+        ]
+      },
+      {
+        "line": 5,
+        "label": "active, retained",
+        "basis": "observed",
+        "records": 1126,
+        "balance_by_currency": {"EUR": {"balance": 279018846.1, "records": 1126}},
+        "records_without_a_balance": 0,
+        "reconciliation_with_stage2": {"audit": 1126, "stage2": 1126, "state": "agrees"}
+      },
+      {
+        "line": 6,
+        "label": "less: lost after Stage 2",
+        "basis": "observed",
+        "collateral_reasons": "observed",
+        "selected_loan_identifier": "RREL2",
+        "records": 0,
+        "balance_by_currency": {},
+        "records_without_a_balance": 0,
+        "parts": [
+          {
+            "order": 1,
+            "label": "no collateral record at all",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 2,
+            "label": "collateral records only of excluded types",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 3,
+            "label": "a collateral record without a collateral type (the Python pipeline drops such a record today; the R reference keeps it)",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 4,
+            "label": "a property record without a property type",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 5,
+            "label": "a property record without a valuation above 0",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 6,
+            "label": "the selected identifier is missing on the loan record",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 7,
+            "label": "no match under the selected identifier convention",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          },
+          {
+            "order": 8,
+            "label": "removed with a group by a later stage",
+            "basis": "observed",
+            "records": 0,
+            "balance_by_currency": {},
+            "records_without_a_balance": 0
+          }
+        ]
+      },
+      {
+        "line": 7,
+        "label": "loans in the MILAN output",
+        "basis": "observed",
+        "records": 1126,
+        "balance_by_currency": {"EUR": {"balance": 279018846.1, "records": 1126}},
+        "records_without_a_balance": 0,
+        "reconciliation_with_line_5_less_line_6": {"line_5_less_line_6": 1126, "output": 1126, "state": "agrees"}
+      }
+    ],
+    "reconciliation": {"line_5": {"audit": 1126, "stage2": 1126, "state": "agrees"}, "line_7": {"line_5_less_line_6": 1126, "output": 1126, "state": "agrees"}},
+    "collateral_counts": {
+      "raw collateral records": 1952,
+      "distinct collateral identifiers (RREC4, as written)": 1293,
+      "property rows retained by Stage 2": 1664,
+      "property rows linked to a retained loan (Stage 3)": 1664,
+      "graph groups": 819
+    }
+  },
+  "dropped_loans": {"loans": 0, "by_line": []},
+  "links": {
+    "by_convention": {
+      "new (RREL3), raw": {"collateral_records": 1952, "loan_records": 1295, "links": 1952},
+      "original (RREL2), raw": {"collateral_records": 1952, "loan_records": 1295, "links": 1952}
+    },
+    "collateral_records_matching_no_loan_record": 0,
+    "loan_records_with_no_collateral_record": 0,
+    "note": "raw: the two cells are equal as they stand. trimmed: equal only after trimming whitespace, which the pipeline does not match. The unlinked counts are over raw links under either convention.",
+    "stage3_comparison": {
+      "evaluated": true,
+      "reason": null,
+      "selected_loan_identifier": "RREL2",
+      "loans_dropped_for_a_missing_identifier": 0,
+      "loans_dropped_without_collateral": 0,
+      "records_that_differ": 0,
+      "first_differing_records": [],
+      "state": "agrees"
+    }
+  }
+}

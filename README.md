@@ -59,17 +59,37 @@ The output file is named `<pool_cutoff_date> <deal> Flattened loans and
 collaterals.xlsx` under `<output>/<deal>/`. `--output` defaults to
 `data/clean` (git-ignored).
 
-Beside it the command writes `<pool_cutoff_date> <deal> Flattened loans and
-collaterals data quality summary.json`: the data quality report's summary
-of the two input files (every column of every record against the
-per-column rules of `docs/data-quality/specification.md`, the two
-inventories, the population of every loan record, and the provenance). It
-is written on a `--dry-run` and when the pipeline fails as well; with no
-cut-off date established, `unknown-cutoff` takes its place in the name. The
-report is additive: the workbook, the exit status and the messages are
-what they are without it, and it states no accept or reject decision. Its
-row-level detail, the checks across columns, records and files, and the
-web page arrive in later releases; the API does not produce it yet.
+Beside it the command writes the data quality report on the two input
+files, as four files named after the workbook (`<stem>` is the workbook's
+name without `.xlsx`):
+
+| File | Content |
+|---|---|
+| `<stem> data quality summary.json` | the summary: every rule's outcome, the finding groups with a sentence each, the two inventories, the population of every loan record, the waterfall from the file to the MILAN output, the links between the files, the provenance, and the state of the other three files |
+| `<stem> data quality detail.csv` | every finding row: the rule, the record and column, the value as written, and the record's identifiers |
+| `<stem> dropped loans.csv` | every loan that does not reach the MILAN output for its balance or its collateral, with the waterfall line it is assigned to and every other cause seen |
+| `<stem> data quality report.xlsx` | the same report as a workbook: `DQ Summary`, `DQ Fields`, `DQ Columns`, `DQ Checks`, `DQ Findings`, `DQ Rows`, `DQ Dropped loans` |
+
+The rules are in `docs/data-quality/specification.md`: the per-column
+rules, the rules about the files themselves (headers, duplicates,
+identifiers, cut-off dates, currencies), and the reconciliation of the
+pool with the pipeline's own stage results. The files are written on a
+`--dry-run` and when the pipeline fails as well; with no cut-off date
+established, `unknown-cutoff` takes its place in the names. Both CSVs
+start with a schema line and write every value of the input exactly, with
+one escape rule for backslashes and control characters (specification
+10.3). The workbook's `DQ Rows` sheet holds at most 500,000 finding rows
+and says so when it is cut; the detail CSV always holds every row.
+
+The report is additive: the MILAN workbook, the exit status and the
+messages are what they are without it, and it states no accept or reject
+decision. A rule shown with severity Stop has no effect on the run. The
+files are assessed in a process of their own before the conversion, and
+the report is written in another after it, so the conversion's memory use
+is unchanged; on a 500,000-loan pool the report adds between one and two
+minutes to the run. The checks across columns and records, the acceptance rules and the
+web page arrive in later releases; the API does not produce the report
+yet.
 
 The ESMA taxonomy that renames and types the CSV columns is not an
 input. It is a fixed ESMA artefact bundled with the package
@@ -147,11 +167,19 @@ src/esma_milan/
 │   ├── audit_read.py      # the audit's own read of each file; header resolution
 │   ├── states.py          # value states (empty, ND options, markers, present) and parsing
 │   ├── column_rules/      # per-column rules P1 to P13 and the engine that runs them
+│   ├── family_a.py        # rules about the files themselves: A1 to A16
 │   ├── populations.py     # population, identity-confidence and lifecycle labels per record
+│   ├── links.py           # links between collateral records and loan records
+│   ├── waterfall.py       # the waterfall, the dropped-loans list, G8 and A17
 │   ├── inventories.py     # expected-field and actual-column inventories
 │   ├── result.py          # result rows and coverage counts
+│   ├── store.py           # the row-level detail on disk, in a working directory of the run
+│   ├── child.py           # the assessment and the report writing, each in a process of its own
 │   ├── assess.py          # assess_files(), complete_report() and the report object
-│   └── export.py          # the summary file
+│   ├── export.py          # the summary document
+│   ├── detail_csv.py      # the detail CSV and the dropped-loans CSV
+│   ├── report_workbook.py # the report workbook
+│   └── report_files.py    # the four files written beside the MILAN workbook
 ├── analysis/              # pool stratifications for the GUI (11 cuts)
 ├── parity/                # cell-by-cell workbook diff library
 ├── api/
