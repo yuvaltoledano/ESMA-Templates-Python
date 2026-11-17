@@ -32,7 +32,7 @@ import polars as pl
 
 from esma_milan.errors import PipelineDataError
 from esma_milan.quality.audit_read import ColumnResolution, RawFile, Unreadable, read_file
-from esma_milan.quality.catalogue import FileKind
+from esma_milan.quality.catalogue import RULES, FileKind
 from esma_milan.quality.column_rules import ColumnProfile, assess_columns
 from esma_milan.quality.column_rules.context import PoolFacts, pool_facts
 from esma_milan.quality.column_rules.domain import classification_year_results
@@ -48,6 +48,7 @@ from esma_milan.quality.populations import (
 )
 from esma_milan.quality.refdata import load_reference_data
 from esma_milan.quality.result import RuleOutcome, concat_results, empty_results, results_frame
+from esma_milan.quality.store import ResultStore, result_counts
 
 if TYPE_CHECKING:
     from esma_milan.runner import PipelineResult
@@ -69,12 +70,14 @@ class FileAudit:
     n_records: int
     encoding_repaired: pl.DataFrame
     results: pl.DataFrame
+    """Every finding row of the file; empty when the rows are in the store
+    (`FileAssessment.store_root`)."""
     outcomes: tuple[RuleOutcome, ...]
     profiles: tuple[ColumnProfile, ...]
     actual_columns: tuple[Mapping[str, object], ...]
     records: pl.DataFrame | None
     """Per-record identifiers and labels (`populations`); None when the
-    file is unreadable."""
+    file is unreadable or the frame is in the store."""
 
     @property
     def readable(self) -> bool:
@@ -93,15 +96,54 @@ class FileAssessment:
     started_at: datetime
     as_of: date
     """The date used for "today" (UTC date of the run's start)."""
+    store_root: Path | None = None
+    """The working directory of the on-disk store, when the assessment was
+    made with one. The result rows and the per-record frames are then
+    there and not on this object."""
+    records_with_compliance_violation: int = 0
+    """Distinct records, over both files, with at least one violation of a
+    rule that has a regulatory source. It is the one figure of the summary
+    that needs the detail itself, so it is counted here, where the detail
+    is being written, and not again after the pipeline has run."""
 
     @property
     def files(self) -> tuple[FileAudit, FileAudit]:
         return (self.loans, self.collateral)
 
     @property
+    def store(self) -> ResultStore | None:
+        return ResultStore.open(self.store_root) if self.store_root is not None else None
+
+    def scan_results(self) -> pl.LazyFrame:
+        """Every result row of both files and of the pool, lazily."""
+        store = self.store
+        if store is not None:
+            return store.scan_results()
+        return concat_results([self.loans.results, self.collateral.results, self.pool_results]).lazy()
+
+    @property
     def results(self) -> pl.DataFrame:
-        """Every result row of both files and of the pool."""
-        return concat_results([self.loans.results, self.collateral.results, self.pool_results])
+        """Every result row, in memory. For tests and small files; the
+        exporters stream `scan_results()` instead."""
+        return self.scan_results().collect()
+
+    @property
+    def counts(self) -> pl.DataFrame:
+        """Rows and records per file, field, rule, kind, severity and reason."""
+        store = self.store
+        return store.index if store is not None else result_counts(self.results)
+
+    def records(self, file: FileKind, columns: list[str] | None = None) -> pl.DataFrame | None:
+        """The per-record frame of one file (optionally some columns), from
+        the store or from memory; None when the file was unreadable."""
+        audit = self.loans if file == "loans" else self.collateral
+        if audit.records is not None:
+            return audit.records.select(columns) if columns else audit.records
+        store = self.store
+        if store is None or not store.has_records(file):
+            return None
+        scan = store.scan_records(file)
+        return (scan.select(columns) if columns else scan).collect()
 
     @property
     def outcomes(self) -> tuple[RuleOutcome, ...]:
@@ -142,7 +184,9 @@ class QualityReport:
         return self.stage2_comparison is not None and self.stage2_comparison.agrees
 
 
-def _audit(path: Path, file: FileKind, pool: PoolFacts | None) -> tuple[FileAudit, PoolFacts]:
+def _audit(
+    path: Path, file: FileKind, pool: PoolFacts | None, store: ResultStore | None
+) -> tuple[FileAudit, PoolFacts]:
     raw: RawFile = read_file(path, file)
     if raw.frame is None:
         return (
@@ -162,52 +206,93 @@ def _audit(path: Path, file: FileKind, pool: PoolFacts | None) -> tuple[FileAudi
         retained = records["population"] == RETAINED
     else:
         records = collateral_records(raw)
-    assessed = assess_columns(raw, pool, retained=retained, ref=load_reference_data())
+    assessed = assess_columns(
+        raw, pool, retained=retained, ref=load_reference_data(), store=store
+    )
+    if store is not None:
+        store.write_records(file, records)
+        store.write_repairs(file, raw.encoding_repaired)
     return (
         FileAudit(
             file=file, name=raw.name, sha256=raw.sha256, size=raw.size, unreadable=None,
             headers=raw.headers, columns=raw.columns, n_records=raw.n_records,
-            encoding_repaired=raw.encoding_repaired, results=assessed.results,
+            encoding_repaired=raw.encoding_repaired,
+            results=assessed.results,
             outcomes=tuple(assessed.outcomes), profiles=tuple(assessed.profiles),
-            actual_columns=tuple(actual_columns(raw)), records=records,
+            actual_columns=tuple(actual_columns(raw)),
+            records=records if store is None else None,
         ),
         pool,
     )
 
 
 def assess_files(
-    loans: Path, collaterals: Path, *, started_at: datetime | None = None
+    loans: Path,
+    collaterals: Path,
+    *,
+    started_at: datetime | None = None,
+    store: ResultStore | None = None,
 ) -> FileAssessment:
     """Read and assess the two uploaded files. Independent of the
     pipeline; one file's text is freed before the other is read. A file
     that cannot be split into records is reported as such and the other
-    file is still assessed."""
+    file is still assessed.
+
+    With a `store`, every part of the detail is written to it as soon as
+    it exists, and the returned object holds no result row and no
+    per-record frame. Without one, everything is returned in memory."""
     started = started_at or datetime.now(UTC)
-    loans_audit, pool = _audit(loans, "loans", None)
-    collateral_audit, _ = _audit(collaterals, "collateral", pool if loans_audit.readable else PoolFacts())
+    loans_audit, pool = _audit(loans, "loans", None, store)
+    collateral_audit, _ = _audit(
+        collaterals, "collateral", pool if loans_audit.readable else PoolFacts(), store
+    )
     profiles = (*loans_audit.profiles, *collateral_audit.profiles)
     rows, outcomes = classification_year_results(
         [p for p in profiles if p.entry.code == "RREL12"],
         [p for p in profiles if p.entry.kind == "NUTS"],
         load_reference_data(),
     )
+    pool_results = results_frame(rows)
+    if store is not None:
+        store.write_results("pool", pool_results)
+        pool_results = empty_results()
+    detail = (
+        store.scan_results()
+        if store is not None
+        else concat_results([loans_audit.results, collateral_audit.results, pool_results]).lazy()
+    )
+    sourced = sorted(r.rule_id for r in RULES.values() if r.regulatory_source is not None)
+    n_violating = (
+        detail.filter(
+            (pl.col("result_kind") == "violation")
+            & pl.col("rule_id").cast(pl.String).is_in(sourced)
+            & pl.col("record").is_not_null()
+        )
+        .select(pl.col("file").cast(pl.String), "record")
+        .unique()
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
     return FileAssessment(
         loans=loans_audit,
         collateral=collateral_audit,
         pool=pool,
-        pool_results=results_frame(rows),
+        pool_results=pool_results,
+        records_with_compliance_violation=n_violating,
         pool_outcomes=tuple(outcomes),
         started_at=started,
         as_of=started.astimezone(UTC).date(),
+        store_root=store.root if store is not None else None,
     )
 
 
 def inventory_of_expected_fields(assessment: FileAssessment) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    results = assessment.results
+    counts = assessment.counts
     for audit in assessment.files:
         if audit.readable:
-            rows.extend(expected_fields(audit.file, audit.profiles, assessment.outcomes, results))
+            rows.extend(expected_fields(audit.file, audit.profiles, assessment.outcomes, counts))
     return rows
 
 
@@ -238,7 +323,12 @@ def complete_report(
     comparison: Stage2Comparison | None = None
     selected: str | None = None
     identity: Counter[str] = Counter()
-    records = assessment.loans.records
+    records = assessment.records(
+        "loans",
+        ["record", "population", "status_not_active", "balance_not_positive",
+         "balance_unparseable", "RREL2_duplicate", "RREL2_colliding", "RREL3_duplicate",
+         "RREL3_colliding"],
+    )
     if records is not None:
         comparison = compare_with_stage2(records, pipeline.stage2 if pipeline else None)
         decisions = pipeline.stage3.decisions if pipeline and pipeline.stage3 else None

@@ -107,7 +107,7 @@ def test_an_interrupted_run_writes_no_summary(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(cli, "run_pipeline", interrupted)
     result, folder = _invoke(tmp_path, Pair())
     assert result.exit_code == 1  # click's Abort, as for any Ctrl-C
-    assert not folder.exists()
+    assert list(folder.iterdir()) == []  # no report, and the working directory is gone
 
     def exits(**_: object) -> None:
         raise SystemExit(3)
@@ -115,7 +115,7 @@ def test_an_interrupted_run_writes_no_summary(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(cli, "run_pipeline", exits)
     result, folder = _invoke(tmp_path, Pair())
     assert result.exit_code == 3
-    assert not folder.exists()
+    assert list(folder.iterdir()) == []
 
 
 class _Log:
@@ -136,15 +136,16 @@ def test_a_fault_in_the_assessment_is_logged_once_and_changes_nothing(
         raise RuntimeError("a bug in a rule")
 
     log = _Log()
-    monkeypatch.setattr(cli, "assess_files", broken)
+    monkeypatch.setattr(cli, "run_assessment", broken)
     monkeypatch.setattr(cli, "log", log)
     result, folder = _invoke(tmp_path, Pair())
     assert result.exit_code == 0 and result.exception is None
     assert result.output.strip().splitlines() == [str(folder / WORKBOOK)]
     assert (folder / WORKBOOK).exists()
     errors = [e for e in log.events if e[0] == "error"]
+    # The event carries the step and the exception's type, never its message.
     assert errors == [("error", "data_quality_assessment_failed",
-                       {"step": "assess_files", "error": "RuntimeError('a bug in a rule')"})]
+                       {"step": "assess_files", "error_type": "RuntimeError"})]
     summary = _summary(folder)
     assert summary["assessment"] == {
         "state": "interrupted", "statement": ASSESSMENT_INTERRUPTED,
@@ -176,7 +177,7 @@ def test_the_pipelines_exception_is_never_masked_by_a_failed_write(
     assert result.exception.reason == "non_numeric_value"
     assert result.exception.__context__ is None and result.exception.__cause__ is None
     assert result.exit_code == 1
-    assert not folder.exists()
+    assert list(folder.iterdir()) == []
     assert [(e[1], e[2]["step"]) for e in log.events] == [
         ("data_quality_assessment_failed", "write_summary")
     ]

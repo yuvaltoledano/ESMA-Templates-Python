@@ -28,6 +28,7 @@ from esma_milan.quality.audit_read import RESOLVED_TO_FIELD, ColumnResolution, R
 from esma_milan.quality.catalogue import (
     CONDITIONAL_ND5_FIELDS,
     FIELDS,
+    NUMERIC_KINDS,
     RULES,
     FieldEntry,
     fields_of,
@@ -44,6 +45,7 @@ from esma_milan.quality.column_rules.currency import (
     layout_rows,
 )
 from esma_milan.quality.column_rules.domain import domain_rules
+from esma_milan.quality.column_rules.fast import AT_LEAST_ONE, plain_expr
 from esma_milan.quality.column_rules.formats import format_rules
 from esma_milan.quality.column_rules.nd import nd_rules
 from esma_milan.quality.column_rules.plausibility import column_rows, plausibility_rules
@@ -57,6 +59,7 @@ from esma_milan.quality.result import (
     results_frame,
 )
 from esma_milan.quality.states import Classified, classify
+from esma_milan.quality.store import ResultStore
 
 Rule = Callable[[CellContext], RuleOutput]
 
@@ -68,6 +71,9 @@ COMPANION_RULES: tuple[Rule, ...] = (companion_rules,)
 """Run on every cell of a currency companion column."""
 
 _DISTRIBUTION_KINDS = frozenset({"LIST", "BOOLEAN", "YEAR", "COUNTRY", "CURRENCY"})
+
+# Stands for any proven-plain amount when a companion column is assessed.
+_A_PLAIN_AMOUNT = "1"
 
 # A currency companion is assessed as a {CURRENCYCODE_3} value.
 _COMPANION_TEMPLATE = FIELDS["RREL28"]
@@ -105,13 +111,24 @@ class ColumnProfile:
     """Valid values and their record counts, for the kinds with a small
     domain (code lists, booleans, years, country and currency codes)."""
 
-    def observe(self, raw: str, value: Classified, n: int) -> None:
+    def observe_plain(self, first: str, n: int, n_at_least_one: int) -> None:
+        """`n` records with proven-plain values (present, valid, and for a
+        number not zero), of which `n_at_least_one` are 1 or more."""
         self.n_present += n
-        self.n_distinct += 1
+        self.n_valid += n
+        if self.first_value is None:
+            self.first_value = first
+        if self.entry.kind in NUMERIC_KINDS:
+            self.n_nonzero += n
+            self.n_abs_at_least_one += n_at_least_one
+
+    def observe(self, raw: str, value: Classified, n: int) -> None:
+        """`n` records with the present value `raw`. The distinct counts
+        are set by the engine once the column is done."""
+        self.n_present += n
         if self.first_value is None:
             self.first_value = raw
         if not value.ok:
-            self.n_distinct_invalid += 1
             return
         self.n_valid += n
         if isinstance(value.parsed, Decimal):
@@ -172,6 +189,7 @@ def _evaluate(
     retained: pl.Series | None,
     pool: PoolFacts,
     ref: ReferenceData,
+    fast_path: bool,
 ) -> tuple[pl.DataFrame, dict[str, RuleOutcome], ColumnProfile]:
     assert raw.frame is not None
     present_extras = {name: col for name, col in extras.items() if col is not None}
@@ -189,9 +207,36 @@ def _evaluate(
         cut["_cut_reason"],
         (retained if retained is not None else pl.lit(False)).alias("_ret"),
     )
+    # Proven-plain values are grouped by the other cells only (fast.py);
+    # every other value is its own group.
+    plain = (
+        plain_expr(entry, {name: f"_x_{name}" for name in present_extras})
+        if fast_path and column.how in RESOLVED_TO_FIELD
+        else None
+    )
+    if fast_path and column.how == "currency_companion" and "amount" in present_extras:
+        # A companion's rules ask only whether its amount is a valid number.
+        # Every proven-plain amount is, so they stand in for one another.
+        amount_entry = FIELDS[entry.code.removesuffix("_CURRENCY")]
+        plain_amount = plain_expr(amount_entry, {}, column="_x_amount")
+        if plain_amount is not None:
+            work = work.with_columns(
+                pl.when(plain_amount).then(pl.lit(_A_PLAIN_AMOUNT)).otherwise(pl.col("_x_amount"))
+                .alias("_x_amount")
+            )
+    work = work.with_columns((plain if plain is not None else pl.lit(False)).alias("_plain"))
+    work = work.with_columns(
+        pl.when("_plain").then(pl.lit(None, dtype=pl.String)).otherwise(pl.col("_v")).alias("_gv")
+    )
+    keys = ["_plain", "_gv", *keys[1:]]
     groups = (
         work.group_by(keys, maintain_order=True)
-        .agg(pl.len().alias("_n"), pl.col("_ret").sum().alias("_n_ret"))
+        .agg(
+            pl.len().alias("_n"),
+            pl.col("_ret").sum().alias("_n_ret"),
+            pl.col("_v").first().alias("_first"),
+            pl.col("_v").str.contains(AT_LEAST_ONE).sum().alias("_n_one"),
+        )
         .with_row_index("_g")
     )
 
@@ -200,18 +245,27 @@ def _evaluate(
         profile.states_retained = Counter()
     outcomes: dict[str, RuleOutcome] = {}
     found: list[tuple[int, str, Finding]] = []
+    present_values: set[str] = set()
+    invalid_values: set[str] = set()
     for row in groups.iter_rows(named=True):
         n: int = row["_n"]
-        value = classify(entry, row["_v"], ref)
+        text: str = row["_first"]
+        value = classify(entry, text, ref)
         profile.states[value.state] += n
         if profile.states_retained is not None:
             profile.states_retained[value.state] += row["_n_ret"]
-        if value.present:
-            profile.observe(row["_v"], value, n)
+        if row["_plain"]:
+            assert value.present and value.ok, (entry.code, "a plain value must be valid")
+            profile.observe_plain(text, n, row["_n_one"] if entry.kind in NUMERIC_KINDS else 0)
+        elif value.present:
+            profile.observe(text, value, n)
+            present_values.add(text)
+            if not value.ok:
+                invalid_values.add(text)
         context = CellContext(
             entry=entry,
             ref=ref,
-            raw=row["_v"],
+            raw=text,
             value=value,
             cutoff=row["_cut"],
             cutoff_reason=row["_cut_reason"],
@@ -252,8 +306,15 @@ def _evaluate(
                     kind = "non_compliant" if item.result_kind == "violation" else "alternative"
                     profile.format_counts[kind] += n
                     examples = profile.non_compliant_examples
-                    if kind == "non_compliant" and len(examples) < 5 and row["_v"] not in examples:
-                        examples.append(row["_v"])
+                    if kind == "non_compliant" and len(examples) < 5 and text not in examples:
+                        examples.append(text)
+    # Distinct present values of the column: the plain ones and the others,
+    # a value counted once however many groups it falls in.
+    plain_values = work.filter("_plain")["_v"].unique()
+    profile.n_distinct = len(plain_values) + len(present_values) - (
+        int(plain_values.is_in(sorted(present_values)).sum()) if present_values else 0
+    )
+    profile.n_distinct_invalid = len(invalid_values)
     profile.format_counts["compliant"] = (
         profile.n_present
         - profile.format_counts["non_compliant"]
@@ -339,11 +400,22 @@ def assess_columns(
     *,
     retained: pl.Series | None = None,
     ref: ReferenceData | None = None,
+    store: ResultStore | None = None,
+    fast_path: bool = True,
 ) -> ColumnAssessment:
     """Run every per-column rule on every resolved column of `raw`.
 
     `retained` (one Boolean per record) adds the value-state profile of
     the retained active pool to each column's profile.
+
+    With a `store`, each column's rows are written to it as soon as the
+    column is evaluated and are not kept: `results` of the returned
+    assessment is then empty. Without one, the rows are returned in
+    memory (the rule tests, small files).
+
+    `fast_path=False` evaluates every distinct value on its own. It exists
+    for the test that the two paths give the same rows, outcomes and
+    profiles; it is not an option of the command line.
     """
     assert raw.frame is not None, "an unreadable file has no columns to assess"
     ref = ref or load_reference_data()
@@ -363,13 +435,19 @@ def assess_columns(
             extras = {"amount": raw.column_of(column.field)}
             rules = COMPANION_RULES
         rows, column_outcomes, profile = _evaluate(
-            raw, column, entry, extras, rules, cut, cut_note, retained, pool, ref
+            raw, column, entry, extras, rules, cut, cut_note, retained, pool, ref, fast_path
         )
-        frames.append(rows)
+        if store is not None:
+            store.write_results(f"{raw.file}-{column.position:04d}", rows)
+        else:
+            frames.append(rows)
         outcomes.extend(column_outcomes.values())
         if column.how in RESOLVED_TO_FIELD:
             profiles.append(profile)
     level_rows, level_outcomes = column_level_rows(raw, profiles, pool)
-    frames.append(results_frame(level_rows))
+    if store is not None:
+        store.write_results(f"{raw.file}-columns", results_frame(level_rows))
+    else:
+        frames.append(results_frame(level_rows))
     outcomes.extend(level_outcomes)
     return ColumnAssessment(concat_results(frames), outcomes, profiles)

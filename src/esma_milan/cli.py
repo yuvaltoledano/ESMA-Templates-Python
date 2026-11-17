@@ -12,21 +12,29 @@ documented deviations:
   reference's copy), so the CLI runs from any directory and nothing can
   substitute a different taxonomy.
 
-One addition has no counterpart in R: the data quality summary
+One addition has no counterpart in R: the data quality report
 (`esma_milan.quality`). The two files are assessed before the pipeline
-runs, and `<workbook name> data quality summary.json` is written beside
-the workbook when the pipeline returns or raises, a dry run included. It
-changes nothing else: the pipeline is called with the same arguments, the
-exception it raises leaves the command unchanged, and standard output is
-still the workbook's path. A fault in the assessment itself is logged
-once and never reaches the pipeline or the exit status.
+runs, in a process of their own (`quality.child`) that writes the
+row-level detail to a working directory and exits, so the conversion runs
+in a process that holds none of the audit's memory. The report files are
+written beside the workbook when the pipeline returns or raises, a dry run
+included, and the working directory is removed at the end, also after a
+failure and after Ctrl-C. An interrupted run writes no report.
+
+It changes nothing else: the pipeline is called with the same arguments,
+the exception it raises leaves the command unchanged, and standard output
+is still the workbook's path. A fault in the assessment itself (a bug in a
+rule, a dead assessment process, a working directory that cannot be
+created) is logged once, with the step and the exception's type and never
+its message, which could quote a cell of the user's file; it never reaches
+the pipeline or the exit status.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
@@ -34,12 +42,13 @@ import structlog
 
 from esma_milan.quality import (
     FileAssessment,
-    assess_files,
     complete_report,
     summary_filename,
     write_summary,
 )
+from esma_milan.quality.child import run_assessment
 from esma_milan.quality.export import interrupted_summary, write_json
+from esma_milan.quality.store import ResultStore
 from esma_milan.runner import PipelineResult, run_pipeline
 
 log = structlog.get_logger(__name__)
@@ -60,11 +69,20 @@ def _configure_logging(verbose: bool) -> None:
 def _guarded[T](step: str, action: Callable[[], T]) -> tuple[T | None, str | None]:
     """Run one step of the data quality assessment. A fault in it is logged
     once and returned as text; it never propagates, so the conversion and
-    the command's exit status are what they would be without the report."""
+    the command's exit status are what they would be without the report.
+
+    The log event carries the step and the exception's type (and the exit
+    status of a dead assessment process), never the message: a message can
+    quote a cell of the user's file. The message is returned for the
+    summary, which stays beside the workbook."""
     try:
         return action(), None
     except Exception as exc:
-        log.error("data_quality_assessment_failed", step=step, error=repr(exc))
+        fields: dict[str, object] = {"step": step, "error_type": type(exc).__name__}
+        exit_status = getattr(exc, "exit_status", None)
+        if exit_status is not None:
+            fields["exit_status"] = exit_status
+        log.error("data_quality_assessment_failed", **fields)
         return None, f"{type(exc).__name__}: {exc}"
 
 
@@ -151,11 +169,6 @@ def run(
 
     aggregation_method = None if aggregation == "auto" else aggregation
 
-    # The files are assessed first, so the audit's text frames are freed
-    # before the pipeline builds its own.
-    assessment, assessment_fault = _guarded(
-        "assess_files", lambda: assess_files(loans_file, collaterals_file)
-    )
     options: dict[str, object] = {
         "deal_name": deal_name,
         "aggregation": aggregation,
@@ -163,34 +176,55 @@ def run(
         "dry_run": dry_run,
     }
 
+    # The working directory of the report's detail, unique to this run. If
+    # none can be created the assessment is skipped and the pipeline runs
+    # as it does without the report.
+    store, store_fault = _guarded(
+        "create_store", lambda: ResultStore.create(output_dir / deal_name)
+    )
     result: PipelineResult | None = None
     error: Exception | None = None
     try:
-        result = run_pipeline(
-            loans_file_path=loans_file,
-            collaterals_file_path=collaterals_file,
-            deal_name=deal_name,
-            output_dir=output_dir,
-            aggregation_method=aggregation_method,
-            min_coverage=min_coverage,
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-    except Exception as exc:
-        error = exc
-        raise
-    finally:
-        # Neither a result nor an Exception: the run was interrupted
-        # (Ctrl-C, SystemExit). No summary is written for a run that did
-        # not finish. Otherwise the summary is written, guarded, so the
-        # pipeline's own exception is the one that leaves the command.
-        if result is not None or error is not None:
-            _guarded(
-                "write_summary",
-                lambda: _write_quality_summary(
-                    assessment, assessment_fault, result, error, output_dir, deal_name, options
-                ),
+        # The files are assessed first, in a process of their own, so the
+        # conversion starts in a process that holds none of the audit's memory.
+        assessment: FileAssessment | None = None
+        assessment_fault = store_fault
+        if store is not None:
+            started = datetime.now(UTC)
+            working = store
+            assessment, assessment_fault = _guarded(
+                "assess_files",
+                lambda: run_assessment(loans_file, collaterals_file, working, started),
             )
+        try:
+            result = run_pipeline(
+                loans_file_path=loans_file,
+                collaterals_file_path=collaterals_file,
+                deal_name=deal_name,
+                output_dir=output_dir,
+                aggregation_method=aggregation_method,
+                min_coverage=min_coverage,
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            # Neither a result nor an Exception: the run was interrupted
+            # (Ctrl-C, SystemExit). No report is written for a run that did
+            # not finish. Otherwise it is written, guarded, so the
+            # pipeline's own exception is the one that leaves the command.
+            if store is not None and (result is not None or error is not None):
+                _guarded(
+                    "write_summary",
+                    lambda: _write_quality_summary(
+                        assessment, assessment_fault, result, error, output_dir, deal_name, options
+                    ),
+                )
+    finally:
+        if store is not None:
+            _guarded("remove_store", store.remove)
 
     assert result is not None
     if result.output_path is not None:
