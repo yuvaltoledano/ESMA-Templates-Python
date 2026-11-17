@@ -190,10 +190,14 @@ def _evaluate(
     pool: PoolFacts,
     ref: ReferenceData,
     fast_path: bool,
+    derived: Mapping[str, pl.Series],
 ) -> tuple[pl.DataFrame, dict[str, RuleOutcome], ColumnProfile]:
     assert raw.frame is not None
     present_extras = {name: col for name, col in extras.items() if col is not None}
-    keys = ["_v", *[f"_x_{name}" for name in present_extras], "_cut", "_cut_reason"]
+    keys = [
+        "_v", *[f"_x_{name}" for name in present_extras], *[f"_x_{name}" for name in derived],
+        "_cut", "_cut_reason",
+    ]
     work = raw.frame.select(
         "record",
         "physical_line",
@@ -206,6 +210,7 @@ def _evaluate(
         cut["_cut"],
         cut["_cut_reason"],
         (retained if retained is not None else pl.lit(False)).alias("_ret"),
+        *[series.alias(f"_x_{name}") for name, series in derived.items()],
     )
     # Proven-plain values are grouped by the other cells only (fast.py);
     # every other value is its own group.
@@ -271,7 +276,8 @@ def _evaluate(
             cutoff_reason=row["_cut_reason"],
             cutoff_note=cut_note,
             extras={
-                name: (row[f"_x_{name}"] if name in present_extras else None) for name in extras
+                **{name: (row[f"_x_{name}"] if name in present_extras else None) for name in extras},
+                **{name: row[f"_x_{name}"] for name in derived},
             },
             pool=pool,
         )
@@ -402,6 +408,7 @@ def assess_columns(
     ref: ReferenceData | None = None,
     store: ResultStore | None = None,
     fast_path: bool = True,
+    linked_lifecycle: pl.Series | None = None,
 ) -> ColumnAssessment:
     """Run every per-column rule on every resolved column of `raw`.
 
@@ -412,6 +419,11 @@ def assess_columns(
     column is evaluated and are not kept: `results` of the returned
     assessment is then empty. Without one, the rows are returned in
     memory (the rule tests, small files).
+
+    `linked_lifecycle` (collateral only, one text per record, from
+    `links.collateral_link_context`) is the claimed lifecycle of the loan
+    each record belongs to; the conditional ND5 rule (P3f) reads it.
+    Without it P3f treats every record as linked to no loan.
 
     `fast_path=False` evaluates every distinct value on its own. It exists
     for the test that the two paths give the same rows, outcomes and
@@ -434,8 +446,12 @@ def assess_columns(
             entry = companion_entry(FIELDS[column.field])
             extras = {"amount": raw.column_of(column.field)}
             rules = COMPANION_RULES
+        derived: dict[str, pl.Series] = {}
+        if linked_lifecycle is not None and entry.code in CONDITIONAL_ND5_FIELDS:
+            derived["lifecycle"] = linked_lifecycle
         rows, column_outcomes, profile = _evaluate(
-            raw, column, entry, extras, rules, cut, cut_note, retained, pool, ref, fast_path
+            raw, column, entry, extras, rules, cut, cut_note, retained, pool, ref, fast_path,
+            derived,
         )
         if store is not None:
             store.write_results(f"{raw.file}-{column.position:04d}", rows)

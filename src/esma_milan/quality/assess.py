@@ -37,6 +37,7 @@ from esma_milan.quality.column_rules import ColumnProfile, assess_columns
 from esma_milan.quality.column_rules.context import PoolFacts, pool_facts
 from esma_milan.quality.column_rules.domain import classification_year_results
 from esma_milan.quality.inventories import actual_columns, expected_fields
+from esma_milan.quality.links import build_links, collateral_link_context
 from esma_milan.quality.populations import (
     LOAN_ID_COLUMNS,
     RETAINED,
@@ -100,6 +101,9 @@ class FileAssessment:
     """The working directory of the on-disk store, when the assessment was
     made with one. The result rows and the per-record frames are then
     there and not on this object."""
+    links: pl.DataFrame | None = None
+    """The links between collateral and loan records (`links.build_links`);
+    None when they are in the store or a file was unreadable."""
     records_with_compliance_violation: int = 0
     """Distinct records, over both files, with at least one violation of a
     rule that has a regulatory source. It is the one figure of the summary
@@ -132,6 +136,13 @@ class FileAssessment:
         """Rows and records per file, field, rule, kind, severity and reason."""
         store = self.store
         return store.index if store is not None else result_counts(self.results)
+
+    def scan_links(self) -> pl.LazyFrame | None:
+        """The links, from memory or from the store; None when there are none."""
+        if self.links is not None:
+            return self.links.lazy()
+        store = self.store
+        return store.scan_links() if store is not None and store.has_links() else None
 
     def records(self, file: FileKind, columns: list[str] | None = None) -> pl.DataFrame | None:
         """The per-record frame of one file (optionally some columns), from
@@ -185,8 +196,15 @@ class QualityReport:
 
 
 def _audit(
-    path: Path, file: FileKind, pool: PoolFacts | None, store: ResultStore | None
-) -> tuple[FileAudit, PoolFacts]:
+    path: Path,
+    file: FileKind,
+    pool: PoolFacts | None,
+    store: ResultStore | None,
+    loans_records: pl.DataFrame | None = None,
+) -> tuple[FileAudit, PoolFacts, pl.DataFrame | None, pl.DataFrame | None]:
+    """Read and assess one file. Returns the audit, the pool facts, the
+    per-record frame and, for the collateral file, the links to the loan
+    records (`loans_records` is the loans file's per-record frame)."""
     raw: RawFile = read_file(path, file)
     if raw.frame is None:
         return (
@@ -197,17 +215,35 @@ def _audit(
                 profiles=(), actual_columns=(), records=None,
             ),
             pool or PoolFacts(),
+            None,
+            None,
         )
     if pool is None:
         pool = pool_facts(raw)
     retained: pl.Series | None = None
+    linked_lifecycle: pl.Series | None = None
+    links: pl.DataFrame | None = None
     if file == "loans":
         records = loan_records(raw, pool)
         retained = records["population"] == RETAINED
     else:
         records = collateral_records(raw)
+        if loans_records is not None:
+            # The links, and through them the lifecycle of each record's loan
+            # (P3f) and whether the record belongs to the retained pool.
+            links = build_links(loans_records, records)
+            context = collateral_link_context(links, loans_records, raw.n_records)
+            records = records.with_columns(
+                context["linked_lifecycle"], context["linked_retained"],
+                context["links_new"], context["links_original"],
+            )
+            retained = context["linked_retained"]
+            linked_lifecycle = context["linked_lifecycle"]
+            if store is not None:
+                store.write_links(links)
     assessed = assess_columns(
-        raw, pool, retained=retained, ref=load_reference_data(), store=store
+        raw, pool, retained=retained, ref=load_reference_data(), store=store,
+        linked_lifecycle=linked_lifecycle,
     )
     if store is not None:
         store.write_records(file, records)
@@ -223,6 +259,8 @@ def _audit(
             records=records if store is None else None,
         ),
         pool,
+        records,
+        links,
     )
 
 
@@ -242,9 +280,10 @@ def assess_files(
     it exists, and the returned object holds no result row and no
     per-record frame. Without one, everything is returned in memory."""
     started = started_at or datetime.now(UTC)
-    loans_audit, pool = _audit(loans, "loans", None, store)
-    collateral_audit, _ = _audit(
-        collaterals, "collateral", pool if loans_audit.readable else PoolFacts(), store
+    loans_audit, pool, loans_records, _ = _audit(loans, "loans", None, store)
+    collateral_audit, _, _, links = _audit(
+        collaterals, "collateral", pool if loans_audit.readable else PoolFacts(), store,
+        loans_records,
     )
     profiles = (*loans_audit.profiles, *collateral_audit.profiles)
     rows, outcomes = classification_year_results(
@@ -280,6 +319,7 @@ def assess_files(
         pool=pool,
         pool_results=pool_results,
         records_with_compliance_violation=n_violating,
+        links=links if store is None else None,
         pool_outcomes=tuple(outcomes),
         started_at=started,
         as_of=started.astimezone(UTC).date(),

@@ -17,10 +17,26 @@ from esma_milan.quality.column_rules.context import CellContext, RuleOutput
 from esma_milan.quality.result import Finding, Mark
 from esma_milan.quality.states import classify
 
-LIFECYCLE_NOT_ESTABLISHED = (
-    "lifecycle of the exposure not established in this release "
-    "(the collateral record is not linked to its loan)"
-)
+# Why P3f cannot say whether ND5 on a property record is right, by what the
+# link to the loan record gives (`links.collateral_link_context`).
+_ND5_ON_PROPERTY_LIMITS: dict[str, tuple[str, str]] = {
+    "default, recoveries not determinable": (
+        "nd5_on_property_default_recoveries_not_determinable",
+        "the loan is in default and the files do not show whether recoveries have ended",
+    ),
+    "not established": (
+        "nd5_on_property_lifecycle_not_established",
+        "the lifecycle of the loan is not established (its status is empty, invalid or OTHR)",
+    ),
+    "linked loans whose lifecycles differ": (
+        "nd5_on_property_linked_loans_differ",
+        "the record belongs to loans whose lifecycles differ",
+    ),
+    "no loan record linked": (
+        "nd5_on_property_no_loan_record_linked",
+        "no loan record is linked to the collateral record",
+    ),
+}
 COLLATERAL_TYPE_UNDETERMINED = "collateral type OTHR or MIXD: applicability not established"
 COLLATERAL_TYPE_NOT_ESTABLISHED = "RREC5 is not a valid code on the record"
 COLLATERAL_TYPE_ABSENT = "RREC5 is not in the file"
@@ -83,13 +99,24 @@ def _conditional_nd5(c: CellContext) -> RuleOutput:
         yield Mark("P3f", not_evaluable=COLLATERAL_TYPE_UNDETERMINED)
         yield Finding("P3f", "limitation", "collateral_type_undetermined")
     elif collateral_type in PROPERTY_COLLATERAL_TYPES:
-        if value.state == "nd5":
-            # Whether ND5 is the prescribed final-report value (Q&A 1296) or
-            # a questioned use depends on the loan's lifecycle (E17).
-            yield Mark("P3f", not_evaluable=LIFECYCLE_NOT_ESTABLISHED)
-            yield Finding("P3f", "limitation", "nd5_on_property_lifecycle_not_established")
-        else:
+        if value.state != "nd5":
             yield Mark("P3f")
+            return
+        # Whether ND5 is the prescribed final-report value (Q&A 1296) or a
+        # questioned use depends on the lifecycle the loan claims (E17(b); for
+        # RREC9 the regulatory part of E2).
+        lifecycle = c.extras.get("lifecycle") or "no loan record linked"
+        if lifecycle == "final-inactive (presumed)":
+            yield Mark("P3f")
+        elif lifecycle == "reporting-active (presumed)":
+            yield Mark("P3f")
+            yield Finding("P3f", "question", "nd5_on_property_of_a_reporting_active_exposure",
+                          expected="a value: the collateral is property and the loan is "
+                                   "presumed active for reporting")
+        else:
+            reason, why = _ND5_ON_PROPERTY_LIMITS[lifecycle]
+            yield Mark("P3f", not_evaluable=why)
+            yield Finding("P3f", "limitation", reason, expected=why)
     else:
         assert collateral_type in EXCLUDED_COLLATERAL_TYPES
         yield Mark("P3f")

@@ -326,7 +326,6 @@ def test_nd5_without_a_conditional_rule_is_a_scope_statement_not_a_row(tmp_path:
     report = _report(Pair(), tmp_path)
     summary = summary_dict(report)
     assert any("justification not verifiable from the files" in s for s in summary["scope_statements"])
-    assert any("Links between collateral records and loan records" in s for s in summary["scope_statements"])
     field = next(f for f in summary["expected_fields"] if f["field"] == "RREL8")
     assert field["value_states"]["nd5"] == 2 and field["results"] == {}
     assert report.assessment.results.filter(pl.col("rule_id") == "P3f").height == 0

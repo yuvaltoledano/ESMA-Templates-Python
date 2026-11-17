@@ -441,10 +441,10 @@ _P_RULES: tuple[RuleEntry, ...] = (
           source=f"{_RTS}, Annex 2 field definitions; Q&A 1296, 1323(c)",
           applies_to="collateral records, for RREC7, RREC8, RREC9, RREC12 and RREC16; "
                      "RREL65 cells that mix a date with an ND option",
-          needs=("RREC5 on the same record",), status="partly_implemented",
-          missing="ND5 on a property record depends on the lifecycle of the exposure, and "
-                  "RREC12 = 0 on a negative balance needs the loan; both need the link "
-                  "between collateral and loan records (families E and F)"),
+          needs=("RREC5 on the same record", "the loan record the collateral record links to"),
+          status="partly_implemented",
+          missing="RREC12 = 0 on a negative loan balance needs the loan's balance beside "
+                  "the collateral record (E9, family E)"),
     _rule("P3g", "what the pipeline's loader does with the value", "L", "Warn",
           "loader_effect:{field}", ("violation", "context"),
           applies_to="cells the loader reads differently from what the file states"),
@@ -570,11 +570,12 @@ SENTENCES: dict[tuple[str, str], str] = {
         "does not comply with the field definition: the collateral is not property, so ND5 "
         "is the prescribed entry, and the cell holds a value",
     ("P3f", "question"):
-        "may not comply; please confirm: the cell holds an ND option beside a date and the "
-        "mixture is not explained",
+        "may not comply; please confirm: ND5 is reported on property collateral of a loan "
+        "that is presumed active for reporting, where the field applies",
     ("P3f", "limitation"):
         "could not be assessed: whether ND5 is the right entry depends on the collateral type "
-        "or on the lifecycle of the loan, which this release does not establish for the record",
+        "and on the lifecycle of the loan, which the files do not establish for this record; "
+        "the reason on each row says what is missing",
     ("P3g", "violation"):
         "the pipeline cannot read the file as it is: its loader does not recognise "
         "ND4-YYYY-MM-DD in a numeric field and stops at this value",
@@ -639,8 +640,12 @@ SENTENCES: dict[tuple[str, str], str] = {
 
 # Clauses for a field on which a rule finds something of its own. P11 on
 # RREL12 is about the classification year of the submission, not about a
-# code's membership of a list.
+# code's membership of a list; P3f on RREL65 is about a mixture of
+# elements, not about collateral.
 FIELD_SENTENCES: dict[tuple[str, str, str], str] = {
+    ("P3f", "question", "RREL65"):
+        "may not comply; please confirm: the cell holds an ND option beside a date and the "
+        "mixture is not explained",
     ("P11", "violation", "RREL12"):
         "does not comply with the requirement of one classification year across the "
         "submission: the file holds more than one year",
@@ -687,8 +692,6 @@ SCOPE_STATEMENTS: tuple[str, ...] = (
     "register.",
     "Whether a NUTS code is the obligor's or the collateral's true region.",
     "Anything in the other Annex 2 sections or the investor report.",
-    "Links between collateral records and loan records are not built in this release; "
-    "they arrive with the identifier checks.",
 )
 
 
